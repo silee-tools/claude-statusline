@@ -1,0 +1,9 @@
+# Plugin runtime data
+**/data/sessions/
+**/data/cost-cache.json
+**/data/cost-cache.json.tmp
+**/data/cost-refresh.lock
+**/data/user-config.json
+
+# macOS
+.DS_Store
