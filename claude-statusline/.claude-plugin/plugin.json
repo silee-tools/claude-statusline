@@ -1,0 +1,14 @@
+{
+  "name": "claude-statusline",
+  "description": "세로 스택 statusline: 환경 모니터링 + 비용 표시",
+  "version": "2.5.0",
+  "author": {
+    "name": "silee9019"
+  },
+  "keywords": [
+    "statusline",
+    "hud",
+    "cost",
+    "context"
+  ]
+}
