@@ -20,7 +20,7 @@ width-independent, vertical-stack statusline HUD. End-user documentation lives i
     │   ├── statusline.sh             # stdin JSON -> rendered statusline
     │   ├── shorten.sh                # path/branch shortening helper
     │   ├── hook-handler.sh           # cost refresh + auto-setup
-    │   └── refresh-cost.ts           # ccusage -> cost cache (Bun, background)
+    │   └── refresh-cost.sh           # session log aggregation -> cost cache, background
     └── tests/statusline.test.sh      # fixture-driven render tests
 ```
 

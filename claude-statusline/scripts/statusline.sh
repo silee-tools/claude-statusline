@@ -32,7 +32,7 @@ if ! command -v awk >/dev/null 2>&1; then
   exit 0
 fi
 
-# jq @sh 의 `// default` 를 replicate: 먼저 기본값을 두고 파서 출력으로 덮어쓴다.
+# 필드별 `// default` 의미: 먼저 기본값을 두고 파서 출력으로 덮어쓴다.
 cwd="" model_display="" version="" effort=""
 window_size=200000 input_tokens=0 cache_create=0 cache_read=0
 five_h="" five_reset="" week_h="" week_reset=""
@@ -76,7 +76,7 @@ dimlabel() {
   printf '%s%s%s' "$DIM" "$1" "$RST"
 }
 
-# 소수 문자열 값이 1 이상인지 판정한다(bc 대체). 비음수에서 v>=1 은 floor(v)>=1 과 같다.
+# 소수 문자열 값이 1 이상인지 판정한다(부동소수 비교 대체). 비음수에서 v>=1 은 floor(v)>=1 과 같다.
 # 수정 시 검토 관점: 음수 입력은 가정하지 않는다(비용은 항상 0 이상).
 ge_one() {
   _ip=${1%.*}
@@ -220,28 +220,34 @@ format_rate() {
 # 시간 축 세그먼트: 24h(당일 모델별) / 7d(주간) / 그 달 일수(당월). 조립부에서 24h 는 cost 라벨과
 # 함께 파이프 왼쪽에, 7d·당월은 파이프 오른쪽 한 묶음(공백 구분)에 놓인다.
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline"
-cost_cache="$CACHE_DIR/cost-cache.json"
+cost_cache="$CACHE_DIR/cost-cache.env"
 mdays=$(date -v1d -v+1m -v-1d +%d 2>/dev/null || date -d "$(date +%Y-%m-01) +1 month -1 day" +%d 2>/dev/null || echo 30)
 # 라벨(24h/7d/당월/모델명)은 dim(dimlabel), 금액($..)은 기본 밝기로 색을 나눈다.
 daily_seg="$(dimlabel 24h) \$--" weekly_seg="$(dimlabel 7d) \$--" monthly_seg="$(dimlabel "${mdays}d") \$--"
+
+cost_available=false opus=0 sonnet=0 haiku=0 w_cost=0 m_cost=0
 if [ -f "$cost_cache" ]; then
-  cost_available=$(jq -r '.available // false' "$cost_cache" 2>/dev/null || echo false)
-  if [ "$cost_available" = "true" ]; then
-    eval "$(jq -r '
-      @sh "opus=\(.dailyModels.opus // 0)",
-      @sh "sonnet=\(.dailyModels.sonnet // 0)",
-      @sh "haiku=\(.dailyModels.haiku // 0)",
-      @sh "w_cost=\(.weeklyCost // 0 | round)",
-      @sh "m_cost=\(.monthlyCost // 0 | round)"
-    ' "$cost_cache" 2>/dev/null || echo 'opus=0 sonnet=0 haiku=0 w_cost=0 m_cost=0')"
-    weekly_seg="$(dimlabel 7d) \$${w_cost}"
-    monthly_seg="$(dimlabel "${mdays}d") \$${m_cost}"
-    parts=""
-    ge_one "$opus"   && parts="$(dimlabel Opus) \$$(printf '%.0f' "$opus")"
-    ge_one "$sonnet" && { [ -n "$parts" ] && parts="$parts "; parts="${parts}$(dimlabel Sonnet) \$$(printf '%.0f' "$sonnet")"; }
-    ge_one "$haiku"  && { [ -n "$parts" ] && parts="$parts "; parts="${parts}$(dimlabel Haiku) \$$(printf '%.0f' "$haiku")"; }
-    daily_seg="$(dimlabel 24h) ${parts:-\$0}"
-  fi
+  # sh-safe key=value. 값은 숫자·true/false 뿐이라 while read 로 안전하다(eval·source 아님).
+  while IFS='=' read -r _k _val; do
+    case "$_k" in
+      available) cost_available="$_val" ;;
+      dailyOpus) opus="$_val" ;;
+      dailySonnet) sonnet="$_val" ;;
+      dailyHaiku) haiku="$_val" ;;
+      weekly) w_cost="$_val" ;;
+      monthly) m_cost="$_val" ;;
+    esac
+  done < "$cost_cache"
+fi
+
+if [ "$cost_available" = "true" ]; then
+  weekly_seg="$(dimlabel 7d) \$${w_cost}"
+  monthly_seg="$(dimlabel "${mdays}d") \$${m_cost}"
+  parts=""
+  ge_one "$opus"   && parts="$(dimlabel Opus) \$$(printf '%.0f' "$opus")"
+  ge_one "$sonnet" && { [ -n "$parts" ] && parts="$parts "; parts="${parts}$(dimlabel Sonnet) \$$(printf '%.0f' "$sonnet")"; }
+  ge_one "$haiku"  && { [ -n "$parts" ] && parts="$parts "; parts="${parts}$(dimlabel Haiku) \$$(printf '%.0f' "$haiku")"; }
+  daily_seg="$(dimlabel 24h) ${parts:-\$0}"
 fi
 
 # --- GitHub 계정 표시기 ---

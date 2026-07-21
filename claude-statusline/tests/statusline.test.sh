@@ -58,9 +58,16 @@ else
 fi
 
 # 비용 fixture: 오늘 Opus $12, 주간 $605, 월간 $605
-cat > "$TMPROOT/cache/claude-statusline/cost-cache.json" <<'JSON'
-{"available":true,"dailyModels":{"opus":12,"sonnet":0,"haiku":0},"weeklyCost":605,"monthlyCost":605,"cachedAt":"2026-07-14T00:00:00Z"}
-JSON
+cat > "$TMPROOT/cache/claude-statusline/cost-cache.env" <<'ENV'
+available=true
+dailyOpus=12
+dailySonnet=0
+dailyHaiku=0
+weekly=605
+monthly=605
+cachedAt=1784000000
+ENV
+rm -f "$TMPROOT/cache/claude-statusline/cost-cache.json"
 
 # bc 미존재 환경 테스트용: 고의로 실패하는 bc stub (정수부 비교로 bc 제거를 검증).
 # PATH 에 이 디렉터리를 추가하면 진정한 bc 대신 실패 스텁이 호출되므로,
