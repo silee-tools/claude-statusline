@@ -24,7 +24,7 @@ AMBER=$(printf '\033[38;5;214m')
 
 TMPROOT=$(mktemp -d)
 trap 'rm -rf "$TMPROOT"' EXIT
-mkdir -p "$TMPROOT/scripts" "$TMPROOT/data"
+mkdir -p "$TMPROOT/scripts" "$TMPROOT/cache/claude-statusline"
 ln -sf "$SRC/scripts/statusline.sh" "$TMPROOT/scripts/statusline.sh"
 ln -sf "$SRC/scripts/shorten.sh" "$TMPROOT/scripts/shorten.sh"
 ln -sf "$SRC/scripts/json.awk" "$TMPROOT/scripts/json.awk"
@@ -58,7 +58,7 @@ else
 fi
 
 # 비용 fixture: 오늘 Opus $12, 주간 $605, 월간 $605
-cat > "$TMPROOT/data/cost-cache.json" <<'JSON'
+cat > "$TMPROOT/cache/claude-statusline/cost-cache.json" <<'JSON'
 {"available":true,"dailyModels":{"opus":12,"sonnet":0,"haiku":0},"weeklyCost":605,"monthlyCost":605,"cachedAt":"2026-07-14T00:00:00Z"}
 JSON
 
@@ -112,10 +112,10 @@ json_eff() {
   printf '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":40000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.1.11","effort":{"level":"%s"}}' "$1"
 }
 
-# 색 코드 제거한 출력. XDG_DATA_HOME·XDG_CONFIG_HOME 을 TMPROOT 로 고정해 gh 계정·매핑을 결정론화한다.
-run() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" COLUMNS="$2" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
+# 색 코드 제거한 출력. XDG_DATA_HOME·XDG_CONFIG_HOME·XDG_CACHE_HOME 을 TMPROOT 로 고정해 gh 계정·매핑·비용 캐시를 결정론화한다.
+run() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" COLUMNS="$2" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
 # 색 코드 포함 원본 출력
-run_raw() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" COLUMNS="$2" sh "$SL" 2>/dev/null; }
+run_raw() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" COLUMNS="$2" sh "$SL" 2>/dev/null; }
 
 # 출력 끝에 개행이 없어 명령 치환이 후행 개행을 지우므로, 한 줄을 다시 붙여 세면 정확하다.
 # 폭 불변성 비교(T5/T19)용. 두 렌더 사이 분 경계를 넘어도 흔들리지 않도록 시각(HH:MM)과
