@@ -45,8 +45,14 @@ Effort is shown as a vertical ramp glyph plus a warm-gauge color:
 
 ## Install
 
-Requires [Claude Code](https://code.claude.com). `jq` is required; `bun` +
-[`ccusage`](https://github.com/ryoppippi/ccusage) are optional (for cost).
+Requires [Claude Code](https://code.claude.com), a POSIX `sh`, and `awk`. `git`
+powers the branch display. `curl` is optional: it refreshes the model pricing
+table once a day from the public
+[LiteLLM price table](https://github.com/BerriAI/litellm); without it (or if
+the fetch fails), a built-in price table is used, so cost still works offline.
+Cost (`24h` / `7d` / month) is computed directly from local Claude Code session
+logs (`~/.claude/projects/**/*.jsonl`) and cached under
+`${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/`.
 
 ```shell
 claude plugin marketplace add silee-tools/claude-statusline
@@ -63,8 +69,10 @@ second render onward.
 
 | Tool | Required? | Used for |
 |---|---|---|
-| `jq` | required | parsing the statusline JSON |
-| `bun` + `ccusage` | optional | cost figures (`24h` / `7d` / month) |
+| `sh` (POSIX) | required | running the scripts |
+| `awk` | required | parsing the statusline JSON and aggregating cost |
+| `git` | required | the branch indicator |
+| `curl` | optional | daily model-pricing refresh (falls back to a built-in table) |
 | `saml2aws` | optional | the `aws:` session indicator |
 
 ## Configuration
