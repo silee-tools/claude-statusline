@@ -2,12 +2,14 @@
 # 사용: awk -v DAY=<UTC ISO> -v WEEK=<UTC ISO> -v MONTH=<UTC ISO> -v PRICES=<prices.tsv> -f 이파일 < JSONL
 # 출력(key=value): available, dailyOpus, dailySonnet, dailyHaiku, weekly, monthly
 # 수정 시 검토 관점: 버킷 분류는 UTC ISO 문자열 사전 비교에 의존한다(POSIX awk 에 mktime 이 없다).
-# 경계 문자열과 timestamp 는 같은 UTC ISO 포맷이어야 사전 비교가 성립한다.
+# 경계와 timestamp 양쪽 모두 초 단위(YYYY-MM-DDTHH:MM:SS, 19자)로 정규화한 뒤 비교해야
+# 밀리초·`Z` 표기 차이에 흔들리지 않는다.
 BEGIN {
   while ((getline line < PRICES) > 0) {
     nf = split(line, a, "\t")
     if (nf >= 5) { pin[a[1]] = a[2]; pout[a[1]] = a[3]; pcw[a[1]] = a[4]; pcr[a[1]] = a[5] }
   }
+  DAY = substr(DAY, 1, 19); WEEK = substr(WEEK, 1, 19); MONTH = substr(MONTH, 1, 19)
 }
 # 한 JSON 오브젝트 라인을 스캔해 필요한 리프만 V[] 에 담는다.
 function scan(s,   n, i, c, path, key, str, j, num, d) {
@@ -54,9 +56,10 @@ function pricekey(model,   k, best) {
   cc = V["..message.usage.cache_creation_input_tokens"] + 0
   cr = V["..message.usage.cache_read_input_tokens"] + 0
   cost = it * pin[pk] + ot * pout[pk] + cc * pcw[pk] + cr * pcr[pk]
-  if (ts >= MONTH) monthly += cost
-  if (ts >= WEEK) weekly += cost
-  if (ts >= DAY) {
+  tsec = substr(ts, 1, 19)
+  if (tsec >= MONTH) monthly += cost
+  if (tsec >= WEEK) weekly += cost
+  if (tsec >= DAY) {
     if (pk == "claude-opus-4-8") d_opus += cost
     else if (pk == "claude-sonnet-5") d_sonnet += cost
     else if (pk == "claude-haiku-4-5") d_haiku += cost

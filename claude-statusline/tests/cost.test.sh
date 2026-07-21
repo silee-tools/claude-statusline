@@ -25,3 +25,18 @@ echo "$out"
 echo "$out" | grep -q '^dailyOpus=5' && echo "$out" | grep -q '^weekly=15' \
   && echo "$out" | grep -q '^monthly=16' && echo "$out" | grep -q '^available=true' \
   && echo "cost.test PASS" || { echo "cost.test FAIL"; exit 1; }
+
+# 경계 초(=DAY) 안에서 밀리초/Z 표기 차이로 사전 비교가 흔들리지 않는지 검증한다.
+# row A: 경계 초 0.5초 뒤(같은 초) -> daily 에 포함돼야 한다.
+# row B: 경계 초 바로 앞날 23:59:59.5 -> daily 에서 제외돼야 한다.
+cat > "$WORK/boundary.jsonl" <<'JSON'
+{"timestamp":"2026-07-21T00:00:00.500Z","requestId":"r5","message":{"id":"m5","model":"claude-sonnet-5","usage":{"input_tokens":500000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+{"timestamp":"2026-07-20T23:59:59.500Z","requestId":"r6","message":{"id":"m6","model":"claude-sonnet-5","usage":{"input_tokens":500000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+JSON
+
+out2=$(awk -v DAY=2026-07-21T00:00:00Z -v WEEK=2026-07-14T00:00:00Z -v MONTH=2026-06-01T00:00:00Z \
+  -v PRICES="$WORK/prices.tsv" -f "$AGG" < "$WORK/boundary.jsonl")
+echo "$out2"
+# 기대: dailySonnet=1.00 (row A만 포함, row B는 daily 에서 제외)
+echo "$out2" | grep -q '^dailySonnet=1.00' \
+  && echo "cost.test(boundary) PASS" || { echo "cost.test(boundary) FAIL"; exit 1; }
