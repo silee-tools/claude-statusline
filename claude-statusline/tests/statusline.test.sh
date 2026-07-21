@@ -7,7 +7,7 @@
 # 레이아웃(위→아래, 값 없는 줄은 자연히 생략):
 #   줄1  시간  경로
 #   줄2  (브랜치) gh@계정 aws:세션
-#   줄3  ctx  <컨텍스트 막대> % | v<버전> <모델> <effort 램프>
+#   줄3  v<버전> <모델> <effort 램프> | ctx <컨텍스트 막대> %
 #   줄4  5h   <막대> % ↺리셋 | 7d <막대> % ↺리셋
 #   줄5  cost 24h ... | 7d ... | <당월일수>d ...
 set -eu
@@ -175,7 +175,7 @@ assert_contains "T7 cost 줄 존재" "cost " "$OUT"
 # --- T7-swap: 셋째 줄 좌우 교체 — 모델 그룹 왼쪽, ctx 오른쪽 ---
 OUT=$(run "$(json_with)" 200)
 LINE3=$(nth_line 3 "$OUT")
-assert_match "T7-swap 모델 그룹 왼쪽, ctx 오른쪽" '^v2\.1\.11 Opus 4\.8.*| ctx' "$LINE3"
+assert_match "T7-swap 모델 그룹 왼쪽, ctx 오른쪽" '^v2\.1\.11 Opus 4\.8.*\| ctx' "$LINE3"
 
 # --- T8: 5h 와 7d 가 같은 한 줄에 파이프로 이어진다 ---
 OUT=$(run "$(json_with)" 200)
