@@ -176,7 +176,7 @@ OUT=$(run "$(json_with)" 200)
 assert_contains "T3 24h 접두" "24h Opus" "$OUT"
 assert_match    "T3 주간 비용 7d 라벨" '7d \$605' "$OUT"
 assert_match    "T3 당월 일수 라벨" "${MDAYS}"'d \$605' "$OUT"
-assert_match    "T3 비용: 24h·7d 파이프, 7d·당월은 공백 구분" '\$12 +\| 7d \$605 '"${MDAYS}"'d \$605' "$OUT"
+assert_match    "T3 비용: 24h·7d 파이프, 7d·당월은 공백 구분" '\$12 +\| +7d \$605 '"${MDAYS}"'d \$605' "$OUT"
 
 # --- T3-nobc: bc 없는 환경에서도 비용 세그먼트 유지(정수부 비교로 독립) ---
 #    비용 세그먼트는 costv >= 1 판정이 필요하다. bc 가 없거나 실패해도 정수부 비교로 동작해야 한다.
@@ -214,7 +214,7 @@ assert_match "T7-swap 모델 그룹 왼쪽, ctx 오른쪽" '^v2\.1\.11 Opus 4\.8
 OUT=$(run "$(json_with)" 200)
 RATE=$(printf '%s\n' "$OUT" | grep '5h')
 assert_contains "T8 rate 한 줄에 7d 도 포함" "7d" "$RATE"
-assert_match    "T8 rate 줄 5h|7d 파이프 구분" '5h +█.* \| 7d +█' "$OUT"
+assert_match    "T8 rate 줄 5h|7d 파이프 구분" '5h +█.* \| +7d +█' "$OUT"
 assert_equals   "T8 rate 는 단 한 줄" "1" "$(printf '%s\n' "$OUT" | grep -c '5h .*█')"
 
 # --- T9: effort → 세로 램프 글리프 + 웜 게이지 색(low=초록 … max=빨강) ---
@@ -241,8 +241,8 @@ assert_contains "T11 둘째 줄에 gh 계정" "gh@personal" "$(nth_line 2 "$OUT"
 
 # --- T12: 비용 줄은 24h·7d 사이만 파이프, 7d·당월 사이 파이프 제거 ---
 OUT=$(run "$(json_with)" 55)
-COSTLN=$(printf '%s\n' "$OUT" | grep '^cost')
-assert_match  "T12 cost 24h·7d 파이프" '^cost +24h .*\$.* \| 7d' "$COSTLN"
+COSTLN=$(printf '%s\n' "$OUT" | grep 'cost ')
+assert_match  "T12 cost 24h·7d 파이프" '^ *cost +24h .*\$.* \| +7d' "$COSTLN"
 assert_equals "T12 cost 줄 파이프 정확히 1개" "1" "$(count_char '|' "$COSTLN")"
 
 # --- T13: rate 부재 시 rate 줄 통째 생략 (폭 무관, 시간·계정·ctx·cost 4줄) ---
@@ -336,8 +336,8 @@ printf 'octocat' > "$TMPROOT/gh-prompt-user"   # 이후 테스트 위해 원복
 #    model 줄은 v로 시작, 5h와 cost는 라벨으로 시작.
 OUT=$(run "$(json_with)" 200)
 MODELLN=$(printf '%s\n' "$OUT" | grep '^v')
-H5LN=$(printf '%s\n' "$OUT" | grep '^5h')
-COSTLN2=$(printf '%s\n' "$OUT" | grep '^cost')
+H5LN=$(printf '%s\n' "$OUT" | grep ' 5h ')
+COSTLN2=$(printf '%s\n' "$OUT" | grep 'cost ')
 pipe_col() { p="${1%%|*}"; printf '%s' "$p" | wc -m | tr -d ' '; }
 MC=$(pipe_col "$MODELLN"); HC=$(pipe_col "$H5LN"); OC=$(pipe_col "$COSTLN2")
 assert_equals "T19 model·5h 파이프 열 동일" "$HC" "$MC"
@@ -345,6 +345,22 @@ assert_equals "T19 cost·5h 파이프 열 동일" "$HC" "$OC"
 # 폭이 달라도 정렬은 유지된다(정렬은 세그먼트 내용 기반, COLUMNS 무관).
 OUTN=$(run "$(json_with)" 55)
 assert_equals "T19 폭 55에서도 정렬 동일" "$(mask_time "$OUT")" "$(mask_time "$OUTN")"
+
+# --- T28: 왼쪽 라벨 우측 정렬 — 버전은 flush(줄 시작), 5h·cost 는 앞 공백이 붙어 값 열이 정렬된다 ---
+#    version=2.1.11 이면 라벨 폭=7(=len("v2.1.11")). 5h·cost 가 그 폭에 우측 정렬돼 앞에 공백이 생긴다.
+OUT=$(run "$(json_with)" 200)
+assert_match "T28 버전 라벨 flush(줄 시작)"  '^v2\.1\.11 Opus'  "$(printf '%s\n' "$OUT" | grep '^v')"
+assert_match "T28 5h 우측정렬(앞 공백)"      '^ +5h +█'         "$(printf '%s\n' "$OUT" | grep ' 5h ')"
+assert_match "T28 cost 우측정렬(앞 공백)"    '^ +cost +24h'     "$(printf '%s\n' "$OUT" | grep 'cost ')"
+
+# --- T29: 오른쪽 라벨(ctx·7d) 폭 3 우측 정렬 — ctx 막대와 7d 막대가 같은 열에서 시작한다 ---
+#    최초 지적("ctx랑 7d 간격 안 맞네")의 회귀 가드. 파이프 오른쪽만 떼어 라벨+막대 시작 위치를 본다.
+#    ctx(3자)와 7d(우측정렬로 앞 공백 1칸=3자) 모두 폭 3이라 뒤따르는 막대가 같은 열에서 시작한다.
+OUT=$(run "$(json_with)" 200)
+R3=$(printf '%s\n' "$OUT" | grep '| ctx' | sed 's/.*| //')
+R4=$(printf '%s\n' "$OUT" | grep -E '\| +7d +█' | sed 's/.*| //')
+assert_match "T29 ctx 라벨 뒤 막대(폭3)"        '^ctx █' "$R3"
+assert_match "T29 7d 라벨 우측정렬(앞 공백1) 뒤 막대" '^ 7d █' "$R4"
 
 # --- T20: 요소별 색 — 모델명 시안, 파이프·라벨 등 dim 유지 ---
 RAW=$(run_raw "$(json_with)" 200)

@@ -83,6 +83,12 @@ dimlabel() {
   printf '%s%s%s' "$DIM" "$1" "$RST"
 }
 
+# 라벨 텍스트를 지정 폭으로 우측 정렬한다(앞에 공백 채움). 색 코드가 없는 순수 텍스트에만 쓰고
+# 결과를 dimlabel 로 감싼다 — 정렬 폭은 표시 문자 수 기준이라 색 코드가 섞이면 어긋난다.
+# 수정 시 검토 관점: 정렬 대상 라벨(왼쪽 v버전·5h·cost, 오른쪽 ctx·7d)은 같은 폭 인자를 공유해야
+# 값 열이 세로로 맞는다. 한 열의 폭 계산을 바꾸면 그 열의 모든 라벨 호출을 함께 본다.
+ralign() { printf '%*s' "$2" "$1"; }
+
 # 소수 문자열 값이 1 이상인지 판정한다(부동소수 비교 대체). 비음수에서 v>=1 은 floor(v)>=1 과 같다.
 # 수정 시 검토 관점: 음수 입력은 가정하지 않는다(비용은 항상 0 이상).
 ge_one() {
@@ -231,7 +237,7 @@ CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline"
 cost_cache="$CACHE_DIR/cost-cache.env"
 mdays=$(date -v1d -v+1m -v-1d +%d 2>/dev/null || date -d "$(date +%Y-%m-01) +1 month -1 day" +%d 2>/dev/null || echo 30)
 # 라벨(24h/7d/당월/모델명)은 dim(dimlabel), 금액($..)은 기본 밝기로 색을 나눈다.
-daily_seg="$(dimlabel 24h) \$--" weekly_seg="$(dimlabel 7d) \$--" monthly_seg="$(dimlabel "${mdays}d") \$--"
+daily_seg="$(dimlabel 24h) \$--" weekly_seg="$(dimlabel "$(ralign 7d 3)") \$--" monthly_seg="$(dimlabel "${mdays}d") \$--"
 
 cost_available=false opus=0 sonnet=0 haiku=0 w_cost=0 m_cost=0
 if [ -f "$cost_cache" ]; then
@@ -249,7 +255,7 @@ if [ -f "$cost_cache" ]; then
 fi
 
 if [ "$cost_available" = "true" ]; then
-  weekly_seg="$(dimlabel 7d) \$${w_cost}"
+  weekly_seg="$(dimlabel "$(ralign 7d 3)") \$${w_cost}"
   monthly_seg="$(dimlabel "${mdays}d") \$${m_cost}"
   parts=""
   ge_one "$opus"   && parts="$(dimlabel Opus) \$$(printf '%.0f' "$opus")"
@@ -404,26 +410,35 @@ append_meta "$branch_part"
 append_meta "$seg_gh"
 append_meta "$seg_aws"
 
-# 모델 그룹: 버전(dim) 모델명(시안) effort 램프. 버전은 현재 표시 정보라 보존한다.
+# 라벨 우측 정렬 폭. 왼쪽 열 라벨(v<버전>·5h·cost)은 버전 라벨을 기준으로 같은 폭에 우측 정렬해
+# 값(모델명·막대·비용)이 한 열에서 시작하도록 맞춘다. 오른쪽 열 라벨(ctx·7d)은 폭 3에 우측 정렬한다.
+# 수정 시 검토 관점: 왼쪽 폭은 버전 문자열 길이에 따라 달라진다(최소 4). 이 폭을 아래 세 왼쪽 라벨
+# 호출이 공유해야 값 열이 맞는다 — 한 곳만 바꾸면 정렬이 조용히 어긋난다.
+lw=${#version}
+lw=$((lw + 1))                  # "v" 접두 포함
+[ "$lw" -lt 4 ] && lw=4         # cost(4)·5h(2) 최소 폭 보장
+rw=3                            # 오른쪽 열: ctx(3)·7d(2) 최대
+
+# 모델 그룹: 버전(dim, 우측정렬) 모델명(시안) effort 램프. 버전은 현재 표시 정보라 보존한다.
 model_str=$(format_model "$model_display")
 effort_ind=$(format_effort "$effort")
-model_group="$(dimlabel "v${version}") ${CYAN}${model_str}${RST}"
+model_group="$(dimlabel "$(ralign "v${version}" "$lw")") ${CYAN}${model_str}${RST}"
 [ -n "$effort_ind" ] && model_group="${model_group} ${effort_ind}"
 context_bar=$(format_context_bar)
 
 # --- 정렬 대상 세 줄(model·5h·cost)을 (왼쪽 | 오른쪽) 페어로 만든다 ---
 # 줄3(model): v<버전> <모델> <effort 램프> | ctx <막대> %
 row3_l="$model_group"
-row3_r="$(dimlabel ctx) ${context_bar}"
+row3_r="$(dimlabel "$(ralign ctx "$rw")") ${context_bar}"
 
-# 줄4(rate): 5h <막대> % ↺ | 7d <막대> % ↺. 5h 라벨을 4칸 패딩해 model·cost 컬럼과 정렬한다.
+# 줄4(rate): 5h <막대> % ↺ | 7d <막대> % ↺. 라벨을 우측 정렬해 model·cost 값 열과 맞춘다.
 # 수정 시 검토 관점: 5h·7d 는 한 줄에 | 로 묶는다. 5h 부재 시 7d 를 왼쪽으로 올려 손실을 막는다.
-rate_l=$(format_rate "$(printf '%-4s' 5h)" "$five_h" "$five_reset")
-rate_r=$(format_rate "7d" "$week_h" "$week_reset")
+rate_l=$(format_rate "$(ralign 5h "$lw")" "$five_h" "$five_reset")
+rate_r=$(format_rate "$(ralign 7d "$rw")" "$week_h" "$week_reset")
 [ -z "$rate_l" ] && { rate_l="$rate_r"; rate_r=""; }
 
 # 줄5(cost): cost 24h ... | 7d ... <당월일수>d ...  (7d·당월 사이는 파이프 없이 공백)
-cost_l="$(dimlabel "$(printf '%-4s' cost)") ${daily_seg}"
+cost_l="$(dimlabel "$(ralign cost "$lw")") ${daily_seg}"
 cost_r="${weekly_seg} ${monthly_seg}"
 
 # 파이프 왼쪽 세그먼트들(row3_l·rate_l·cost_l)의 최대 표시폭을 구해 정렬 목표폭으로 쓴다.

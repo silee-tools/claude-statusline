@@ -9,9 +9,9 @@ in a single fixed layout.
 ```
 17:14 ~/↪1/webapp/↪1/src ⧉ 3f9c1a20-7b4e-4d61-9a02-1c8e5f6b7d90
 dev@example.com feature/PROJ-123-post-editor gh@personal aws:✓
-v2.7.0 Opus 4.8 ▃                    | ctx █████████████░░░░░░░ 68%
-5h   █████████░░░░░░░░░░░ 47% ↺2h30m | 7d ████████████████░░░░ 83% ↺3d16h
-cost 24h Opus $12 Sonnet $3          | 7d $42 31d $186
+v2.8.0 Opus 4.8 ▃                      | ctx █████████████░░░░░░░ 68%
+    5h █████████░░░░░░░░░░░ 47% ↺2h30m |  7d ████████████████░░░░ 83% ↺3d16h
+  cost 24h Opus $12 Sonnet $3          |  7d $42 31d $186
 ```
 
 The statusline renders as one vertical stack regardless of terminal width. Lines
@@ -32,6 +32,9 @@ with no data are dropped entirely.
 - **Line 5 (cost)** — today's per-model cost (`24h`), then, right of the `|`,
   rolling 7-day and current-month totals.
 - The `ctx`, `5h`, and `cost` lines auto-align so their `|` columns line up.
+  Within each column the leading labels are right-aligned — `v<version>`/`5h`/`cost`
+  on the left, `ctx`/`7d` on the right — so the values (model, bars, amounts)
+  start in one column and the bars line up vertically.
 
 ## Bars
 
