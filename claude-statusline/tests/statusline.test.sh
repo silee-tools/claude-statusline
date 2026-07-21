@@ -61,6 +61,16 @@ cat > "$TMPROOT/data/cost-cache.json" <<'JSON'
 {"available":true,"dailyModels":{"opus":12,"sonnet":0,"haiku":0},"weeklyCost":605,"monthlyCost":605,"cachedAt":"2026-07-14T00:00:00Z"}
 JSON
 
+# bc 미존재 환경 테스트용: 고의로 실패하는 bc stub (정수부 비교로 bc 제거를 검증).
+# PATH 에 이 디렉터리를 추가하면 진정한 bc 대신 실패 스텁이 호출되므로,
+# 코드가 여전히 bc 를 쓰고 있으면 비용 세그먼트가 사라진다.
+mkdir -p "$TMPROOT/nobc-bin"
+cat > "$TMPROOT/nobc-bin/bc" <<'BCSTUB'
+#!/bin/sh
+exit 127
+BCSTUB
+chmod +x "$TMPROOT/nobc-bin/bc"
+
 # 이번 달 총 일수 (라벨 기대값)
 MDAYS=$(date -v1d -v+1m -v-1d +%d 2>/dev/null || date -d "$(date +%Y-%m-01) +1 month -1 day" +%d)
 
@@ -151,6 +161,13 @@ assert_contains "T3 24h 접두" "24h Opus" "$OUT"
 assert_match    "T3 주간 비용 7d 라벨" '7d \$605' "$OUT"
 assert_match    "T3 당월 일수 라벨" "${MDAYS}"'d \$605' "$OUT"
 assert_match    "T3 비용: 24h·7d 파이프, 7d·당월은 공백 구분" '\$12 +\| 7d \$605 '"${MDAYS}"'d \$605' "$OUT"
+
+# --- T3-nobc: bc 없는 환경에서도 비용 세그먼트 유지(정수부 비교로 독립) ---
+#    비용 세그먼트는 costv >= 1 판정이 필요하다. bc 가 없거나 실패해도 정수부 비교로 동작해야 한다.
+#    opus=12 이므로 'Opus $12' 가 나타나야 하고, bc 대신 정수부 비교를 쓰고 있음을 증명한다.
+OUT=$(PATH="$TMPROOT/nobc-bin:$PATH" run "$(json_with)" 200)
+assert_contains "T3-nobc bc 미존재에도 비용 Opus 세그먼트 유지" "Opus" "$OUT"
+assert_match    "T3-nobc 정수부 비교로 opus>=1 판정" 'Opus.*\$12' "$OUT"
 
 # --- T4: 소진율 90% 이상이면 빨간색 경고 ---
 RAW=$(run_raw "$(json_high)" 200)
