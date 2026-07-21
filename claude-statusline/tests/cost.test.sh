@@ -11,11 +11,11 @@ claude-haiku-4-5	0.000001	0.000005	0.00000125	0.0000001
 TSV
 
 cat > "$WORK/in.jsonl" <<'JSON'
-{"timestamp":"2026-07-21T01:00:00.000Z","requestId":"r1","message":{"id":"m1","model":"claude-opus-4-8","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
-{"timestamp":"2026-07-21T01:00:00.500Z","requestId":"r1","message":{"id":"m1","model":"claude-opus-4-8","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
-{"timestamp":"2026-07-20T10:00:00.000Z","requestId":"r2","message":{"id":"m2","model":"claude-sonnet-5","usage":{"input_tokens":0,"output_tokens":1000000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
-{"timestamp":"2026-07-01T10:00:00.000Z","requestId":"r3","message":{"id":"m3","model":"claude-haiku-4-5-20251001","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
-{"timestamp":"2026-06-30T10:00:00.000Z","requestId":"r4","message":{"id":"m4","model":"claude-opus-4-8","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+{"timestamp":"2026-07-21T01:00:00.000Z","requestId":"r1","message":{"id":"msg_1","model":"claude-opus-4-8","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+{"timestamp":"2026-07-21T01:00:00.500Z","requestId":"r1","message":{"id":"msg_1","model":"claude-opus-4-8","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+{"timestamp":"2026-07-20T10:00:00.000Z","requestId":"r2","message":{"id":"msg_2","model":"claude-sonnet-5","usage":{"input_tokens":0,"output_tokens":1000000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+{"timestamp":"2026-07-01T10:00:00.000Z","requestId":"r3","message":{"id":"msg_3","model":"claude-haiku-4-5-20251001","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+{"timestamp":"2026-06-30T10:00:00.000Z","requestId":"r4","message":{"id":"msg_4","model":"claude-opus-4-8","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
 JSON
 
 out=$(awk -v DAY=2026-07-20T15:00:00Z -v WEEK=2026-07-18T15:00:00Z -v MONTH=2026-06-30T15:00:00Z \
@@ -30,8 +30,8 @@ echo "$out" | grep -q '^dailyOpus=5' && echo "$out" | grep -q '^weekly=15' \
 # row A: 경계 초 0.5초 뒤(같은 초) -> daily 에 포함돼야 한다.
 # row B: 경계 초 바로 앞날 23:59:59.5 -> daily 에서 제외돼야 한다.
 cat > "$WORK/boundary.jsonl" <<'JSON'
-{"timestamp":"2026-07-21T00:00:00.500Z","requestId":"r5","message":{"id":"m5","model":"claude-sonnet-5","usage":{"input_tokens":500000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
-{"timestamp":"2026-07-20T23:59:59.500Z","requestId":"r6","message":{"id":"m6","model":"claude-sonnet-5","usage":{"input_tokens":500000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+{"timestamp":"2026-07-21T00:00:00.500Z","requestId":"r5","message":{"id":"msg_5","model":"claude-sonnet-5","usage":{"input_tokens":500000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+{"timestamp":"2026-07-20T23:59:59.500Z","requestId":"r6","message":{"id":"msg_6","model":"claude-sonnet-5","usage":{"input_tokens":500000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
 JSON
 
 out2=$(awk -v DAY=2026-07-21T00:00:00Z -v WEEK=2026-07-14T00:00:00Z -v MONTH=2026-06-01T00:00:00Z \
