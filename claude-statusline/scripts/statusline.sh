@@ -219,7 +219,8 @@ format_rate() {
 # --- 비용 데이터 ---
 # 시간 축 세그먼트: 24h(당일 모델별) / 7d(주간) / 그 달 일수(당월). 조립부에서 24h 는 cost 라벨과
 # 함께 파이프 왼쪽에, 7d·당월은 파이프 오른쪽 한 묶음(공백 구분)에 놓인다.
-cost_cache="$PLUGIN_ROOT/data/cost-cache.json"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline"
+cost_cache="$CACHE_DIR/cost-cache.json"
 mdays=$(date -v1d -v+1m -v-1d +%d 2>/dev/null || date -d "$(date +%Y-%m-01) +1 month -1 day" +%d 2>/dev/null || echo 30)
 # 라벨(24h/7d/당월/모델명)은 dim(dimlabel), 금액($..)은 기본 밝기로 색을 나눈다.
 daily_seg="$(dimlabel 24h) \$--" weekly_seg="$(dimlabel 7d) \$--" monthly_seg="$(dimlabel "${mdays}d") \$--"
