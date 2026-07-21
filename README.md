@@ -1,14 +1,15 @@
 # claude-statusline
 
 A width-independent, vertical-stack statusline HUD for
-[Claude Code](https://code.claude.com). It renders location, git branch,
-GitHub/AWS session indicators, context-window usage, rate limits, reasoning
-effort, and cost — all in a single fixed layout.
+[Claude Code](https://code.claude.com). It renders location, the logged-in
+Claude account, git branch, GitHub/AWS session indicators, the Claude Code
+session id, context-window usage, rate limits, reasoning effort, and cost — all
+in a single fixed layout.
 
 ```
-17:14  ~/↪1/webapp/↪1/src
-(feature/PROJ-123-post-editor) gh@personal aws:✓
-ctx  █████████████░░░░░░░ 68%        | v2.5.0 Opus 4.8 ▃
+17:14 ~/↪1/webapp/↪1/src ⧉ 3f9c1a20-7b4e-4d61-9a02-1c8e5f6b7d90
+dev@example.com feature/PROJ-123-post-editor gh@personal aws:✓
+v2.7.0 Opus 4.8 ▃                    | ctx █████████████░░░░░░░ 68%
 5h   █████████░░░░░░░░░░░ 47% ↺2h30m | 7d ████████████████░░░░ 83% ↺3d16h
 cost 24h Opus $12 Sonnet $3          | 7d $42 31d $186
 ```
@@ -16,13 +17,16 @@ cost 24h Opus $12 Sonnet $3          | 7d $42 31d $186
 The statusline renders as one vertical stack regardless of terminal width. Lines
 with no data are dropped entirely.
 
-- **Line 1** — time (`HH:MM`) and the current path. The path collapses `$HOME`
-  to `~`, keeps git-repo names and the current folder, and marks skipped
-  segments as `↪N` (N = folders omitted).
-- **Line 2** — shortened git branch, `gh@<account>`, and `aws:<session>`. Each
-  appears only when it has a value.
-- **Line 3 (ctx)** — context-window usage bar and `%`, then, right of the `|`,
-  the Claude Code version, model name, and reasoning-effort indicator.
+- **Line 1** — time (`HH:MM`), the current path, and the Claude Code session id
+  (`⧉ <uuid>`, shown in full so it can be copied for cross-session reference).
+  The path collapses `$HOME` to `~`, keeps git-repo names and the current folder,
+  and marks skipped segments as `↪N` (N = folders omitted).
+- **Line 2** — the logged-in Claude account email, the git branch (prefixed with
+  the ` ` branch icon, no space before the name), `gh@<account>`, and
+  `aws:<session>`. Each appears only when it has a value. The branch icon and
+  session marker need a Nerd Font to render; without one they show as `□`.
+- **Line 3 (ctx)** — the Claude Code version, model name, and reasoning-effort
+  indicator, then, right of the `|`, the context-window usage bar and `%`.
 - **Line 4 (rate)** — the 5-hour (`5h`) and 7-day (`7d`) usage-limit bars, each
   with `%` and time-until-reset (`↺`), joined on one line by `|`.
 - **Line 5 (cost)** — today's per-model cost (`24h`), then, right of the `|`,
@@ -94,6 +98,15 @@ The current login is read from
 `${XDG_DATA_HOME:-$HOME/.local/share}/gh-prompt-user` (written by your shell
 prompt). An unmapped login shows `gh@<login>`; an empty value shows `gh@---`;
 color codes must be numeric.
+
+### Claude account indicator
+
+The logged-in Claude account email is read (read-only) from the
+`oauthAccount.emailAddress` field of `${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json`,
+Claude Code's own account state. Only that one field is scanned with `awk`, so
+the large config file is not fully parsed on every render. The segment is
+omitted when the file or the field is unavailable. Nothing is written to that
+file.
 
 ### Customizing
 

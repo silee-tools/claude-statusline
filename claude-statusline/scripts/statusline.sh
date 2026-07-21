@@ -13,8 +13,14 @@ CYAN=$(printf '\033[36m')
 AMBER214=$(printf '\033[38;5;214m')
 LIME=$(printf '\033[38;5;148m')
 GREY240=$(printf '\033[38;5;240m')
+CORAL173=$(printf '\033[38;5;173m')
 RST=$(printf '\033[0m')
 SEP="${DIM} | ${RST}"
+
+# 브랜치 아이콘(Powerline git branch, U+E0A0)과 세션 마커(U+29C9). 아이콘 글리프는 Nerd Font 가
+# 있어야 제대로 보인다(없으면 □). 소스에 리터럴 대신 코드포인트로 두어 인코딩 사고를 피한다.
+BRANCH_GLYPH=$(printf '\356\202\240')
+SESSION_GLYPH=$(printf '\342\247\211')
 
 # --- 축약 스크립트 ---
 SHORTEN_CMD="$PLUGIN_ROOT/scripts/shorten.sh"
@@ -33,7 +39,7 @@ if ! command -v awk >/dev/null 2>&1; then
 fi
 
 # 필드별 `// default` 의미: 먼저 기본값을 두고 파서 출력으로 덮어쓴다.
-cwd="" model_display="" version="" effort=""
+cwd="" model_display="" version="" effort="" session_id=""
 window_size=200000 input_tokens=0 cache_create=0 cache_read=0
 five_h="" five_reset="" week_h="" week_reset=""
 TAB=$(printf '\t')
@@ -44,6 +50,7 @@ while IFS="$TAB" read -r _p _v; do
     ..workspace.current_dir) cwd="$_v" ;;
     ..model.display_name) model_display="$_v" ;;
     ..version) version="$_v" ;;
+    ..session_id) session_id="$_v" ;;
     ..effort.level) effort="$_v" ;;
     ..context_window.context_window_size) window_size="$_v" ;;
     ..context_window.current_usage.input_tokens) input_tokens="$_v" ;;
@@ -91,6 +98,7 @@ strip_control() {
 cwd=$(strip_control "$cwd")
 model_display=$(strip_control "$model_display")
 version=$(strip_control "$version")
+session_id=$(strip_control "$session_id")
 
 shorten_path() {
   if [ -x "$SHORTEN_CMD" ]; then
@@ -285,6 +293,29 @@ format_gh() {
   printf '%sgh@%s%s' "$AMBER214" "$user" "$RST"
 }
 
+# --- Claude Code 계정 표시기 ---
+# 현재 로그인된 Claude Code 계정 이메일을 표시한다. 입력 JSON 에는 계정 정보가 없어
+# ${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json 의 oauthAccount.emailAddress 를 읽는다(읽기 전용).
+# 이 파일은 projects 키가 파일경로(점 다수)라 json.awk 의 점-조인 경로 스택을 깨뜨리고 크기도 커서
+# (수백 KB) 매 렌더 전체 파싱은 느리다. 그래서 oauthAccount 블록에 진입한 뒤 첫 emailAddress 한 줄만
+# 뽑는 줄 기반 awk 로 좁게 추출한다. 부재·미설치·미매치면 빈 문자열(줄에서 자연히 빠짐).
+# 수정 시 검토 관점: 이 파일은 Claude Code 런타임 상태라 이 도구는 절대 쓰지 않는다(조회만).
+format_cc_account() {
+  local cf="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
+  [ -f "$cf" ] || return 0
+  local email
+  email=$(awk '
+    /"oauthAccount"[[:space:]]*:[[:space:]]*\{/ { oa=1 }
+    oa && match($0, /"emailAddress"[[:space:]]*:[[:space:]]*"[^"]*"/) {
+      v=substr($0, RSTART, RLENGTH); sub(/.*:[[:space:]]*"/, "", v); sub(/"$/, "", v)
+      print v; exit
+    }
+  ' "$cf" 2>/dev/null || true)
+  email=$(strip_control "$email")
+  [ -z "$email" ] && return 0
+  printf '%s%s%s' "$CORAL173" "$email" "$RST"
+}
+
 # --- AWS 세션 표시기 ---
 
 format_aws() {
@@ -344,19 +375,34 @@ ${ln}"
 
 # --- 세그먼트 조립 (폭 무관 단일 세로 스택) ---
 
-# 줄1: 시간(공백 2칸)경로. 브랜치·계정은 항상 다음 줄로 내린다.
+# 줄1: 시간 경로 ⧉세션ID. 세션 ID 는 복사해 다른 세션이 참조할 수 있도록 축약 없이 전체 UUID 를
+# dim 으로 경로 뒤에 붙인다(부재면 빠짐). 브랜치·계정은 다음 줄로 내린다.
 time_seg="${GREEN}$(date +%H:%M)${RST}"
 path_seg=$(shorten_path "$cwd")
-line_loc="${time_seg}  ${path_seg}"
+seg_session=""
+[ -n "$session_id" ] && seg_session="${GREY240}${SESSION_GLYPH} ${session_id}${RST}"
+line_loc="${time_seg} ${path_seg}"
+[ -n "$seg_session" ] && line_loc="${line_loc} ${seg_session}"
 
-# 줄2: (브랜치) gh 계정 aws 세션. 값 없는 항목은 자연히 빠지고 남은 항목만 공백으로 잇는다.
+# 줄2: Claude계정 · 브랜치 · gh계정 · aws세션. 값 없는 항목은 자연히 빠지고 남은 항목만 공백으로
+# 잇는다. 브랜치는 괄호 대신 아이콘( )을 이름 바로 앞에 붙인다(사이 공백 없음).
 branch_part=""
-[ -n "$branch" ] && branch_part="${MAGENTA}($(shorten_branch "$branch"))${RST}"
+[ -n "$branch" ] && branch_part="${MAGENTA}${BRANCH_GLYPH}$(shorten_branch "$branch")${RST}"
+seg_cc=$(format_cc_account)
 seg_gh=$(format_gh)
 seg_aws=$(format_aws)
-line_meta="$branch_part"
-[ -n "$seg_gh" ] && { [ -n "$line_meta" ] && line_meta="${line_meta} ${seg_gh}" || line_meta="$seg_gh"; }
-[ -n "$seg_aws" ] && { [ -n "$line_meta" ] && line_meta="${line_meta} ${seg_aws}" || line_meta="$seg_aws"; }
+
+# 항목을 순서대로 공백으로 잇는다(빈 항목은 건너뛴다). 수정 시 검토 관점: 조립 순서를 바꾸려면
+# 이 append_meta 호출 순서만 바꾼다. 인라인으로 다시 흩뿌리지 말 것(규칙이 어긋난다).
+line_meta=""
+append_meta() {
+  [ -n "$1" ] || return 0
+  if [ -n "$line_meta" ]; then line_meta="${line_meta} $1"; else line_meta="$1"; fi
+}
+append_meta "$seg_cc"
+append_meta "$branch_part"
+append_meta "$seg_gh"
+append_meta "$seg_aws"
 
 # 모델 그룹: 버전(dim) 모델명(시안) effort 램프. 버전은 현재 표시 정보라 보존한다.
 model_str=$(format_model "$model_display")

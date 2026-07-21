@@ -5,8 +5,8 @@
 # 폭 무관 단일 레이아웃(세로 스택) 출력을 검증한다.
 #
 # 레이아웃(위→아래, 값 없는 줄은 자연히 생략):
-#   줄1  시간  경로
-#   줄2  (브랜치) gh@계정 aws:세션
+#   줄1  시간 경로 ⧉세션ID
+#   줄2  claude이메일 브랜치 gh@계정 aws:세션
 #   줄3  v<버전> <모델> <effort 램프> | ctx <컨텍스트 막대> %
 #   줄4  5h   <막대> % ↺리셋 | 7d <막대> % ↺리셋
 #   줄5  cost 24h ... | 7d ... | <당월일수>d ...
@@ -35,6 +35,14 @@ SL="$TMPROOT/scripts/statusline.sh"
 printf 'octocat' > "$TMPROOT/gh-prompt-user"
 mkdir -p "$TMPROOT/claude-statusline"
 printf 'octocat=personal,214\ntestwork=work,27\nbadcolor=weird,zz\n' > "$TMPROOT/claude-statusline/gh-accounts"
+
+# Claude Code 계정 fixture: 실제 ~/.claude.json 대신 CLAUDE_CONFIG_DIR 을 TMPROOT 로 지정하고
+# 그 아래 가짜 .claude.json 을 둔다. statusline 은 oauthAccount.emailAddress 를 읽는다.
+# RFC 2606 예약 도메인으로 실재 계정과 충돌을 막는다.
+printf '{"oauthAccount":{"emailAddress":"octocat@example.com"}}' > "$TMPROOT/.claude.json"
+
+# 세션 ID fixture: 알려진 UUID. 축약 없이 전체가 그대로 렌더되는지 검증한다.
+KNOWN_SESSION="11111111-2222-3333-4444-555555555555"
 
 # 브랜치 fixture: 격리된 git repo 를 만들어 알려진 브랜치명(wip)을 갖게 한다.
 # 브랜치가 둘째 줄로 내려갔는지 검증하려면 실제 git 컨텍스트가 필요하다.
@@ -106,9 +114,9 @@ json_no_effort() {
 json_pct() {
   printf '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":40000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.1.11","rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":%s},"seven_day":{"used_percentage":%s,"resets_at":%s}}}' "$1" "$FIVE_RESET" "$2" "$WEEK_RESET"
 }
-# 브랜치 fixture repo 를 cwd 로 주는 변형 (브랜치 위치 검증용)
+# 브랜치 fixture repo 를 cwd 로 주는 변형 (브랜치 위치·세션 ID 검증용). session_id 를 포함한다.
 json_branch() {
-  printf '{"workspace":{"current_dir":"%s"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":40000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.1.11","effort":{"level":"high"},"rate_limits":{"five_hour":{"used_percentage":24,"resets_at":%s},"seven_day":{"used_percentage":41,"resets_at":%s}}}' "$GITREPO" "$FIVE_RESET" "$WEEK_RESET"
+  printf '{"session_id":"%s","workspace":{"current_dir":"%s"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":40000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.1.11","effort":{"level":"high"},"rate_limits":{"five_hour":{"used_percentage":24,"resets_at":%s},"seven_day":{"used_percentage":41,"resets_at":%s}}}' "$KNOWN_SESSION" "$GITREPO" "$FIVE_RESET" "$WEEK_RESET"
 }
 # input_tokens 로 ctx 소진율을 제어한다(window 200000 기준). ctx 막대 임계 색 검증용. rate 없음.
 json_ctx() {
@@ -120,9 +128,9 @@ json_eff() {
 }
 
 # 색 코드 제거한 출력. XDG_DATA_HOME·XDG_CONFIG_HOME·XDG_CACHE_HOME 을 TMPROOT 로 고정해 gh 계정·매핑·비용 캐시를 결정론화한다.
-run() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" COLUMNS="$2" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
+run() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" COLUMNS="$2" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
 # 색 코드 포함 원본 출력
-run_raw() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" COLUMNS="$2" sh "$SL" 2>/dev/null; }
+run_raw() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" COLUMNS="$2" sh "$SL" 2>/dev/null; }
 
 # 출력 끝에 개행이 없어 명령 치환이 후행 개행을 지우므로, 한 줄을 다시 붙여 세면 정확하다.
 # 폭 불변성 비교(T5/T19)용. 두 렌더 사이 분 경계를 넘어도 흔들리지 않도록 시각(HH:MM)과
@@ -272,18 +280,40 @@ assert_contains     "T17 90%면 빨간색 경고" "$RED" "$RAW"
 RAW=$(run_raw "$(json_pct 85 10)" 200)
 assert_not_contains "T17 85%면 빨강 없음(빨강 임계 미만)" "$RED" "$RAW"
 
-# --- T18: 브랜치가 있으면 둘째 줄로 내려가고 첫 줄엔 없다 (git fixture 있을 때만) ---
+# --- T18: 브랜치가 있으면 둘째 줄로 내려가고 첫 줄엔 없다. 괄호 대신 브랜치 아이콘( )을 쓴다 ---
+BRANCH_GLYPH=$(printf '\356\202\240')   #  U+E0A0 (Powerline git branch)
 if [ "$HAVE_GIT" = "1" ]; then
   OUT=$(run "$(json_branch)" 200)
   FIRST=$(first_line "$OUT")
   SECOND=$(nth_line 2 "$OUT")
-  assert_no_match  "T18 첫 줄에 브랜치 괄호 없음" '\(wip\)' "$FIRST"
-  assert_match     "T18 둘째 줄에 브랜치 표시" '\(wip\)' "$SECOND"
+  assert_not_contains "T18 첫 줄에 브랜치명 없음" "wip" "$FIRST"
+  assert_contains  "T18 둘째 줄에 브랜치 아이콘+이름(사이 공백 없음)" "${BRANCH_GLYPH}wip" "$SECOND"
   assert_contains  "T18 둘째 줄에 브랜치와 계정 공존" "gh@personal" "$SECOND"
   assert_equals    "T18 둘째 줄(브랜치·계정)은 정렬·파이프 없음" "0" "$(count_char '|' "$SECOND")"
 else
   printf 'SKIP T18 (git fixture 미생성)\n'
 fi
+
+# --- T26: Claude Code 계정 이메일이 둘째 줄에 나온다 (.claude.json 의 oauthAccount.emailAddress) ---
+#    라벨 접두 없이 이메일 그대로, coral(173) 색으로 렌더한다. cwd=/tmp 라 브랜치 없이 계정만 있는 줄2.
+OUT=$(run "$(json_without)" 200)
+assert_contains "T26 둘째 줄에 Claude 계정 이메일" "octocat@example.com" "$(nth_line 2 "$OUT")"
+assert_not_contains "T26 이메일 앞 cc: 접두 없음" "cc:octocat" "$OUT"
+CORAL=$(printf '\033[38;5;173m')
+RAW=$(run_raw "$(json_without)" 200)
+assert_contains "T26 계정 이메일 coral(173) 색" "${CORAL}octocat@example.com" "$RAW"
+
+# --- T27: 세션 ID(전체 UUID)가 첫 줄 경로 뒤 ⧉ 뒤에 축약 없이 나온다 ---
+#    브랜치 fixture 는 session_id 를 포함한다. 부재 fixture(json_without)에는 ⧉ 가 없다.
+if [ "$HAVE_GIT" = "1" ]; then
+  OUT=$(run "$(json_branch)" 200)
+  assert_contains "T27 첫 줄에 세션 ID 마커+전체 UUID" "⧉ ${KNOWN_SESSION}" "$(first_line "$OUT")"
+  assert_not_contains "T27 둘째 줄엔 세션 ID 없음" "⧉" "$(nth_line 2 "$OUT")"
+else
+  printf 'SKIP T27 (git fixture 미생성)\n'
+fi
+OUT=$(run "$(json_without)" 200)
+assert_not_contains "T27 session_id 부재 시 ⧉ 없음" "⧉" "$OUT"
 
 # --- T25: gh 라벨을 설정 파일에서 매핑 (소스에 계정명 하드코딩 없음) ---
 #    매핑된 계정은 라벨로, 미매핑은 계정명 그대로, 빈 값은 gh@---. 색코드 비숫자는 기본색으로 폴백.
