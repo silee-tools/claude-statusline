@@ -27,6 +27,7 @@ trap 'rm -rf "$TMPROOT"' EXIT
 mkdir -p "$TMPROOT/scripts" "$TMPROOT/data"
 ln -sf "$SRC/scripts/statusline.sh" "$TMPROOT/scripts/statusline.sh"
 ln -sf "$SRC/scripts/shorten.sh" "$TMPROOT/scripts/shorten.sh"
+ln -sf "$SRC/scripts/json.awk" "$TMPROOT/scripts/json.awk"
 SL="$TMPROOT/scripts/statusline.sh"
 
 # gh 계정 fixture: 현재 계정명 캐시 + 계정→라벨 매핑 설정 파일. 실제 계정명 대신 테스트용
