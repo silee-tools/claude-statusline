@@ -341,12 +341,12 @@ model_group="$(dimlabel "v${version}") ${CYAN}${model_str}${RST}"
 [ -n "$effort_ind" ] && model_group="${model_group} ${effort_ind}"
 context_bar=$(format_context_bar)
 
-# --- 정렬 대상 세 줄(ctx·5h·cost)을 (왼쪽 | 오른쪽) 페어로 만든다 ---
-# 줄3(ctx): ctx <막대> % | 모델 그룹
-ctx_l="$(dimlabel "$(printf '%-4s' ctx)") ${context_bar}"
-ctx_r="$model_group"
+# --- 정렬 대상 세 줄(model·5h·cost)을 (왼쪽 | 오른쪽) 페어로 만든다 ---
+# 줄3(model): v<버전> <모델> <effort 램프> | ctx <막대> %
+row3_l="$model_group"
+row3_r="$(dimlabel ctx) ${context_bar}"
 
-# 줄4(rate): 5h <막대> % ↺ | 7d <막대> % ↺. 5h 라벨을 4칸 패딩해 ctx·cost 컬럼과 정렬한다.
+# 줄4(rate): 5h <막대> % ↺ | 7d <막대> % ↺. 5h 라벨을 4칸 패딩해 model·cost 컬럼과 정렬한다.
 # 수정 시 검토 관점: 5h·7d 는 한 줄에 | 로 묶는다. 5h 부재 시 7d 를 왼쪽으로 올려 손실을 막는다.
 rate_l=$(format_rate "$(printf '%-4s' 5h)" "$five_h" "$five_reset")
 rate_r=$(format_rate "7d" "$week_h" "$week_reset")
@@ -356,11 +356,11 @@ rate_r=$(format_rate "7d" "$week_h" "$week_reset")
 cost_l="$(dimlabel "$(printf '%-4s' cost)") ${daily_seg}"
 cost_r="${weekly_seg} ${monthly_seg}"
 
-# 파이프 왼쪽 세그먼트들(ctx_l·rate_l·cost_l)의 최대 표시폭을 구해 정렬 목표폭으로 쓴다.
+# 파이프 왼쪽 세그먼트들(row3_l·rate_l·cost_l)의 최대 표시폭을 구해 정렬 목표폭으로 쓴다.
 # 수정 시 검토 관점: 정렬 대상 집합은 이 maxlen 루프와 아래 align_line 호출부 두 곳이 같아야 한다.
 # 정렬 줄을 추가·제거하면 양쪽을 함께 고친다 — 한쪽만 고치면 오류 없이 파이프 열만 조용히 어긋난다.
 maxlen=0
-for seg in "$ctx_l" "$rate_l" "$cost_l"; do
+for seg in "$row3_l" "$rate_l" "$cost_l"; do
   [ -n "$seg" ] || continue
   wv=$(vis_width "$seg")
   [ "$wv" -gt "$maxlen" ] && maxlen="$wv"
@@ -377,7 +377,7 @@ align_line() {
     printf '%s' "$left"
   fi
 }
-line_ctx=$(align_line "$ctx_l" "$ctx_r" "$maxlen")
+line_ctx=$(align_line "$row3_l" "$row3_r" "$maxlen")
 line_rate=$(align_line "$rate_l" "$rate_r" "$maxlen")
 line_cost=$(align_line "$cost_l" "$cost_r" "$maxlen")
 

@@ -163,14 +163,19 @@ B=$(run "$(json_with)" 55)
 assert_equals "T5 폭 200과 55 출력 동일" "$(mask_time "$A")" "$(mask_time "$B")"
 
 # --- T7: 단일 레이아웃 줄 구성 (rate 있음, 브랜치 없음) = 5줄 ---
-#    줄1 시간·경로 / 줄2 계정 / 줄3 ctx / 줄4 5h|7d / 줄5 cost.
+#    줄1 시간·경로 / 줄2 계정 / 줄3 model / 줄4 5h|7d / 줄5 cost.
 #    cwd=/tmp 는 브랜치가 없어 줄2에 계정만 남는다.
 OUT=$(run "$(json_with)" 200)
-assert_equals   "T7 총 5줄(시간·계정·ctx·rate·cost)" "5" "$(nlines "$OUT")"
-assert_match    "T7 ctx 라벨 줄"  "^ctx +█"  "$OUT"
+assert_equals   "T7 총 5줄(시간·계정·model·rate·cost)" "5" "$(nlines "$OUT")"
+assert_match    "T7 ctx 라벨 줄(오른쪽)"  '\| ctx +█'  "$OUT"
 assert_match    "T7 5h rate 존재" "5h +█"    "$OUT"
 assert_match    "T7 7d rate 존재" "7d +█"    "$OUT"
 assert_contains "T7 cost 줄 존재" "cost " "$OUT"
+
+# --- T7-swap: 셋째 줄 좌우 교체 — 모델 그룹 왼쪽, ctx 오른쪽 ---
+OUT=$(run "$(json_with)" 200)
+LINE3=$(nth_line 3 "$OUT")
+assert_match "T7-swap 모델 그룹 왼쪽, ctx 오른쪽" '^v2\.1\.11 Opus 4\.8.*| ctx' "$LINE3"
 
 # --- T8: 5h 와 7d 가 같은 한 줄에 파이프로 이어진다 ---
 OUT=$(run "$(json_with)" 200)
@@ -271,15 +276,16 @@ OUT=$(run "$(json_without)" 200)
 assert_contains "T25 비숫자 색코드도 라벨은 렌더(가드)" "gh@weird" "$(nth_line 2 "$OUT")"
 printf 'octocat' > "$TMPROOT/gh-prompt-user"   # 이후 테스트 위해 원복
 
-# --- T19: ctx·5h·cost 첫 파이프가 같은 열에 정렬된다 ---
+# --- T19: model·5h·cost 첫 파이프가 같은 열에 정렬된다 ---
 #    파이프 앞부분(패딩 포함)의 표시폭이 세 줄 모두 같아야 세로 정렬이 맞다.
+#    model 줄은 v로 시작, 5h와 cost는 라벨으로 시작.
 OUT=$(run "$(json_with)" 200)
-CTXLN=$(printf '%s\n' "$OUT" | grep '^ctx')
+MODELLN=$(printf '%s\n' "$OUT" | grep '^v')
 H5LN=$(printf '%s\n' "$OUT" | grep '^5h')
 COSTLN2=$(printf '%s\n' "$OUT" | grep '^cost')
 pipe_col() { p="${1%%|*}"; printf '%s' "$p" | wc -m | tr -d ' '; }
-CC=$(pipe_col "$CTXLN"); HC=$(pipe_col "$H5LN"); OC=$(pipe_col "$COSTLN2")
-assert_equals "T19 ctx·5h 파이프 열 동일" "$HC" "$CC"
+MC=$(pipe_col "$MODELLN"); HC=$(pipe_col "$H5LN"); OC=$(pipe_col "$COSTLN2")
+assert_equals "T19 model·5h 파이프 열 동일" "$HC" "$MC"
 assert_equals "T19 cost·5h 파이프 열 동일" "$HC" "$OC"
 # 폭이 달라도 정렬은 유지된다(정렬은 세그먼트 내용 기반, COLUMNS 무관).
 OUTN=$(run "$(json_with)" 55)
