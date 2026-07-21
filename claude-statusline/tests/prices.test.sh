@@ -116,5 +116,68 @@ check "case2: 정확히 4줄"                "4" "$(wc -l < "$OUT2" | tr -d ' ')
 check "case2: fable-5 내장 값"           "claude-fable-5${TAB}0.00001${TAB}0.00005${TAB}0.0000125${TAB}0.000001" "$(awk -F"$TAB" '$1=="claude-fable-5"{print; exit}' "$OUT2")"
 check "case2: opus-4-8 내장 값"          "claude-opus-4-8${TAB}0.000005${TAB}0.000025${TAB}0.00000625${TAB}0.0000005" "$(awk -F"$TAB" '$1=="claude-opus-4-8"{print; exit}' "$OUT2")"
 
+# ---------------------------------------------------------------------------
+# 케이스 3: 부분 fetch — 불완전한 JSON(2개 모델만)을 curl 스텁이 내려주어
+# 추출기가 4개 미만의 행만 뽑는다 → gate가 이를 거부해 기존 캐시를 보존해야 한다.
+# ---------------------------------------------------------------------------
+CASE3="$TMPROOT/case3"
+mkdir -p "$CASE3/cache/claude-statusline" "$CASE3/bin"
+export XDG_CACHE_HOME="$CASE3/cache"
+
+# 알려진 좋은 prices.tsv 를 미리 만든다.
+OUT3="$CASE3/cache/claude-statusline/prices.tsv"
+cat > "$OUT3" <<'TSV'
+claude-fable-5	0.00001	0.00005	0.0000125	0.000001
+claude-opus-4-8	0.000005	0.000025	0.00000625	0.0000005
+claude-sonnet-5	0.000002	0.00001	0.0000025	0.0000002
+claude-haiku-4-5	0.000001	0.000005	0.00000125	0.0000001
+TSV
+
+# 체크섬을 기억한다(byte-identical 검증용).
+GOOD_CHECKSUM=$(sha256sum < "$OUT3")
+
+# freshness guard 를 우회하기 위해 파일을 오래 되게 만든다(1일 이상 전).
+touch -t 202001010000 "$OUT3"
+
+# 부분 fixture: 2개 모델만 포함(4개 필요하므로 gate 에서 거부할 것).
+PARTIAL_FIXTURE="$CASE3/partial.json"
+cat > "$PARTIAL_FIXTURE" <<'JSON'
+{
+  "claude-fable-5": {
+    "input_cost_per_token": 0.00001,
+    "output_cost_per_token": 0.00005,
+    "cache_creation_input_token_cost": 0.0000125,
+    "cache_read_input_token_cost": 0.000001
+  },
+  "claude-opus-4-8": {
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.000025,
+    "cache_creation_input_token_cost": 0.00000625,
+    "cache_read_input_token_cost": 0.0000005
+  }
+}
+JSON
+
+# 가짜 curl: partial fixture 를 내려준다.
+cat > "$CASE3/bin/curl" <<EOF
+#!/bin/sh
+out=""
+prev=""
+for a in "\$@"; do
+  if [ "\$prev" = "-o" ]; then out="\$a"; fi
+  prev="\$a"
+done
+[ -n "\$out" ] && cp "$PARTIAL_FIXTURE" "\$out"
+exit 0
+EOF
+chmod +x "$CASE3/bin/curl"
+
+# 스크립트를 실행한다.
+PATH="$CASE3/bin:$PATH" "$SCRIPT"
+
+# prices.tsv 가 변경되지 않았는지 확인한다(byte-identical 체크섬).
+FINAL_CHECKSUM=$(sha256sum < "$OUT3")
+check "case3: 부분 fetch 거부(캐시 보존)" "$GOOD_CHECKSUM" "$FINAL_CHECKSUM"
+
 printf 'prices.test.sh: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
