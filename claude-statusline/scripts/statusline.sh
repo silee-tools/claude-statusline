@@ -20,34 +20,43 @@ SEP="${DIM} | ${RST}"
 SHORTEN_CMD="$PLUGIN_ROOT/scripts/shorten.sh"
 
 # --- stdin JSON (한번에 파싱) ---
+JSON_CMD="$PLUGIN_ROOT/scripts/json.awk"
+
 input=$(cat)
 
-if ! command -v jq >/dev/null 2>&1; then
-  printf '%s  %s%s%sstatusline: jq not found%s' \
+if ! command -v awk >/dev/null 2>&1; then
+  printf '%s  %s%s%sstatusline: awk not found%s' \
     "${GREEN}$(date +%H:%M)${RST}" \
     "${DIM}${PWD:-.}${RST}" \
     "$SEP" "$DIM" "$RST"
   exit 0
 fi
 
-eval "$(printf '%s' "$input" | jq -r '
-  @sh "cwd=\(.workspace.current_dir // "")",
-  @sh "model_display=\(.model.display_name // "")",
-  @sh "version=\(.version // "")",
-  @sh "effort=\(.effort.level // empty)",
-  @sh "window_size=\(.context_window.context_window_size // 200000)",
-  @sh "input_tokens=\(.context_window.current_usage.input_tokens // 0)",
-  @sh "cache_create=\(.context_window.current_usage.cache_creation_input_tokens // 0)",
-  @sh "cache_read=\(.context_window.current_usage.cache_read_input_tokens // 0)",
-  @sh "five_h=\(.rate_limits.five_hour.used_percentage // empty)",
-  @sh "five_reset=\(.rate_limits.five_hour.resets_at // empty)",
-  @sh "week_h=\(.rate_limits.seven_day.used_percentage // empty)",
-  @sh "week_reset=\(.rate_limits.seven_day.resets_at // empty)"
-')"
-# rate_limits·effort 필드는 구독 종류/모델 지원 여부에 따라 부재할 수 있어 미정의로 남을 수 있다.
-# 아래 참조 지점이 set -u 없이 동작하도록 빈 기본값을 보장한다.
-five_h="${five_h:-}" five_reset="${five_reset:-}" week_h="${week_h:-}" week_reset="${week_reset:-}"
-effort="${effort:-}"
+# jq @sh 의 `// default` 를 replicate: 먼저 기본값을 두고 파서 출력으로 덮어쓴다.
+cwd="" model_display="" version="" effort=""
+window_size=200000 input_tokens=0 cache_create=0 cache_read=0
+five_h="" five_reset="" week_h="" week_reset=""
+TAB=$(printf '\t')
+# 주의: 아래 필드는 모두 단일 줄 값(경로·모델명·숫자·타임스탬프)이고 strip_control 로
+# 제어문자를 제거하므로 while read(개행 단위)로 안전하다. 개행이 든 값은 가정하지 않는다.
+while IFS="$TAB" read -r _p _v; do
+  case "$_p" in
+    ..workspace.current_dir) cwd="$_v" ;;
+    ..model.display_name) model_display="$_v" ;;
+    ..version) version="$_v" ;;
+    ..effort.level) effort="$_v" ;;
+    ..context_window.context_window_size) window_size="$_v" ;;
+    ..context_window.current_usage.input_tokens) input_tokens="$_v" ;;
+    ..context_window.current_usage.cache_creation_input_tokens) cache_create="$_v" ;;
+    ..context_window.current_usage.cache_read_input_tokens) cache_read="$_v" ;;
+    ..rate_limits.five_hour.used_percentage) five_h="$_v" ;;
+    ..rate_limits.five_hour.resets_at) five_reset="$_v" ;;
+    ..rate_limits.seven_day.used_percentage) week_h="$_v" ;;
+    ..rate_limits.seven_day.resets_at) week_reset="$_v" ;;
+  esac
+done <<EOF
+$(printf '%s' "$input" | awk -f "$JSON_CMD")
+EOF
 
 # --- 유틸리티 ---
 
