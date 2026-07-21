@@ -67,6 +67,14 @@ dimlabel() {
   printf '%s%s%s' "$DIM" "$1" "$RST"
 }
 
+# 소수 문자열 값이 1 이상인지 판정한다(bc 대체). 비음수에서 v>=1 은 floor(v)>=1 과 같다.
+# 수정 시 검토 관점: 음수 입력은 가정하지 않는다(비용은 항상 0 이상).
+ge_one() {
+  _ip=${1%.*}
+  case "$_ip" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$_ip" -ge 1 ]
+}
+
 strip_control() {
   LC_ALL=C printf '%s' "$1" | tr -d '\000-\037\177'
 }
@@ -219,9 +227,9 @@ if [ -f "$cost_cache" ]; then
     weekly_seg="$(dimlabel 7d) \$${w_cost}"
     monthly_seg="$(dimlabel "${mdays}d") \$${m_cost}"
     parts=""
-    [ "$(printf '%s >= 1\n' "$opus" | bc 2>/dev/null || echo 0)" = "1" ] && parts="$(dimlabel Opus) \$$(printf '%.0f' "$opus")"
-    [ "$(printf '%s >= 1\n' "$sonnet" | bc 2>/dev/null || echo 0)" = "1" ] && { [ -n "$parts" ] && parts="$parts "; parts="${parts}$(dimlabel Sonnet) \$$(printf '%.0f' "$sonnet")"; }
-    [ "$(printf '%s >= 1\n' "$haiku" | bc 2>/dev/null || echo 0)" = "1" ] && { [ -n "$parts" ] && parts="$parts "; parts="${parts}$(dimlabel Haiku) \$$(printf '%.0f' "$haiku")"; }
+    ge_one "$opus"   && parts="$(dimlabel Opus) \$$(printf '%.0f' "$opus")"
+    ge_one "$sonnet" && { [ -n "$parts" ] && parts="$parts "; parts="${parts}$(dimlabel Sonnet) \$$(printf '%.0f' "$sonnet")"; }
+    ge_one "$haiku"  && { [ -n "$parts" ] && parts="$parts "; parts="${parts}$(dimlabel Haiku) \$$(printf '%.0f' "$haiku")"; }
     daily_seg="$(dimlabel 24h) ${parts:-\$0}"
   fi
 fi
