@@ -5,11 +5,13 @@
 # 폭 무관 단일 레이아웃(세로 스택) 출력을 검증한다.
 #
 # 레이아웃(위→아래, 값 없는 줄은 자연히 생략):
-#   줄1  시간 경로 ⧉세션ID
-#   줄2  claude이메일 브랜치 gh@계정 aws:세션
-#   줄3  v<버전> <모델> <effort 램프> | ctx <컨텍스트 막대> %
-#   줄4  5h   <막대> % ↺리셋 | 7d <막대> % ↺리셋
-#   줄5  cost 24h ... | 7d ... | <당월일수>d ...
+#   줄1  시간 경로 브랜치
+#   줄2  claude이메일 gh@계정 aws:세션
+#   줄3  <모델> <effort 램프> v<버전> ⧉세션ID
+#   줄4   ctx <컨텍스트 막대> %
+#   줄5   5h  <막대> % ↺리셋
+#   줄6   7d  <막대> % ↺리셋
+#   줄7  cost 24h ... / 7d ... / <당월일수>d ...
 set -eu
 
 SRC=$(cd "$(dirname "$0")/.." && pwd)
@@ -171,12 +173,12 @@ assert_no_match "T2 5h rate 세그먼트 부재" "5h +█" "$OUT"
 assert_no_match "T2 7d rate 세그먼트 부재" "7d +█" "$OUT"
 assert_contains "T2 24h 비용 라벨 유지" "24h" "$OUT"
 
-# --- T3: 비용이 새 형태로 나온다: 24h Opus $12 | 7d $605 | 30d $605 ---
+# --- T3: 비용이 새 형태로 나온다: 24h Opus $12 / 7d $605 / 30d $605 (흐린 슬래시 구분) ---
 OUT=$(run "$(json_with)" 200)
 assert_contains "T3 24h 접두" "24h Opus" "$OUT"
 assert_match    "T3 주간 비용 7d 라벨" '7d \$605' "$OUT"
 assert_match    "T3 당월 일수 라벨" "${MDAYS}"'d \$605' "$OUT"
-assert_match    "T3 비용: 24h·7d 파이프, 7d·당월은 공백 구분" '\$12 +\| +7d \$605 '"${MDAYS}"'d \$605' "$OUT"
+assert_match    "T3 비용: 24h/7d/당월 슬래시 구분" '\$12 +/ +7d \$605 +/ +'"${MDAYS}"'d \$605' "$OUT"
 
 # --- T3-nobc: bc 없는 환경에서도 비용 세그먼트 유지(정수부 비교로 독립) ---
 #    비용 세그먼트는 costv >= 1 판정이 필요하다. bc 가 없거나 실패해도 정수부 비교로 동작해야 한다.
@@ -195,27 +197,30 @@ A=$(run "$(json_with)" 200)
 B=$(run "$(json_with)" 55)
 assert_equals "T5 폭 200과 55 출력 동일" "$(mask_time "$A")" "$(mask_time "$B")"
 
-# --- T7: 단일 레이아웃 줄 구성 (rate 있음, 브랜치 없음) = 5줄 ---
-#    줄1 시간·경로 / 줄2 계정 / 줄3 model / 줄4 5h|7d / 줄5 cost.
-#    cwd=/tmp 는 브랜치가 없어 줄2에 계정만 남는다.
+# --- T7: 단일 세로 스택 줄 구성 (rate 있음, 브랜치·세션 없음) = 7줄 ---
+#    줄1 시간·경로 / 줄2 계정 / 줄3 모델 / 줄4 ctx / 줄5 5h / 줄6 7d / 줄7 cost.
+#    cwd=/tmp 는 브랜치가 없어 줄1은 시간·경로만, 줄2엔 계정만 남는다.
 OUT=$(run "$(json_with)" 200)
-assert_equals   "T7 총 5줄(시간·계정·model·rate·cost)" "5" "$(nlines "$OUT")"
-assert_match    "T7 ctx 라벨 줄(오른쪽)"  '\| ctx +█'  "$OUT"
+assert_equals   "T7 총 7줄(시간·계정·모델·ctx·5h·7d·cost)" "7" "$(nlines "$OUT")"
+assert_match    "T7 ctx 게이지 줄"  'ctx +█'  "$OUT"
 assert_match    "T7 5h rate 존재" "5h +█"    "$OUT"
 assert_match    "T7 7d rate 존재" "7d +█"    "$OUT"
 assert_contains "T7 cost 줄 존재" "cost " "$OUT"
 
-# --- T7-swap: 셋째 줄 좌우 교체 — 모델 그룹 왼쪽, ctx 오른쪽 ---
+# --- T7-model: 셋째 줄은 런 메타 — 모델·effort·버전(파이프·ctx 없음) ---
 OUT=$(run "$(json_with)" 200)
 LINE3=$(nth_line 3 "$OUT")
-assert_match "T7-swap 모델 그룹 왼쪽, ctx 오른쪽" '^v2\.1\.11 Opus 4\.8.*\| ctx' "$LINE3"
+assert_match        "T7-model 셋째 줄 모델·버전" '^Opus 4\.8 .*v2\.1\.11$' "$LINE3"
+assert_equals       "T7-model 셋째 줄 파이프 없음" "0" "$(count_char '|' "$LINE3")"
+assert_not_contains "T7-model 셋째 줄에 ctx 없음" "ctx" "$LINE3"
 
-# --- T8: 5h 와 7d 가 같은 한 줄에 파이프로 이어진다 ---
+# --- T8: 5h 와 7d 가 각자 다른 줄에 온다(세로 스택, 파이프 없음) ---
 OUT=$(run "$(json_with)" 200)
-RATE=$(printf '%s\n' "$OUT" | grep '5h')
-assert_contains "T8 rate 한 줄에 7d 도 포함" "7d" "$RATE"
-assert_match    "T8 rate 줄 5h|7d 파이프 구분" '5h +█.* \| +7d +█' "$OUT"
-assert_equals   "T8 rate 는 단 한 줄" "1" "$(printf '%s\n' "$OUT" | grep -c '5h .*█')"
+H5=$(printf '%s\n' "$OUT" | grep '5h .*█')
+assert_equals       "T8 5h 게이지 줄 1개" "1" "$(printf '%s\n' "$OUT" | grep -c '5h .*█')"
+assert_equals       "T8 7d 게이지 줄 1개" "1" "$(printf '%s\n' "$OUT" | grep -c '7d .*█')"
+assert_not_contains "T8 5h 줄에 7d 없음(각자 줄)" "7d" "$H5"
+assert_equals       "T8 5h 줄 파이프 없음" "0" "$(count_char '|' "$H5")"
 
 # --- T9: effort → 세로 램프 글리프 + 웜 게이지 색(low=초록 … max=빨강) ---
 #    높이(글리프)와 색이 함께 단계를 표현한다. rate 없는 json_eff 로 색 오염을 막고 색을 글리프에 직접 묶어 검증.
@@ -239,16 +244,17 @@ assert_equals   "T11 첫 줄 파이프 없음" "0" "$(count_char '|' "$FIRST")"
 assert_not_contains "T11 첫 줄에 gh 계정 없음" "gh@" "$FIRST"
 assert_contains "T11 둘째 줄에 gh 계정" "gh@personal" "$(nth_line 2 "$OUT")"
 
-# --- T12: 비용 줄은 24h·7d 사이만 파이프, 7d·당월 사이 파이프 제거 ---
+# --- T12: 비용 줄은 24h/7d/당월을 흐린 슬래시로 구분(파이프 없음) ---
 OUT=$(run "$(json_with)" 55)
 COSTLN=$(printf '%s\n' "$OUT" | grep 'cost ')
-assert_match  "T12 cost 24h·7d 파이프" '^ *cost +24h .*\$.* \| +7d' "$COSTLN"
-assert_equals "T12 cost 줄 파이프 정확히 1개" "1" "$(count_char '|' "$COSTLN")"
+assert_match  "T12 cost 24h/7d 슬래시" '^cost +24h .*\$.* +/ +7d' "$COSTLN"
+assert_equals "T12 cost 줄 파이프 없음" "0" "$(count_char '|' "$COSTLN")"
+assert_equals "T12 cost 줄 슬래시 정확히 2개" "2" "$(count_char '/' "$COSTLN")"
 
-# --- T13: rate 부재 시 rate 줄 통째 생략 (폭 무관, 시간·계정·ctx·cost 4줄) ---
+# --- T13: rate 부재 시 rate 줄(5h·7d) 통째 생략 (시간·계정·모델·ctx·cost 5줄) ---
 #    데이터가 없는 경우의 정당한 부재 단언(안전 게이트).
 OUT=$(run "$(json_without)" 55)
-assert_equals   "T13 rate 부재 시 4줄" "4" "$(nlines "$OUT")"
+assert_equals   "T13 rate 부재 시 5줄" "5" "$(nlines "$OUT")"
 assert_no_match "T13 5h rate 줄 없음" "5h +█" "$OUT"
 assert_no_match "T13 7d rate 줄 없음" "7d +█" "$OUT"
 assert_contains "T13 cost 줄은 유지" "cost " "$OUT"
@@ -280,16 +286,16 @@ assert_contains     "T17 90%면 빨간색 경고" "$RED" "$RAW"
 RAW=$(run_raw "$(json_pct 85 10)" 200)
 assert_not_contains "T17 85%면 빨강 없음(빨강 임계 미만)" "$RED" "$RAW"
 
-# --- T18: 브랜치가 있으면 둘째 줄로 내려가고 첫 줄엔 없다. 괄호 대신 브랜치 아이콘( )을 쓴다 ---
+# --- T18: 브랜치가 있으면 첫 줄(경로 옆)에 온다. 괄호 대신 브랜치 아이콘( ) 접두(사이 공백 없음) ---
 BRANCH_GLYPH=$(printf '\356\202\240')   #  U+E0A0 (Powerline git branch)
 if [ "$HAVE_GIT" = "1" ]; then
   OUT=$(run "$(json_branch)" 200)
   FIRST=$(first_line "$OUT")
   SECOND=$(nth_line 2 "$OUT")
-  assert_not_contains "T18 첫 줄에 브랜치명 없음" "wip" "$FIRST"
-  assert_contains  "T18 둘째 줄에 브랜치 아이콘+이름(사이 공백 없음)" "${BRANCH_GLYPH}wip" "$SECOND"
-  assert_contains  "T18 둘째 줄에 브랜치와 계정 공존" "gh@personal" "$SECOND"
-  assert_equals    "T18 둘째 줄(브랜치·계정)은 정렬·파이프 없음" "0" "$(count_char '|' "$SECOND")"
+  assert_contains     "T18 첫 줄에 브랜치 아이콘+이름(사이 공백 없음)" "${BRANCH_GLYPH}wip" "$FIRST"
+  assert_not_contains "T18 둘째 줄에 브랜치명 없음" "wip" "$SECOND"
+  assert_contains     "T18 둘째 줄에 계정" "gh@personal" "$SECOND"
+  assert_equals       "T18 첫 줄 파이프 없음" "0" "$(count_char '|' "$FIRST")"
 else
   printf 'SKIP T18 (git fixture 미생성)\n'
 fi
@@ -303,12 +309,12 @@ CORAL=$(printf '\033[38;5;173m')
 RAW=$(run_raw "$(json_without)" 200)
 assert_contains "T26 계정 이메일 coral(173) 색" "${CORAL}octocat@example.com" "$RAW"
 
-# --- T27: 세션 ID(전체 UUID)가 첫 줄 경로 뒤 ⧉ 뒤에 축약 없이 나온다 ---
+# --- T27: 세션 ID(전체 UUID)가 셋째 줄(런 메타)의 ⧉ 뒤에 축약 없이 나온다 ---
 #    브랜치 fixture 는 session_id 를 포함한다. 부재 fixture(json_without)에는 ⧉ 가 없다.
 if [ "$HAVE_GIT" = "1" ]; then
   OUT=$(run "$(json_branch)" 200)
-  assert_contains "T27 첫 줄에 세션 ID 마커+전체 UUID" "⧉ ${KNOWN_SESSION}" "$(first_line "$OUT")"
-  assert_not_contains "T27 둘째 줄엔 세션 ID 없음" "⧉" "$(nth_line 2 "$OUT")"
+  assert_contains "T27 셋째 줄에 세션 ID 마커+전체 UUID" "⧉ ${KNOWN_SESSION}" "$(nth_line 3 "$OUT")"
+  assert_not_contains "T27 첫 줄엔 세션 ID 없음" "⧉" "$(first_line "$OUT")"
 else
   printf 'SKIP T27 (git fixture 미생성)\n'
 fi
@@ -331,36 +337,29 @@ OUT=$(run "$(json_without)" 200)
 assert_contains "T25 비숫자 색코드도 라벨은 렌더(가드)" "gh@weird" "$(nth_line 2 "$OUT")"
 printf 'octocat' > "$TMPROOT/gh-prompt-user"   # 이후 테스트 위해 원복
 
-# --- T19: model·5h·cost 첫 파이프가 같은 열에 정렬된다 ---
-#    파이프 앞부분(패딩 포함)의 표시폭이 세 줄 모두 같아야 세로 정렬이 맞다.
-#    model 줄은 v로 시작, 5h와 cost는 라벨으로 시작.
+# --- T19: 게이지(ctx·5h·7d)와 cost 값이 같은 열에서 시작한다(라벨 폭4 우측정렬) ---
+#    라벨(ctx/5h/7d/cost)을 폭4에 우측정렬해 뒤따르는 값(막대·24h)이 세로로 한 열에 선다.
 OUT=$(run "$(json_with)" 200)
-MODELLN=$(printf '%s\n' "$OUT" | grep '^v')
+CTXLN=$(printf '%s\n' "$OUT" | grep ' ctx ')
 H5LN=$(printf '%s\n' "$OUT" | grep ' 5h ')
-COSTLN2=$(printf '%s\n' "$OUT" | grep 'cost ')
-pipe_col() { p="${1%%|*}"; printf '%s' "$p" | wc -m | tr -d ' '; }
-MC=$(pipe_col "$MODELLN"); HC=$(pipe_col "$H5LN"); OC=$(pipe_col "$COSTLN2")
-assert_equals "T19 model·5h 파이프 열 동일" "$HC" "$MC"
-assert_equals "T19 cost·5h 파이프 열 동일" "$HC" "$OC"
+D7LN=$(printf '%s\n' "$OUT" | grep ' 7d ')
+COSTLN3=$(printf '%s\n' "$OUT" | grep 'cost ')
+bar_col() { p="${1%%█*}"; printf '%s' "$p" | wc -m | tr -d ' '; }
+lbl_col() { p="${1%%24h*}"; printf '%s' "$p" | wc -m | tr -d ' '; }
+CC=$(bar_col "$CTXLN"); HC=$(bar_col "$H5LN"); DC=$(bar_col "$D7LN"); OC=$(lbl_col "$COSTLN3")
+assert_equals "T19 ctx·5h 막대 시작 열 동일" "$CC" "$HC"
+assert_equals "T19 ctx·7d 막대 시작 열 동일" "$CC" "$DC"
+assert_equals "T19 ctx 막대·cost 값 시작 열 동일" "$CC" "$OC"
 # 폭이 달라도 정렬은 유지된다(정렬은 세그먼트 내용 기반, COLUMNS 무관).
 OUTN=$(run "$(json_with)" 55)
 assert_equals "T19 폭 55에서도 정렬 동일" "$(mask_time "$OUT")" "$(mask_time "$OUTN")"
 
-# --- T28: 왼쪽 라벨 우측 정렬 — 버전은 flush(줄 시작), 5h·cost 는 앞 공백이 붙어 값 열이 정렬된다 ---
-#    version=2.1.11 이면 라벨 폭=7(=len("v2.1.11")). 5h·cost 가 그 폭에 우측 정렬돼 앞에 공백이 생긴다.
+# --- T28: 왼쪽 라벨 폭4 우측 정렬 — ctx/5h/7d 는 앞 공백, cost 는 flush(폭4 꽉) ---
 OUT=$(run "$(json_with)" 200)
-assert_match "T28 버전 라벨 flush(줄 시작)"  '^v2\.1\.11 Opus'  "$(printf '%s\n' "$OUT" | grep '^v')"
-assert_match "T28 5h 우측정렬(앞 공백)"      '^ +5h +█'         "$(printf '%s\n' "$OUT" | grep ' 5h ')"
-assert_match "T28 cost 우측정렬(앞 공백)"    '^ +cost +24h'     "$(printf '%s\n' "$OUT" | grep 'cost ')"
-
-# --- T29: 오른쪽 라벨(ctx·7d) 폭 3 우측 정렬 — ctx 막대와 7d 막대가 같은 열에서 시작한다 ---
-#    최초 지적("ctx랑 7d 간격 안 맞네")의 회귀 가드. 파이프 오른쪽만 떼어 라벨+막대 시작 위치를 본다.
-#    ctx(3자)와 7d(우측정렬로 앞 공백 1칸=3자) 모두 폭 3이라 뒤따르는 막대가 같은 열에서 시작한다.
-OUT=$(run "$(json_with)" 200)
-R3=$(printf '%s\n' "$OUT" | grep '| ctx' | sed 's/.*| //')
-R4=$(printf '%s\n' "$OUT" | grep -E '\| +7d +█' | sed 's/.*| //')
-assert_match "T29 ctx 라벨 뒤 막대(폭3)"        '^ctx █' "$R3"
-assert_match "T29 7d 라벨 우측정렬(앞 공백1) 뒤 막대" '^ 7d █' "$R4"
+assert_match "T28 ctx 우측정렬(앞 공백1)"  '^ ctx █'   "$(printf '%s\n' "$OUT" | grep ' ctx ')"
+assert_match "T28 5h 우측정렬(앞 공백2)"   '^  5h █'    "$(printf '%s\n' "$OUT" | grep ' 5h ')"
+assert_match "T28 7d 우측정렬(앞 공백2)"   '^  7d █'    "$(printf '%s\n' "$OUT" | grep ' 7d ')"
+assert_match "T28 cost flush(줄 시작)"     '^cost 24h'  "$(printf '%s\n' "$OUT" | grep 'cost ')"
 
 # --- T20: 요소별 색 — 모델명 시안, 파이프·라벨 등 dim 유지 ---
 RAW=$(run_raw "$(json_with)" 200)
@@ -382,13 +381,13 @@ assert_equals "T21 5% 경계 넘는 24%·27% 막대 구분됨" "diff" "$([ "$A" 
 OUT=$(run "$(json_pct 0 100)" 200)
 assert_match "T22 0% 5h 막대 빈칸 20개" '5h +░░░░░░░░░░░░░░░░░░░░' "$OUT"
 assert_match "T22 100% 7d 막대 20칸 꽉" '7d ████████████████████' "$OUT"
-# 5h 없이 7d 만 있으면 7d 를 왼쪽으로 승격하고 5h 라벨은 나타나지 않는다.
+# 5h 없이 7d 만 있으면 7d 는 자기 줄에 그대로 나오고 5h 줄은 생략된다(세로 스택).
 json_7d_only() {
   printf '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":40000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.1.11","rate_limits":{"seven_day":{"used_percentage":41,"resets_at":%s}}}' "$WEEK_RESET"
 }
 OUT=$(run "$(json_7d_only)" 200)
-assert_match    "T22 rate승격: 7d 막대 존재" '7d +█' "$OUT"
-assert_no_match "T22 rate승격: 5h 라벨 없음" '5h' "$OUT"
+assert_match    "T22 7d 게이지 줄 존재" '7d +█' "$OUT"
+assert_no_match "T22 5h 라벨 없음(데이터 부재)" '5h' "$OUT"
 
 # --- T23: ctx 막대 임계 색 — 40%+ 노랑, 70%+ 빨강, 미만은 색 없음(dim) ---
 #    ctx 줄만 추출해 판정한다. json_ctx 는 rate 가 없어 노랑/빨강 소스가 ctx 막대뿐이다.
@@ -429,6 +428,16 @@ assert_equals "T6 루트 HOME 하위 절대경로 유지" "/child" "$OUT"
 
 OUT=$(HOME=//// sh "$TMPROOT/scripts/shorten.sh" --plain path /child)
 assert_equals "T6 정규화된 루트 HOME 절대경로 유지" "/child" "$OUT"
+
+# --- T30: git 저장소 판정은 basename 이 아니라 전체 경로로 한다(동명 비저장소 오탐 방지) ---
+#    실제 저장소 foo(.git 있음) 아래에 .git 없는 동명 디렉터리 foo 를 두고, 안쪽 foo 가
+#    저장소로 오인돼 파랗게 표시되지 않는지 검증한다. worktree 컨테이너가 저장소명과 겹치는
+#    실제 상황의 회귀 가드다.
+COLLIDE="$TMPROOT/collide"
+mkdir -p "$COLLIDE/foo/sub/foo/bar"
+mkdir -p "$COLLIDE/foo/.git"   # 바깥 foo 만 저장소
+OUT=$(HOME="$TMPROOT" sh "$TMPROOT/scripts/shorten.sh" --plain path "$COLLIDE/foo/sub/foo/bar")
+assert_equals "T30 동명 비저장소 오탐 없음(전체 경로 매칭)" "~/↪1/foo/↪2/bar" "$OUT"
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

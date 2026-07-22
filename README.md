@@ -7,34 +7,37 @@ session id, context-window usage, rate limits, reasoning effort, and cost — al
 in a single fixed layout.
 
 ```
-17:14 ~/↪1/webapp/↪1/src ⧉ 3f9c1a20-7b4e-4d61-9a02-1c8e5f6b7d90
-dev@example.com feature/PROJ-123-post-editor gh@personal aws:✓
-v2.8.0 Opus 4.8 ▃                      | ctx █████████████░░░░░░░ 68%
-    5h █████████░░░░░░░░░░░ 47% ↺2h30m |  7d ████████████████░░░░ 83% ↺3d16h
-  cost 24h Opus $12 Sonnet $3          |  7d $42 31d $186
+17:14 ~/↪1/webapp/↪1/src  feature/PROJ-123-post-editor
+dev@example.com gh@personal aws:✓
+Opus 4.8 ▃ v2.8.0 ⧉ 3f9c1a20-7b4e-4d61-9a02-1c8e5f6b7d90
+ ctx █████████████░░░░░░░ 68%
+  5h █████████░░░░░░░░░░░ 47% ↺2h30m
+  7d ████████████████░░░░ 83% ↺3d16h
+cost 24h Opus $12 Sonnet $3 / 7d $42 / 31d $186
 ```
 
 The statusline renders as one vertical stack regardless of terminal width. Lines
-with no data are dropped entirely.
+with no data are dropped entirely. The stack groups its rows by meaning:
+location, then identity, then run metadata, then the usage gauges, then cost.
 
-- **Line 1** — time (`HH:MM`), the current path, and the Claude Code session id
-  (`⧉ <uuid>`, shown in full so it can be copied for cross-session reference).
-  The path collapses `$HOME` to `~`, keeps git-repo names and the current folder,
-  and marks skipped segments as `↪N` (N = folders omitted).
-- **Line 2** — the logged-in Claude account email, the git branch (prefixed with
-  the ` ` branch icon, no space before the name), `gh@<account>`, and
-  `aws:<session>`. Each appears only when it has a value. The branch icon and
-  session marker need a Nerd Font to render; without one they show as `□`.
-- **Line 3 (ctx)** — the Claude Code version, model name, and reasoning-effort
-  indicator, then, right of the `|`, the context-window usage bar and `%`.
-- **Line 4 (rate)** — the 5-hour (`5h`) and 7-day (`7d`) usage-limit bars, each
-  with `%` and time-until-reset (`↺`), joined on one line by `|`.
-- **Line 5 (cost)** — today's per-model cost (`24h`), then, right of the `|`,
-  rolling 7-day and current-month totals.
-- The `ctx`, `5h`, and `cost` lines auto-align so their `|` columns line up.
-  Within each column the leading labels are right-aligned — `v<version>`/`5h`/`cost`
-  on the left, `ctx`/`7d` on the right — so the values (model, bars, amounts)
-  start in one column and the bars line up vertically.
+- **Line 1 (location)** — time (`HH:MM`), the current path, and the git branch
+  (prefixed with the ` ` branch icon, no space before the name). The path
+  collapses `$HOME` to `~`, keeps git-repo names and the current folder, and marks
+  skipped segments as `↪N` (N = folders omitted).
+- **Line 2 (identity)** — the logged-in Claude account email, `gh@<account>`, and
+  `aws:<session>`. Each appears only when it has a value.
+- **Line 3 (run)** — the model name and reasoning-effort indicator, then the
+  Claude Code version and the session id (`⧉ <uuid>`, shown in full so it can be
+  copied for cross-session reference). The branch icon and session marker need a
+  Nerd Font to render; without one they show as `□`.
+- **Lines 4–6 (ctx / 5h / 7d)** — the context-window usage bar and the 5-hour and
+  7-day usage-limit bars, each on its own line so their fills compare at a glance.
+  The rate bars also carry `%` and time-until-reset (`↺`). A rate line is dropped
+  when its data is absent.
+- **Line 7 (cost)** — today's per-model cost (`24h`), the rolling 7-day total, and
+  the current-month total, separated by dim slashes.
+- The `ctx`, `5h`, `7d`, and `cost` labels are right-aligned to one width, so the
+  bars and amounts all start in the same column and the gauges line up vertically.
 
 ## Bars
 
