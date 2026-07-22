@@ -9,16 +9,16 @@ in a single fixed layout.
 ```
 17:14 ~/↪1/webapp/↪1/src  feature/PROJ-123-post-editor
 dev@example.com gh@personal aws:✓
-Opus 4.8 ▃ v2.8.0 ⧉ 3f9c1a20-7b4e-4d61-9a02-1c8e5f6b7d90
- ctx █████████████░░░░░░░ 68%
+ ctx █████████████░░░░░░░ 68% Opus 4.8 ▃
   5h █████████░░░░░░░░░░░ 47% ↺2h30m
-  7d ████████████████░░░░ 83% ↺3d16h
+  7d ██████████▓▓▓▓▓▓░░░░ 83% ↺3d16h
 cost 24h Opus $12 Sonnet $3 / 7d $42 / 31d $186
+v2.8.0 ⧉ 3f9c1a20-7b4e-4d61-9a02-1c8e5f6b7d90
 ```
 
 The statusline renders as one vertical stack regardless of terminal width. Lines
 with no data are dropped entirely. The stack groups its rows by meaning:
-location, then identity, then run metadata, then the usage gauges, then cost.
+location, then identity, then the usage gauges, then cost, then a dim footer.
 
 - **Line 1 (location)** — time (`HH:MM`), the current path, and the git branch
   (prefixed with the ` ` branch icon, no space before the name). The path
@@ -26,26 +26,36 @@ location, then identity, then run metadata, then the usage gauges, then cost.
   skipped segments as `↪N` (N = folders omitted).
 - **Line 2 (identity)** — the logged-in Claude account email, `gh@<account>`, and
   `aws:<session>`. Each appears only when it has a value.
-- **Line 3 (run)** — the model name and reasoning-effort indicator, then the
-  Claude Code version and the session id (`⧉ <uuid>`, shown in full so it can be
-  copied for cross-session reference). The branch icon and session marker need a
-  Nerd Font to render; without one they show as `□`.
-- **Lines 4–6 (ctx / 5h / 7d)** — the context-window usage bar and the 5-hour and
+- **Lines 3–5 (ctx / 5h / 7d)** — the context-window usage bar and the 5-hour and
   7-day usage-limit bars, each on its own line so their fills compare at a glance.
-  The rate bars also carry `%` and time-until-reset (`↺`). A rate line is dropped
-  when its data is absent.
-- **Line 7 (cost)** — today's per-model cost (`24h`), the rolling 7-day total, and
+  The `ctx` line carries the model name and reasoning-effort indicator after its
+  `%`, since the context window belongs to that model. The rate bars carry `%` and
+  time-until-reset (`↺`). A rate line is dropped when its data is absent.
+- **Line 6 (cost)** — today's per-model cost (`24h`), the rolling 7-day total, and
   the current-month total, separated by dim slashes.
+- **Line 7 (footer)** — the Claude Code version and the session id (`⧉ <uuid>`,
+  shown in full so it can be copied for cross-session reference). The branch icon
+  and session marker need a Nerd Font to render; without one they show as `□`.
 - The `ctx`, `5h`, `7d`, and `cost` labels are right-aligned to one width, so the
   bars and amounts all start in the same column and the gauges line up vertically.
 
 ## Bars
 
-Bars are 20 cells (one cell = 5%, floored); `█` is filled, `░` is empty. The
-context bar and the rate bars share one coloring scheme: fill, empty track, and
-`%` all follow a single color, bright by default, escalating to yellow then red
-past a threshold. Thresholds are **40% / 70%** for the context bar (it warns
-earlier) and **80% / 90%** for the rate bars.
+Bars are 20 cells (one cell = 5%, floored); `█` is filled, `░` is empty. Fill,
+empty track, and `%` follow a single color, bright by default, escalating to
+yellow then red past a threshold. Thresholds are **40% / 70%** for the context
+bar (it warns earlier) and **80% / 90%** for the rate bars.
+
+### Pace overlay (rate bars)
+
+The `5h` and `7d` bars also show a time-based pace budget. Over each window
+(5 hours / 7 days) an even pace would use one cell per equal slice of time — for
+`5h`, one cell every 15 minutes. Any filled cells **beyond** the elapsed-time
+budget (i.e. usage running ahead of the clock) are drawn as `▓` instead of `█`:
+yellow when slightly ahead, red when ahead by three cells or more. When usage is
+within the time budget there is no overlay. This answers "is it fine to keep
+using this much right now?" at a glance — the `▓` band is the amount you are
+ahead of an even burn.
 
 ## Reasoning effort
 
