@@ -67,15 +67,6 @@ EOF
 
 # --- 유틸리티 ---
 
-# 색 코드를 제거한 표시 폭(문자 수). 정렬 대상 세그먼트엔 2칸 이모지가 없어 wc -m 이 정확하다.
-# 수정 시 검토 관점: 정렬(maxlen·align_line)은 wc -m 이 표시 칸 수와 일치한다는 전제 위에 선다.
-# 막대 글리프(█ ░)와 ↺ 는 UTF-8 로캘에서 각 1칸으로 세지만, C/POSIX 로캘이면 바이트로 세어
-# 막대가 있는 줄(ctx·5h)과 없는 줄(cost)의 폭이 서로 달리 부풀어 파이프 열이 어긋난다. 이 도구는
-# 사용자의 UTF-8 터미널에서 실행되므로 성립한다. 비 UTF-8 환경으로 옮기면 이 전제부터 재검토한다.
-vis_width() {
-  printf '%s' "$1" | sed 's/\x1b\[[0-9;]*m//g' | wc -m | tr -d ' '
-}
-
 # 라벨(구조 안내)을 dim 으로 감싸는 단일 헬퍼. "라벨은 dim, 값은 기본 밝기" 규칙의 진실 소스다.
 # 수정 시 검토 관점: 라벨 색을 바꾸려면 이 함수 하나만 고친다. 조립부에서 인라인 ${DIM}...${RST}
 # 로 라벨을 다시 감싸지 말고 이 함수를 쓴다(규칙이 여러 곳으로 흩어지면 서로 어긋난다).
@@ -237,7 +228,7 @@ CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline"
 cost_cache="$CACHE_DIR/cost-cache.env"
 mdays=$(date -v1d -v+1m -v-1d +%d 2>/dev/null || date -d "$(date +%Y-%m-01) +1 month -1 day" +%d 2>/dev/null || echo 30)
 # 라벨(24h/7d/당월/모델명)은 dim(dimlabel), 금액($..)은 기본 밝기로 색을 나눈다.
-daily_seg="$(dimlabel 24h) \$--" weekly_seg="$(dimlabel "$(ralign 7d 3)") \$--" monthly_seg="$(dimlabel "${mdays}d") \$--"
+daily_seg="$(dimlabel 24h) \$--" weekly_seg="$(dimlabel 7d) \$--" monthly_seg="$(dimlabel "${mdays}d") \$--"
 
 cost_available=false opus=0 sonnet=0 haiku=0 w_cost=0 m_cost=0
 if [ -f "$cost_cache" ]; then
@@ -255,7 +246,7 @@ if [ -f "$cost_cache" ]; then
 fi
 
 if [ "$cost_available" = "true" ]; then
-  weekly_seg="$(dimlabel "$(ralign 7d 3)") \$${w_cost}"
+  weekly_seg="$(dimlabel 7d) \$${w_cost}"
   monthly_seg="$(dimlabel "${mdays}d") \$${m_cost}"
   parts=""
   ge_one "$opus"   && parts="$(dimlabel Opus) \$$(printf '%.0f' "$opus")"
@@ -381,92 +372,53 @@ ${ln}"
 
 # --- 세그먼트 조립 (폭 무관 단일 세로 스택) ---
 
-# 줄1: 시간 경로 ⧉세션ID. 세션 ID 는 복사해 다른 세션이 참조할 수 있도록 축약 없이 전체 UUID 를
-# dim 으로 경로 뒤에 붙인다(부재면 빠짐). 브랜치·계정은 다음 줄로 내린다.
+# 줄1: 시간 경로 브랜치. 브랜치는 코드상 위치라 경로와 같은 줄에 둔다. 괄호 대신 아이콘( )을
+# 이름 바로 앞에 붙인다(사이 공백 없음). 브랜치가 없으면 시간·경로만 남는다.
 time_seg="${GREEN}$(date +%H:%M)${RST}"
 path_seg=$(shorten_path "$cwd")
-seg_session=""
-[ -n "$session_id" ] && seg_session="${GREY240}${SESSION_GLYPH} ${session_id}${RST}"
 line_loc="${time_seg} ${path_seg}"
-[ -n "$seg_session" ] && line_loc="${line_loc} ${seg_session}"
+[ -n "$branch" ] && line_loc="${line_loc} ${MAGENTA}${BRANCH_GLYPH}$(shorten_branch "$branch")${RST}"
 
-# 줄2: Claude계정 · 브랜치 · gh계정 · aws세션. 값 없는 항목은 자연히 빠지고 남은 항목만 공백으로
-# 잇는다. 브랜치는 괄호 대신 아이콘( )을 이름 바로 앞에 붙인다(사이 공백 없음).
-branch_part=""
-[ -n "$branch" ] && branch_part="${MAGENTA}${BRANCH_GLYPH}$(shorten_branch "$branch")${RST}"
+# 줄2: Claude계정 gh계정 aws세션. 계정·인증만 모은다. 값 없는 항목은 자연히 빠지고 남은 항목만
+# 공백으로 잇는다. 수정 시 검토 관점: 조립 순서를 바꾸려면 이 append_meta 호출 순서만 바꾼다.
 seg_cc=$(format_cc_account)
 seg_gh=$(format_gh)
 seg_aws=$(format_aws)
-
-# 항목을 순서대로 공백으로 잇는다(빈 항목은 건너뛴다). 수정 시 검토 관점: 조립 순서를 바꾸려면
-# 이 append_meta 호출 순서만 바꾼다. 인라인으로 다시 흩뿌리지 말 것(규칙이 어긋난다).
 line_meta=""
 append_meta() {
   [ -n "$1" ] || return 0
   if [ -n "$line_meta" ]; then line_meta="${line_meta} $1"; else line_meta="$1"; fi
 }
 append_meta "$seg_cc"
-append_meta "$branch_part"
 append_meta "$seg_gh"
 append_meta "$seg_aws"
 
-# 라벨 우측 정렬 폭. 왼쪽 열 라벨(v<버전>·5h·cost)은 버전 라벨을 기준으로 같은 폭에 우측 정렬해
-# 값(모델명·막대·비용)이 한 열에서 시작하도록 맞춘다. 오른쪽 열 라벨(ctx·7d)은 폭 3에 우측 정렬한다.
-# 수정 시 검토 관점: 왼쪽 폭은 버전 문자열 길이에 따라 달라진다(최소 4). 이 폭을 아래 세 왼쪽 라벨
-# 호출이 공유해야 값 열이 맞는다 — 한 곳만 바꾸면 정렬이 조용히 어긋난다.
-lw=${#version}
-lw=$((lw + 1))                  # "v" 접두 포함
-[ "$lw" -lt 4 ] && lw=4         # cost(4)·5h(2) 최소 폭 보장
-rw=3                            # 오른쪽 열: ctx(3)·7d(2) 최대
-
-# 모델 그룹: 버전(dim, 우측정렬) 모델명(시안) effort 램프. 버전은 현재 표시 정보라 보존한다.
+# 줄3(런 메타): 모델 effort v버전 ⧉세션ID. 이 실행을 규정하는 상수값을 한 줄에 모은다. 밝은
+# 모델명(시안)이 게이지 클러스터를 여는 머리가 되고, 버전·세션 ID 는 흐림으로 뒤에 붙는다.
+# 수정 시 검토 관점: 세션 ID 는 다른 세션이 참조하도록 복사하는 값이라 축약하지 않고 전체 UUID 를
+# 그대로 둔다. 값 없는 항목(effort·버전·세션)은 각각 자연히 빠진다.
 model_str=$(format_model "$model_display")
 effort_ind=$(format_effort "$effort")
-model_group="$(dimlabel "$(ralign "v${version}" "$lw")") ${CYAN}${model_str}${RST}"
-[ -n "$effort_ind" ] && model_group="${model_group} ${effort_ind}"
-context_bar=$(format_context_bar)
+line_model="${CYAN}${model_str}${RST}"
+[ -n "$effort_ind" ] && line_model="${line_model} ${effort_ind}"
+[ -n "$version" ] && line_model="${line_model} $(dimlabel "v${version}")"
+[ -n "$session_id" ] && line_model="${line_model} ${GREY240}${SESSION_GLYPH} ${session_id}${RST}"
 
-# --- 정렬 대상 세 줄(model·5h·cost)을 (왼쪽 | 오른쪽) 페어로 만든다 ---
-# 줄3(model): v<버전> <모델> <effort 램프> | ctx <막대> %
-row3_l="$model_group"
-row3_r="$(dimlabel "$(ralign ctx "$rw")") ${context_bar}"
+# 게이지 3종(ctx·5h·7d)은 각자 한 줄로 세로로 쌓아 채움 정도를 한눈에 비교하게 한다. 라벨
+# (ctx·5h·7d)과 cost 를 같은 폭 GW 에 우측 정렬해 뒤따르는 값(막대·금액)이 같은 열에서 시작한다.
+# 수정 시 검토 관점: 네 라벨(ctx·5h·7d·cost)이 같은 GW 를 공유해야 값 열이 세로로 맞는다 — 한 곳만
+# 바꾸면 오류 없이 정렬만 조용히 어긋난다. rate 는 데이터가 없으면 format_rate 가 빈 문자열을
+# 돌려주고 emit 이 그 줄을 생략하므로, 5h·7d 는 각각 독립적으로 빠질 수 있다.
+GW=4
+line_ctx="$(dimlabel "$(ralign ctx "$GW")") $(format_context_bar)"
+line_5h=$(format_rate "$(ralign 5h "$GW")" "$five_h" "$five_reset")
+line_7d=$(format_rate "$(ralign 7d "$GW")" "$week_h" "$week_reset")
 
-# 줄4(rate): 5h <막대> % ↺ | 7d <막대> % ↺. 라벨을 우측 정렬해 model·cost 값 열과 맞춘다.
-# 수정 시 검토 관점: 5h·7d 는 한 줄에 | 로 묶는다. 5h 부재 시 7d 를 왼쪽으로 올려 손실을 막는다.
-rate_l=$(format_rate "$(ralign 5h "$lw")" "$five_h" "$five_reset")
-rate_r=$(format_rate "$(ralign 7d "$rw")" "$week_h" "$week_reset")
-[ -z "$rate_l" ] && { rate_l="$rate_r"; rate_r=""; }
-
-# 줄5(cost): cost 24h ... | 7d ... <당월일수>d ...  (7d·당월 사이는 파이프 없이 공백)
-cost_l="$(dimlabel "$(ralign cost "$lw")") ${daily_seg}"
-cost_r="${weekly_seg} ${monthly_seg}"
-
-# 파이프 왼쪽 세그먼트들(row3_l·rate_l·cost_l)의 최대 표시폭을 구해 정렬 목표폭으로 쓴다.
-# 수정 시 검토 관점: 정렬 대상 집합은 이 maxlen 루프와 아래 align_line 호출부 두 곳이 같아야 한다.
-# 정렬 줄을 추가·제거하면 양쪽을 함께 고친다 — 한쪽만 고치면 오류 없이 파이프 열만 조용히 어긋난다.
-maxlen=0
-for seg in "$row3_l" "$rate_l" "$cost_l"; do
-  [ -n "$seg" ] || continue
-  wv=$(vis_width "$seg")
-  [ "$wv" -gt "$maxlen" ] && maxlen="$wv"
-done
-
-# 왼쪽을 목표폭(width)으로 우측 패딩한 뒤 SEP 로 오른쪽을 잇는다. 오른쪽이 없으면 왼쪽만, 왼쪽이
-# 없으면 생략. width 는 전역 대신 인자로 받아 maxlen 계산과의 시간적 결합을 드러낸다.
-align_line() {
-  local left="$1" right="$2" width="$3"
-  [ -n "$left" ] || return 0
-  if [ -n "$right" ]; then
-    printf '%s%*s%s%s' "$left" "$(( width - $(vis_width "$left") ))" '' "$SEP" "$right"
-  else
-    printf '%s' "$left"
-  fi
-}
-line_ctx=$(align_line "$row3_l" "$row3_r" "$maxlen")
-line_rate=$(align_line "$rate_l" "$rate_r" "$maxlen")
-line_cost=$(align_line "$cost_l" "$cost_r" "$maxlen")
+# 줄7(cost): cost 24h ... / 7d ... / <당월일수>d ...  (그룹 구분은 흐린 슬래시, 좌우 공백 한 칸)
+SLASH=" ${DIM}/${RST} "
+line_cost="$(dimlabel "$(ralign cost "$GW")") ${daily_seg}${SLASH}${weekly_seg}${SLASH}${monthly_seg}"
 
 # --- 출력: 값 없는 줄은 emit 이 생략한다. 단일 줄이 폭을 넘으면 터미널 소프트랩에 맡긴다. ---
-output=$(emit "$line_loc" "$line_meta" "$line_ctx" "$line_rate" "$line_cost")
+output=$(emit "$line_loc" "$line_meta" "$line_model" "$line_ctx" "$line_5h" "$line_7d" "$line_cost")
 
 printf '%s' "$output"

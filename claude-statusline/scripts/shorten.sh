@@ -75,11 +75,14 @@ shorten_path() {
     /*) starts_with_slash=true; display_path="${display_path#/}" ;;
   esac
 
-  # 3. Collect git repo names (colon-delimited for O(1) lookup)
+  # 3. Collect git repo paths (colon-delimited full paths for O(1) lookup).
+  #    Match by full path, not basename: a non-repo directory that merely shares a repo's
+  #    name (e.g. a `.worktrees/<repo>` container next to the real `<repo>`) must not be
+  #    mistaken for a repo. Basename matching flagged such collisions as false positives.
   local git_repos=":" check_path="$full_path"
   while [ "$check_path" != "/" ] && [ "$check_path" != "${home:-/}" ]; do
     if [ -d "$check_path/.git" ] || [ -f "$check_path/.git" ]; then
-      git_repos="${git_repos}$(basename "$check_path"):"
+      git_repos="${git_repos}${check_path}:"
     fi
     check_path=$(dirname "$check_path")
   done
@@ -107,13 +110,23 @@ shorten_path() {
 
   # 6. Single-pass assembly
   local joined="" prev_shown=0 first_seg=true
-  local i=1 p="" is_repo show
+  local i=1 p="" is_repo show acc=""
   while [ "$i" -le "$total" ]; do
     eval "p=\${$i}"
 
-    # Check if this is a git repo
+    # Rebuild this segment's absolute path so git-repo membership is tested by full path
+    # (see step 3). Segment 1 anchors on HOME (~), a leading slash, or a relative root.
+    if [ "$i" -eq 1 ]; then
+      if $is_home_path; then acc="$home"
+      elif $starts_with_slash; then acc="/$p"
+      else acc="$p"; fi
+    else
+      acc="${acc%/}/$p"
+    fi
+
+    # Check if this is a git repo (full-path match)
     is_repo=false
-    case "$git_repos" in *":$p:"*) is_repo=true ;; esac
+    case "$git_repos" in *":$acc:"*) is_repo=true ;; esac
 
     # Determine visibility
     show=false
