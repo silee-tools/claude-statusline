@@ -7,11 +7,11 @@
 # 레이아웃(위→아래, 값 없는 줄은 자연히 생략):
 #   줄1  시간 경로 브랜치
 #   줄2  claude이메일 gh@계정 aws:세션
-#   줄3  <모델> <effort 램프> v<버전> ⧉세션ID
-#   줄4   ctx <컨텍스트 막대> %
-#   줄5   5h  <막대> % ↺리셋
-#   줄6   7d  <막대> % ↺리셋
-#   줄7  cost 24h ... / 7d ... / <당월일수>d ...
+#   줄3   ctx <컨텍스트 막대> % <모델> <effort 램프>
+#   줄4   5h  <막대> % ↺리셋   (초과분은 ▓ 로 강조)
+#   줄5   7d  <막대> % ↺리셋   (초과분은 ▓ 로 강조)
+#   줄6  cost 24h ... / 7d ... / <당월일수>d ...
+#   줄7  v<버전> ⧉세션ID
 set -eu
 
 SRC=$(cd "$(dirname "$0")/.." && pwd)
@@ -116,6 +116,11 @@ json_no_effort() {
 json_pct() {
   printf '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":40000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.1.11","rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":%s},"seven_day":{"used_percentage":%s,"resets_at":%s}}}' "$1" "$FIVE_RESET" "$2" "$WEEK_RESET"
 }
+# resets_at 없는 변형: 페이스(예산) 오버레이가 없어 순수 막대·절대 소진율 색만 검증할 때 쓴다.
+# (resets_at 이 있으면 초과분 ▓ 강조가 얹혀 정확한 막대 문자열·색 임계 단언이 흔들린다.)
+json_pct_nr() {
+  printf '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":40000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.1.11","rate_limits":{"five_hour":{"used_percentage":%s},"seven_day":{"used_percentage":%s}}}' "$1" "$2"
+}
 # 브랜치 fixture repo 를 cwd 로 주는 변형 (브랜치 위치·세션 ID 검증용). session_id 를 포함한다.
 json_branch() {
   printf '{"session_id":"%s","workspace":{"current_dir":"%s"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":40000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.1.11","effort":{"level":"high"},"rate_limits":{"five_hour":{"used_percentage":24,"resets_at":%s},"seven_day":{"used_percentage":41,"resets_at":%s}}}' "$KNOWN_SESSION" "$GITREPO" "$FIVE_RESET" "$WEEK_RESET"
@@ -198,21 +203,21 @@ B=$(run "$(json_with)" 55)
 assert_equals "T5 폭 200과 55 출력 동일" "$(mask_time "$A")" "$(mask_time "$B")"
 
 # --- T7: 단일 세로 스택 줄 구성 (rate 있음, 브랜치·세션 없음) = 7줄 ---
-#    줄1 시간·경로 / 줄2 계정 / 줄3 모델 / 줄4 ctx / 줄5 5h / 줄6 7d / 줄7 cost.
+#    줄1 시간·경로 / 줄2 계정 / 줄3 ctx+모델 / 줄4 5h / 줄5 7d / 줄6 cost / 줄7 푸터(버전).
 #    cwd=/tmp 는 브랜치가 없어 줄1은 시간·경로만, 줄2엔 계정만 남는다.
 OUT=$(run "$(json_with)" 200)
-assert_equals   "T7 총 7줄(시간·계정·모델·ctx·5h·7d·cost)" "7" "$(nlines "$OUT")"
+assert_equals   "T7 총 7줄(시간·계정·ctx·5h·7d·cost·푸터)" "7" "$(nlines "$OUT")"
 assert_match    "T7 ctx 게이지 줄"  'ctx +█'  "$OUT"
 assert_match    "T7 5h rate 존재" "5h +█"    "$OUT"
 assert_match    "T7 7d rate 존재" "7d +█"    "$OUT"
 assert_contains "T7 cost 줄 존재" "cost " "$OUT"
 
-# --- T7-model: 셋째 줄은 런 메타 — 모델·effort·버전(파이프·ctx 없음) ---
+# --- T7-model: 모델·effort 는 ctx 줄 % 뒤에, 버전은 맨 아래 푸터 줄에 온다 ---
 OUT=$(run "$(json_with)" 200)
-LINE3=$(nth_line 3 "$OUT")
-assert_match        "T7-model 셋째 줄 모델·버전" '^Opus 4\.8 .*v2\.1\.11$' "$LINE3"
-assert_equals       "T7-model 셋째 줄 파이프 없음" "0" "$(count_char '|' "$LINE3")"
-assert_not_contains "T7-model 셋째 줄에 ctx 없음" "ctx" "$LINE3"
+CTXLN=$(printf '%s\n' "$OUT" | grep ' ctx ')
+FOOT=$(printf '%s\n' "$OUT" | tail -1)
+assert_match "T7-model ctx 줄 % 뒤 모델명" 'ctx .*% Opus 4\.8' "$CTXLN"
+assert_match "T7-model 푸터 줄 버전" '^v2\.1\.11' "$FOOT"
 
 # --- T8: 5h 와 7d 가 각자 다른 줄에 온다(세로 스택, 파이프 없음) ---
 OUT=$(run "$(json_with)" 200)
@@ -251,7 +256,7 @@ assert_match  "T12 cost 24h/7d 슬래시" '^cost +24h .*\$.* +/ +7d' "$COSTLN"
 assert_equals "T12 cost 줄 파이프 없음" "0" "$(count_char '|' "$COSTLN")"
 assert_equals "T12 cost 줄 슬래시 정확히 2개" "2" "$(count_char '/' "$COSTLN")"
 
-# --- T13: rate 부재 시 rate 줄(5h·7d) 통째 생략 (시간·계정·모델·ctx·cost 5줄) ---
+# --- T13: rate 부재 시 rate 줄(5h·7d) 통째 생략 (시간·계정·ctx+모델·cost·푸터 5줄) ---
 #    데이터가 없는 경우의 정당한 부재 단언(안전 게이트).
 OUT=$(run "$(json_without)" 55)
 assert_equals   "T13 rate 부재 시 5줄" "5" "$(nlines "$OUT")"
@@ -274,16 +279,17 @@ else
   ok "T16 옛 화살표 글리프 제거"
 fi
 
-# --- T17: rate limit 색 임계 — 노랑 80%, 빨강 90% ---
-#    다른 색 소스(aws:⏳ 노랑, aws:expired 빨강)는 이 환경에 없으므로 YELLOW/RED 존재가 rate 색을 가린다.
+# --- T17: 절대 소진율 색 임계 — 노랑 80%, 빨강 90% (페이스 오버레이 없는 fixture 로 격리) ---
+#    다른 색 소스(aws:⏳ 노랑, aws:expired 빨강)는 이 환경에 없으므로 YELLOW/RED 존재가 절대색을 가린다.
+#    json_pct_nr 로 reset 을 빼 초과분 ▓ 강조가 색 판정에 섞이지 않게 한다.
 YELLOW=$(printf '\033[33m')
-RAW=$(run_raw "$(json_pct 80 10)" 200)
+RAW=$(run_raw "$(json_pct_nr 80 10)" 200)
 assert_contains     "T17 80%면 노란색 경고" "$YELLOW" "$RAW"
-RAW=$(run_raw "$(json_pct 75 10)" 200)
+RAW=$(run_raw "$(json_pct_nr 75 10)" 200)
 assert_not_contains "T17 75%면 노란색 없음(노랑 임계 미만)" "$YELLOW" "$RAW"
-RAW=$(run_raw "$(json_pct 90 10)" 200)
+RAW=$(run_raw "$(json_pct_nr 90 10)" 200)
 assert_contains     "T17 90%면 빨간색 경고" "$RED" "$RAW"
-RAW=$(run_raw "$(json_pct 85 10)" 200)
+RAW=$(run_raw "$(json_pct_nr 85 10)" 200)
 assert_not_contains "T17 85%면 빨강 없음(빨강 임계 미만)" "$RED" "$RAW"
 
 # --- T18: 브랜치가 있으면 첫 줄(경로 옆)에 온다. 괄호 대신 브랜치 아이콘( ) 접두(사이 공백 없음) ---
@@ -309,11 +315,11 @@ CORAL=$(printf '\033[38;5;173m')
 RAW=$(run_raw "$(json_without)" 200)
 assert_contains "T26 계정 이메일 coral(173) 색" "${CORAL}octocat@example.com" "$RAW"
 
-# --- T27: 세션 ID(전체 UUID)가 셋째 줄(런 메타)의 ⧉ 뒤에 축약 없이 나온다 ---
+# --- T27: 세션 ID(전체 UUID)가 맨 아래 푸터 줄의 ⧉ 뒤에 축약 없이 나온다 ---
 #    브랜치 fixture 는 session_id 를 포함한다. 부재 fixture(json_without)에는 ⧉ 가 없다.
 if [ "$HAVE_GIT" = "1" ]; then
   OUT=$(run "$(json_branch)" 200)
-  assert_contains "T27 셋째 줄에 세션 ID 마커+전체 UUID" "⧉ ${KNOWN_SESSION}" "$(nth_line 3 "$OUT")"
+  assert_contains "T27 푸터 줄에 세션 ID 마커+전체 UUID" "⧉ ${KNOWN_SESSION}" "$(printf '%s\n' "$OUT" | tail -1)"
   assert_not_contains "T27 첫 줄엔 세션 ID 없음" "⧉" "$(first_line "$OUT")"
 else
   printf 'SKIP T27 (git fixture 미생성)\n'
@@ -378,7 +384,8 @@ assert_equals "T21 5% 경계 넘는 24%·27% 막대 구분됨" "diff" "$([ "$A" 
 
 # --- T22: 막대 경계값(0%/100%)과 rate 승격 경로 커버리지 ---
 #    render_bar 내림: 0%→채움 0칸, 100%→20칸 꽉. 회귀(round/ceil 로 바뀜)를 잡는다.
-OUT=$(run "$(json_pct 0 100)" 200)
+# reset 없는 fixture 로 페이스 초과분 ▓ 강조 없이 순수 render_bar 경계값을 본다.
+OUT=$(run "$(json_pct_nr 0 100)" 200)
 assert_match "T22 0% 5h 막대 빈칸 20개" '5h +░░░░░░░░░░░░░░░░░░░░' "$OUT"
 assert_match "T22 100% 7d 막대 20칸 꽉" '7d ████████████████████' "$OUT"
 # 5h 없이 7d 만 있으면 7d 는 자기 줄에 그대로 나오고 5h 줄은 생략된다(세로 스택).
@@ -438,6 +445,18 @@ mkdir -p "$COLLIDE/foo/sub/foo/bar"
 mkdir -p "$COLLIDE/foo/.git"   # 바깥 foo 만 저장소
 OUT=$(HOME="$TMPROOT" sh "$TMPROOT/scripts/shorten.sh" --plain path "$COLLIDE/foo/sub/foo/bar")
 assert_equals "T30 동명 비저장소 오탐 없음(전체 경로 매칭)" "~/↪1/foo/↪2/bar" "$OUT"
+
+# --- T31: rate 막대 페이스(예산) 초과분 강조 — 시간 대비 빨리 쓴 채움 칸을 ▓ 로 표시 ---
+#    FIVE_RESET=now+9000, 5h(18000s) 윈도우 → 경과 9000s → 예산 10칸. 5h fill 이 10칸을 넘으면
+#    초과분이 ▓ 로 뜨고, 넘지 않으면 표시되지 않는다. 초과 폭이 크면(≥3칸) 빨강, 작으면 노랑.
+OUT=$(run "$(json_pct 70 10)" 200)                 # 5h fill14 > 예산10 → 초과 4칸
+assert_contains     "T31 초과분 ▓ 표시" "▓" "$(printf '%s\n' "$OUT" | grep '5h')"
+OUT=$(run "$(json_pct 40 10)" 200)                 # 5h fill8 < 예산10 → 초과 없음
+assert_not_contains "T31 여유면 ▓ 없음" "▓" "$(printf '%s\n' "$OUT" | grep '5h')"
+RAW=$(run_raw "$(json_pct 70 10)" 200 | grep '5h')  # 초과 4칸(≥3) → 빨강 ▓
+assert_contains     "T31 큰 초과분 빨강 ▓" "${RED}▓" "$RAW"
+RAW=$(run_raw "$(json_pct 55 10)" 200 | grep '5h')  # fill11, 초과 1칸(<3) → 노랑 ▓
+assert_contains     "T31 작은 초과분 노랑 ▓" "${YELLOW}▓" "$RAW"
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

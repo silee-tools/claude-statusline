@@ -150,13 +150,17 @@ format_effort() {
 # 수정 시 검토 관점: 채움은 내림이라 100% 전에는 20칸이 다 차지 않는다(예 99%→19칸). 인접
 # 5% 구간을 구분하려면 내림을 유지한다(반올림은 25% 경계 양쪽 값을 같은 칸으로 묶는다).
 render_bar() {
-  local pct="$1" fc="${2:-}" ec="${3:-}"
+  local pct="$1" fc="${2:-}" ec="${3:-}" budget="${4:-}" oc="${5:-}"
   [ "$pct" -gt 100 ] && pct=100
   [ "$pct" -lt 0 ] && pct=0
   local filled=$(( pct * 20 / 100 ))  # 내림한 채움 칸 수(0~20)
   local bar="" i=0
   while [ "$i" -lt 20 ]; do
-    if [ "$i" -lt "$filled" ]; then bar="${bar}${fc}█${RST}"
+    if [ "$i" -lt "$filled" ]; then
+      # budget(페이스 예산 칸)을 넘어선 채움은 초과분이므로 ▓(oc 색)으로 강조한다.
+      if [ -n "$budget" ] && [ "$i" -ge "$budget" ]; then bar="${bar}${oc}▓${RST}"
+      else bar="${bar}${fc}█${RST}"
+      fi
     else bar="${bar}${ec}░${RST}"
     fi
     i=$((i + 1))
@@ -201,10 +205,15 @@ format_reset() {
 
 # rate limit 세그먼트를 만든다. 소진율이 비어 있으면(구독 없음/응답 전) 빈 문자열.
 # label 은 컬럼 정렬용 라벨(dim). 막대·% 는 평상시 기본 밝기, 한도가 임박하면 노랑→빨강으로
-# 승격해 경고한다(임계 상수는 아래 분기 참조). 리셋(↺)은 dim.
-# 수정 시 검토 관점: 정보 무손실 원칙상 리셋(↺)은 항상 켠다. 폭 압박에도 떼지 않는다.
+# 승격해 경고한다(절대 소진율 80/90 임계). 리셋(↺)은 dim.
+# window(윈도우 초: 5h=18000, 7d=604800)가 주어지면 경과 시간 비례 예산(budget) 칸을 계산해,
+# 그 칸을 넘어선 채움(시간보다 빨리 쓴 초과분)을 render_bar 가 ▓ 로 강조한다. 초과 폭이 작으면
+# 노랑, 크면(3칸 이상) 빨강. 여유(채움 ≤ 예산)면 초과분이 없어 표시되지 않는다.
+# 수정 시 검토 관점: 정보 무손실 원칙상 리셋(↺)은 항상 켠다. 폭 압박에도 떼지 않는다. 절대 소진율
+# 색(vc)과 페이스 초과색(oc)은 별개 신호다 — vc 는 "한도에 얼마나 가까운가", oc 는 "시간 대비
+# 얼마나 빨리 쓰는가". 둘을 한 색으로 합치지 않는다.
 format_rate() {
-  local label="$1" pct_raw="$2" reset="$3"
+  local label="$1" pct_raw="$2" reset="$3" window="${4:-}"
   [ -z "$pct_raw" ] && return 0
   local pct="${pct_raw%.*}"
   [ -z "$pct" ] && pct=0
@@ -212,11 +221,24 @@ format_rate() {
   if [ "$pct" -ge 90 ]; then vc="$RED"
   elif [ "$pct" -ge 80 ]; then vc="$YELLOW"
   fi
+  local budget="" oc=""
+  if [ -n "$reset" ] && [ -n "$window" ] && [ "$window" -gt 0 ]; then
+    local now diff elapsed fill over
+    now=$(date +%s); diff=$((reset - now)); [ "$diff" -lt 0 ] && diff=0
+    elapsed=$((window - diff)); [ "$elapsed" -lt 0 ] && elapsed=0
+    budget=$(( (elapsed * 20 + window / 2) / window ))  # 반올림한 예산 칸(0~20)
+    [ "$budget" -gt 20 ] && budget=20
+    fill=$(( pct * 20 / 100 ))
+    over=$(( fill - budget ))
+    if [ "$over" -ge 3 ]; then oc="$RED"
+    else oc="$YELLOW"
+    fi
+  fi
   local reset_str=""
   [ -n "$reset" ] && reset_str=" ${DIM}$(format_reset "$reset")${RST}"
   printf '%s %s %s%d%%%s%s' \
     "$(dimlabel "$label")" \
-    "$(render_bar "$pct" "$vc" "$vc")" \
+    "$(render_bar "$pct" "$vc" "$vc" "$budget" "$oc")" \
     "$vc" "$pct" "$RST" \
     "$reset_str"
 }
@@ -393,32 +415,33 @@ append_meta "$seg_cc"
 append_meta "$seg_gh"
 append_meta "$seg_aws"
 
-# 줄3(런 메타): 모델 effort v버전 ⧉세션ID. 이 실행을 규정하는 상수값을 한 줄에 모은다. 밝은
-# 모델명(시안)이 게이지 클러스터를 여는 머리가 되고, 버전·세션 ID 는 흐림으로 뒤에 붙는다.
-# 수정 시 검토 관점: 세션 ID 는 다른 세션이 참조하도록 복사하는 값이라 축약하지 않고 전체 UUID 를
-# 그대로 둔다. 값 없는 항목(effort·버전·세션)은 각각 자연히 빠진다.
-model_str=$(format_model "$model_display")
-effort_ind=$(format_effort "$effort")
-line_model="${CYAN}${model_str}${RST}"
-[ -n "$effort_ind" ] && line_model="${line_model} ${effort_ind}"
-[ -n "$version" ] && line_model="${line_model} $(dimlabel "v${version}")"
-[ -n "$session_id" ] && line_model="${line_model} ${GREY240}${SESSION_GLYPH} ${session_id}${RST}"
-
 # 게이지 3종(ctx·5h·7d)은 각자 한 줄로 세로로 쌓아 채움 정도를 한눈에 비교하게 한다. 라벨
 # (ctx·5h·7d)과 cost 를 같은 폭 GW 에 우측 정렬해 뒤따르는 값(막대·금액)이 같은 열에서 시작한다.
+# ctx 는 곧 그 모델의 컨텍스트 창이므로 모델명(시안)과 effort 램프를 ctx 줄의 % 뒤에 붙인다.
 # 수정 시 검토 관점: 네 라벨(ctx·5h·7d·cost)이 같은 GW 를 공유해야 값 열이 세로로 맞는다 — 한 곳만
 # 바꾸면 오류 없이 정렬만 조용히 어긋난다. rate 는 데이터가 없으면 format_rate 가 빈 문자열을
 # 돌려주고 emit 이 그 줄을 생략하므로, 5h·7d 는 각각 독립적으로 빠질 수 있다.
 GW=4
+model_str=$(format_model "$model_display")
+effort_ind=$(format_effort "$effort")
 line_ctx="$(dimlabel "$(ralign ctx "$GW")") $(format_context_bar)"
-line_5h=$(format_rate "$(ralign 5h "$GW")" "$five_h" "$five_reset")
-line_7d=$(format_rate "$(ralign 7d "$GW")" "$week_h" "$week_reset")
+[ -n "$model_str" ] && line_ctx="${line_ctx} ${CYAN}${model_str}${RST}"
+[ -n "$effort_ind" ] && line_ctx="${line_ctx} ${effort_ind}"
+line_5h=$(format_rate "$(ralign 5h "$GW")" "$five_h" "$five_reset" 18000)
+line_7d=$(format_rate "$(ralign 7d "$GW")" "$week_h" "$week_reset" 604800)
 
-# 줄7(cost): cost 24h ... / 7d ... / <당월일수>d ...  (그룹 구분은 흐린 슬래시, 좌우 공백 한 칸)
+# 줄6(cost): cost 24h ... / 7d ... / <당월일수>d ...  (그룹 구분은 흐린 슬래시, 좌우 공백 한 칸)
 SLASH=" ${DIM}/${RST} "
 line_cost="$(dimlabel "$(ralign cost "$GW")") ${daily_seg}${SLASH}${weekly_seg}${SLASH}${monthly_seg}"
 
+# 줄7(푸터): v버전 ⧉세션ID. 실행을 규정하는 저관심 상수값을 맨 아래 흐린 푸터로 내린다.
+# 수정 시 검토 관점: 세션 ID 는 다른 세션이 참조하도록 복사하는 값이라 축약하지 않고 전체 UUID 를
+# 그대로 둔다. 버전·세션이 모두 없으면 emit 이 이 줄을 생략한다.
+line_foot=""
+[ -n "$version" ] && line_foot="$(dimlabel "v${version}")"
+[ -n "$session_id" ] && { [ -n "$line_foot" ] && line_foot="${line_foot} "; line_foot="${line_foot}${GREY240}${SESSION_GLYPH} ${session_id}${RST}"; }
+
 # --- 출력: 값 없는 줄은 emit 이 생략한다. 단일 줄이 폭을 넘으면 터미널 소프트랩에 맡긴다. ---
-output=$(emit "$line_loc" "$line_meta" "$line_model" "$line_ctx" "$line_5h" "$line_7d" "$line_cost")
+output=$(emit "$line_loc" "$line_meta" "$line_ctx" "$line_5h" "$line_7d" "$line_cost" "$line_foot")
 
 printf '%s' "$output"
