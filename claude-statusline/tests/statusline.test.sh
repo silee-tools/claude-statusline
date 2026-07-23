@@ -449,6 +449,12 @@ mkdir -p "$COLLIDE/foo/.git"   # 바깥 foo 만 저장소
 OUT=$(HOME="$TMPROOT" sh "$TMPROOT/scripts/shorten.sh" --plain path "$COLLIDE/foo/sub/foo/bar")
 assert_equals "T30 동명 비저장소 오탐 없음(전체 경로 매칭)" "~/↪1/foo/↪2/bar" "$OUT"
 
+# --- T32: 슬래시 없는 세그먼트에서 상위탐색이 무한 루프에 빠지지 않는다 ---
+#   dirname 을 ${var%/*} 로 바꾸면 슬래시 없는 문자열이 안 줄어 무한 루프가 될 수 있다.
+#   상대경로(선행 슬래시 없음)로 호출해 정상 종료와 출력 존재를 확인한다.
+OUT=$(HOME=/nonexistent-home sh "$TMPROOT/scripts/shorten.sh" --plain path "aaa/bbb/ccc/ddd/eee")
+assert_contains "T32 슬래시 없는 선행 세그먼트 정상 종료" "eee" "$OUT"
+
 # --- T31: rate 막대 페이스(예산) 초과분 강조 — 시간 대비 빨리 쓴 채움 칸을 ▓ 로 표시 ---
 #    FIVE_RESET=now+9000, 5h(18000s) 윈도우 → 경과 9000s → 예산 10칸. 5h fill 이 10칸을 넘으면
 #    초과분이 ▓ 로 뜨고, 넘지 않으면 표시되지 않는다. 초과 폭이 크면(≥3칸) 빨강, 작으면 노랑.
