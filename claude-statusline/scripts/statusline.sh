@@ -131,17 +131,20 @@ format_model() {
   fi
 }
 
-# effort(추론 강도) → 세로 램프 글리프(▁▂▃▅▇) + 웜 게이지 색(초록→빨강). 미지원/부재면 빈 문자열.
-# 높이와 색이 함께 단계를 표현한다: low=초록·낮음 → max=빨강·높음. ctx·rate 막대(█ ░)와 글리프가
-# 겹치지 않아 회귀 테스트가 램프 글리프로 effort 를 특정할 수 있다.
+# effort(추론 강도) → Claude Code 세션 헤더와 같은 원형 글리프(low ○ / medium ◐ / high ● /
+# xhigh ◉ / max ◈ / ultracode ✦) + 웜 게이지 색(초록→빨강, ultracode 는 마젠타). 미지원·부재면 빈 문자열.
+# 모양과 색이 함께 단계를 표현한다: low=빈 원·초록 → max=채운 마름모·빨강, ultracode 는 별·마젠타.
+# 수정 시 검토 관점: 이 글리프들은 ctx·rate 막대 문자(█ ░ ▓)와 겹치지 않아야 회귀 테스트가
+# 글리프로 effort 를 특정할 수 있다. 막대 문자와 겹치는 글리프를 새로 넣지 않는다.
 format_effort() {
   case "$1" in
-    low)    printf '%s▁%s' "$GREEN" "$RST" ;;
-    medium) printf '%s▂%s' "$LIME" "$RST" ;;
-    high)   printf '%s▃%s' "$YELLOW" "$RST" ;;
-    xhigh)  printf '%s▅%s' "$AMBER214" "$RST" ;;
-    max)    printf '%s▇%s' "$RED" "$RST" ;;
-    *)      ;;
+    low)       printf '%s○%s' "$GREEN" "$RST" ;;
+    medium)    printf '%s◐%s' "$LIME" "$RST" ;;
+    high)      printf '%s●%s' "$YELLOW" "$RST" ;;
+    xhigh)     printf '%s◉%s' "$AMBER214" "$RST" ;;
+    max)       printf '%s◈%s' "$RED" "$RST" ;;
+    ultracode) printf '%s✦%s' "$MAGENTA" "$RST" ;;
+    *)         ;;
   esac
 }
 
@@ -417,7 +420,7 @@ append_meta "$seg_aws"
 
 # 게이지 3종(ctx·5h·7d)은 각자 한 줄로 세로로 쌓아 채움 정도를 한눈에 비교하게 한다. 라벨
 # (ctx·5h·7d)과 cost 를 같은 폭 GW 에 우측 정렬해 뒤따르는 값(막대·금액)이 같은 열에서 시작한다.
-# ctx 는 곧 그 모델의 컨텍스트 창이므로 모델명(시안)과 effort 램프를 ctx 줄의 % 뒤에 붙인다.
+# ctx 는 곧 그 모델의 컨텍스트 창이므로 모델명(시안)과 effort 글리프를 ctx 줄의 % 뒤에 붙인다.
 # 수정 시 검토 관점: 네 라벨(ctx·5h·7d·cost)이 같은 GW 를 공유해야 값 열이 세로로 맞는다 — 한 곳만
 # 바꾸면 오류 없이 정렬만 조용히 어긋난다. rate 는 데이터가 없으면 format_rate 가 빈 문자열을
 # 돌려주고 emit 이 그 줄을 생략하므로, 5h·7d 는 각각 독립적으로 빠질 수 있다.

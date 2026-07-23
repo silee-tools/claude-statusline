@@ -59,9 +59,10 @@ ahead of an even burn.
 
 ## Reasoning effort
 
-Effort is shown as a vertical ramp glyph plus a warm-gauge color:
-`low ▁` (green) · `medium ▂` (lime) · `high ▃` (yellow) · `xhigh ▅` (orange) ·
-`max ▇` (red). It is omitted when no effort information is available.
+Effort is shown with the same circle glyphs Claude Code uses in its session
+header, plus a warm-gauge color: `low ○` (green) · `medium ◐` (lime) ·
+`high ●` (yellow) · `xhigh ◉` (orange) · `max ◈` (red) · `ultracode ✦`
+(magenta). It is omitted when no effort information is available.
 
 ## Install
 
