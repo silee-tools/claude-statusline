@@ -120,10 +120,9 @@ format_model() {
   if [ -n "$name" ] && [ -n "$ver" ]; then
     printf '%s %s' "$name" "$ver"
   else
-    # 폴백: "Claude " 접두와 후행 " (...)" 를 떼어 원문을 최대한 보존한다.
-    d="${d#Claude }"
-    d="${d%% (*}"
-    printf '%s' "$d"
+    # 폴백(인식 안 되는 이름): 원본과 바이트 동일해야 하므로 sed 를 그대로 쓴다. 이 분기는
+    # 실제 Claude 모델명이 타지 않는 드문 경로라 성능에 영향이 없다. 메인 경로는 sed 가 없다.
+    printf '%s' "$d" | sed 's/Claude //; s/ *(.*//'
   fi
 }
 
