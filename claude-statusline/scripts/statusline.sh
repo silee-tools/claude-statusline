@@ -365,12 +365,73 @@ format_aws() {
   fi
 }
 
-# --- git branch ---
+# --- git branch (캐시) ---
+# git 을 진실의 원천으로 유지한다. 캐시 미스에서만 git 을 한 번 불러 브랜치와 HEAD 파일
+# 경로를 얻고, 이후 렌더는 저장된 HEAD 파일 첫 줄을 내장 read 로 읽어(프로세스 없음) 토큰과
+# 비교해 변경 여부를 판정한다. 내용 비교라 같은 초에 일어난 브랜치 전환도 잡는다.
+# 수정 시 검토 관점: 무효화는 HEAD 파일 mtime 이 아니라 첫 줄 내용으로 한다(mtime 은 test -nt
+# 의 1초 granularity 때문에 같은 초 전환을 놓친다). HEAD 경로는 서브디렉토리에서 cwd 상대
+# 경로로 나올 수 있어 cwd 기준 절대경로로 저장한다.
 branch=""
 if [ -n "$cwd" ] && [ -d "$cwd" ]; then
-  branch=$(git -C "$cwd" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-  branch=$(strip_control "$branch")
-  [ "$branch" = "HEAD" ] && branch=""
+  _gbc="$CACHE_DIR/git-branch.env"
+  _c_cwd="" _c_head="" _c_token="" _c_branch=""
+  if [ -f "$_gbc" ]; then
+    while IFS='=' read -r _k _v; do
+      case "$_k" in
+        cwd) _c_cwd="$_v" ;;
+        head) _c_head="$_v" ;;
+        token) _c_token="$_v" ;;
+        branch) _c_branch="$_v" ;;
+      esac
+    done < "$_gbc"
+  fi
+
+  _hit=0
+  if [ "$_c_cwd" = "$cwd" ] && [ -n "$_c_head" ] && [ -f "$_c_head" ]; then
+    _cur=""
+    IFS= read -r _cur < "$_c_head" 2>/dev/null || _cur=""
+    if [ "$_cur" = "$_c_token" ]; then
+      branch="$_c_branch"
+      _hit=1
+    fi
+  fi
+
+  if [ "$_hit" -eq 0 ]; then
+    # 미스: git 한 번 호출로 HEAD 경로와 브랜치를 함께 얻는다(출력 두 줄).
+    _gp=$(git -C "$cwd" --no-optional-locks rev-parse --git-path HEAD --abbrev-ref HEAD 2>/dev/null || true)
+    _head_rel="" _br=""
+    { IFS= read -r _head_rel || true; IFS= read -r _br || true; } <<GITOUT
+$_gp
+GITOUT
+    _br=$(strip_control "$_br")
+    [ "$_br" = "HEAD" ] && _br=""
+    branch="$_br"
+
+    # HEAD 경로 정규화: 절대경로면 그대로, 상대경로면 cwd 기준으로 붙인다(.. 는 커널이 해석).
+    _head_abs=""
+    case "$_head_rel" in
+      /*) _head_abs="$_head_rel" ;;
+      "") _head_abs="" ;;
+      *)  _head_abs="$cwd/$_head_rel" ;;
+    esac
+
+    # 토큰: HEAD 파일 첫 줄. 저장소가 아니거나 파일이 없으면 캐시를 쓰지 않는다.
+    if [ -n "$_head_abs" ] && [ -f "$_head_abs" ]; then
+      _tok=""
+      IFS= read -r _tok < "$_head_abs" 2>/dev/null || _tok=""
+      mkdir -p "$CACHE_DIR"
+      {
+        printf 'cwd=%s\n' "$cwd"
+        printf 'head=%s\n' "$_head_abs"
+        printf 'token=%s\n' "$_tok"
+        printf 'branch=%s\n' "$branch"
+      } > "$_gbc"
+    else
+      # 저장소가 아니면(브랜치 없음) 캐시를 지워 다음 렌더가 다시 판정하게 둔다.
+      rm -f "$_gbc" 2>/dev/null || true
+    fi
+  fi
 fi
 
 # 비어 있지 않은 줄만 개행으로 이어 출력한다(끝에 개행 없음).
