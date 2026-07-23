@@ -22,11 +22,14 @@ SEP="${DIM} | ${RST}"
 BRANCH_GLYPH=$(printf '\356\202\240')
 SESSION_GLYPH=$(printf '\342\247\211')
 
-# --- 축약 스크립트 ---
-SHORTEN_CMD="$PLUGIN_ROOT/scripts/shorten.sh"
-
 # --- stdin JSON (한번에 파싱) ---
 JSON_CMD="$PLUGIN_ROOT/scripts/json.awk"
+
+# --- 축약 함수(in-process) ---
+# shorten-lib.sh 는 색 변수 C_RESET·C_DIM·C_BLUE 를 참조한다(ansi 모드 값). 여기서 매핑해
+# 정의한 뒤 소스하면 statusline 이 서브프로세스 없이 shorten_path·shorten_branch 를 직접 쓴다.
+C_RESET="$RST" C_DIM="$DIM" C_BLUE=$(printf '\033[34m')
+. "$PLUGIN_ROOT/scripts/shorten-lib.sh"
 
 input=$(cat)
 
@@ -88,32 +91,10 @@ ge_one() {
   [ "$_ip" -ge 1 ]
 }
 
-strip_control() {
-  LC_ALL=C printf '%s' "$1" | tr -d '\000-\037\177'
-}
-
 cwd=$(strip_control "$cwd")
 model_display=$(strip_control "$model_display")
 version=$(strip_control "$version")
 session_id=$(strip_control "$session_id")
-
-shorten_path() {
-  if [ -x "$SHORTEN_CMD" ]; then
-    "$SHORTEN_CMD" --ansi path "$1"
-  else
-    printf '%s not executable, using fallback\n' "$SHORTEN_CMD" >&2
-    printf '%s%s%s' "$DIM" "$1" "$RST"
-  fi
-}
-
-shorten_branch() {
-  if [ -x "$SHORTEN_CMD" ]; then
-    "$SHORTEN_CMD" --ansi branch "$1"
-  else
-    printf '%s not executable, using fallback\n' "$SHORTEN_CMD" >&2
-    printf '%s' "$1"
-  fi
-}
 
 format_model() {
   local d="$1" name="" ver=""
