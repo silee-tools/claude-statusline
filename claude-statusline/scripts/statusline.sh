@@ -33,6 +33,11 @@ C_RESET="$RST" C_DIM="$DIM" C_BLUE=$(printf '\033[34m')
 
 input=$(cat)
 
+# 현재 시각을 한 번만 얻어 리셋·rate·aws·시간 세그먼트가 공유한다(date fork 축소).
+_now=$(date '+%s %H:%M')
+NOW_EPOCH="${_now%% *}"
+NOW_CLOCK="${_now#* }"
+
 if ! command -v awk >/dev/null 2>&1; then
   printf '%s  %s%s%sstatusline: awk not found%s' \
     "${GREEN}$(date +%H:%M)${RST}" \
@@ -171,9 +176,8 @@ format_context_bar() {
 
 # 리셋까지 남은 시간을 분 단위까지 표기한다: ↺2d3h / ↺1h23m / ↺48m
 format_reset() {
-  local target="$1" now diff d h m
-  now=$(date +%s)
-  diff=$((target - now))
+  local target="$1" diff d h m
+  diff=$((target - NOW_EPOCH))
   [ "$diff" -lt 0 ] && diff=0
   if [ "$diff" -ge 86400 ]; then
     d=$((diff / 86400)); h=$(((diff % 86400) / 3600))
@@ -207,8 +211,8 @@ format_rate() {
   fi
   local budget="" oc=""
   if [ -n "$reset" ] && [ -n "$window" ] && [ "$window" -gt 0 ]; then
-    local now diff elapsed fill over
-    now=$(date +%s); diff=$((reset - now)); [ "$diff" -lt 0 ] && diff=0
+    local diff elapsed fill over
+    diff=$((reset - NOW_EPOCH)); [ "$diff" -lt 0 ] && diff=0
     elapsed=$((window - diff)); [ "$elapsed" -lt 0 ] && elapsed=0
     budget=$(( (elapsed * 20 + window / 2) / window ))  # 반올림한 예산 칸(0~20)
     [ "$budget" -gt 20 ] && budget=20
@@ -330,13 +334,12 @@ format_aws() {
   fi
   [ -z "$exp" ] && { printf '%saws:?%s' "$DIM" "$RST"; return 0; }
 
-  local now exp_epoch remaining
-  now=$(date +%s)
+  local exp_epoch remaining
   local exp_norm
   exp_norm=$(printf '%s' "$exp" | sed 's/\([+-][0-9][0-9]\):\([0-9][0-9]\)$/\1\2/')
   exp_epoch=$(date -jf "%Y-%m-%dT%H:%M:%S%z" "$exp_norm" +%s 2>/dev/null || \
               date -d "$exp" +%s 2>/dev/null || echo 0)
-  remaining=$(( (exp_epoch - now) / 60 ))
+  remaining=$(( (exp_epoch - NOW_EPOCH) / 60 ))
 
   if [ "$remaining" -gt 10 ]; then
     printf '%saws:✓%s' "$GREEN" "$RST"
@@ -380,7 +383,7 @@ ${ln}"
 
 # 줄1: 시간 경로 브랜치. 브랜치는 코드상 위치라 경로와 같은 줄에 둔다. 괄호 대신 아이콘( )을
 # 이름 바로 앞에 붙인다(사이 공백 없음). 브랜치가 없으면 시간·경로만 남는다.
-time_seg="${GREEN}$(date +%H:%M)${RST}"
+time_seg="${GREEN}${NOW_CLOCK}${RST}"
 path_seg=$(shorten_path "$cwd")
 line_loc="${time_seg} ${path_seg}"
 [ -n "$branch" ] && line_loc="${line_loc} ${MAGENTA}${BRANCH_GLYPH}$(shorten_branch "$branch")${RST}"
