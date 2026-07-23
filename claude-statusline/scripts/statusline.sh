@@ -102,18 +102,28 @@ version=$(strip_control "$version")
 session_id=$(strip_control "$session_id")
 
 format_model() {
-  local d="$1" name="" ver=""
-  ver=$(printf '%s' "$d" | sed -n 's/.*\([0-9][0-9]*\.[0-9][0-9]*\)[[:space:]]*\(Opus\|Sonnet\|Haiku\).*/\1/p')
-  if [ -n "$ver" ]; then
-    name=$(printf '%s' "$d" | sed -n 's/.*[0-9][0-9]*\.[0-9][0-9]*[[:space:]]*\(Opus\|Sonnet\|Haiku\).*/\1/p')
-  else
-    name=$(printf '%s' "$d" | sed -n 's/.*\(Opus\|Sonnet\|Haiku\)[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')
-    ver=$(printf '%s' "$d" | sed -n 's/.*\(Opus\|Sonnet\|Haiku\)[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\2/p')
-  fi
+  local d="$1" name="" ver="" w
+  # 공백으로 토큰을 나눠 이름(Opus/Sonnet/Haiku)과 버전(N.N)을 찾는다. sed 없이 fork 0.
+  local old_ifs="$IFS"
+  IFS=' '
+  set -f
+  # shellcheck disable=SC2086
+  set -- $d
+  set +f
+  IFS="$old_ifs"
+  for w in "$@"; do
+    case "$w" in
+      Opus|Sonnet|Haiku) name="$w" ;;
+      [0-9]*.[0-9]*) case "$w" in *[!0-9.]*) ;; *) ver="$w" ;; esac ;;
+    esac
+  done
   if [ -n "$name" ] && [ -n "$ver" ]; then
     printf '%s %s' "$name" "$ver"
   else
-    printf '%s' "$d" | sed 's/Claude //; s/ *(.*//'
+    # 폴백: "Claude " 접두와 후행 " (...)" 를 떼어 원문을 최대한 보존한다.
+    d="${d#Claude }"
+    d="${d%% (*}"
+    printf '%s' "$d"
   fi
 }
 
