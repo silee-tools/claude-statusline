@@ -56,7 +56,12 @@ shorten_path() {
     if [ -d "$check_path/.git" ] || [ -f "$check_path/.git" ]; then
       git_repos="${git_repos}${check_path}:"
     fi
-    check_path=$(dirname "$check_path")
+    # dirname 대체(fork 0). ${var%/*} 는 슬래시가 없으면 문자열을 줄이지 못해 무한 루프가
+    # 되므로, 슬래시 유무를 case 로 가른다. 슬래시가 없거나 결과가 비면 루트로 수렴시켜 종료한다.
+    case "$check_path" in
+      */*) check_path="${check_path%/*}"; [ -z "$check_path" ] && check_path="/" ;;
+      *)   check_path="/" ;;
+    esac
   done
 
   # 4. Split by / into positional params (1-indexed)
@@ -160,8 +165,26 @@ shorten_branch() {
     *) rest="$branch" ;;
   esac
 
-  # Extract ticket ID (e.g., PROJ-123-)
-  ticket=$(expr "$rest" : '\([A-Z][A-Z]*-[0-9][0-9]*-\)' 2>/dev/null) || ticket=""
+  # 티켓 접두(예: PROJ-123-) 추출. expr 대체(fork 0).
+  # rest 가 "대문자들-숫자들-" 로 시작하면 그 접두를 ticket 으로 떼어 낸다.
+  ticket=""
+  local _head="${rest%%-*}"                 # 첫 하이픈 전(프로젝트 키 후보)
+  case "$_head" in
+    ''|*[!A-Z]*) : ;;                        # 대문자로만 이뤄지지 않으면 티켓 아님
+    *)
+      local _afterkey="${rest#"$_head"-}"    # 키와 첫 하이픈 제거
+      if [ "$_afterkey" != "$rest" ]; then
+        local _num="${_afterkey%%-*}"        # 다음 하이픈 전(번호 후보)
+        case "$_num" in
+          ''|*[!0-9]*) : ;;                  # 숫자로만 이뤄지지 않으면 티켓 아님
+          *)
+            local _afternum="${_afterkey#"$_num"-}"
+            [ "$_afternum" != "$_afterkey" ] && ticket="${_head}-${_num}-"
+            ;;
+        esac
+      fi
+      ;;
+  esac
   if [ -n "$ticket" ]; then
     slug="${rest#"$ticket"}"
   else
