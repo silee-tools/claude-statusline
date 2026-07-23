@@ -356,10 +356,27 @@ format_aws() {
   [ -z "$exp" ] && { printf '%saws:?%s' "$DIM" "$RST"; return 0; }
 
   local exp_epoch remaining
-  local exp_norm
-  exp_norm=$(printf '%s' "$exp" | sed 's/\([+-][0-9][0-9]\):\([0-9][0-9]\)$/\1\2/')
-  exp_epoch=$(date -jf "%Y-%m-%dT%H:%M:%S%z" "$exp_norm" +%s 2>/dev/null || \
-              date -d "$exp" +%s 2>/dev/null || echo 0)
+  local creds="${AWS_SHARED_CREDENTIALS_FILE:-$HOME/.aws/credentials}"
+  local cache="$CACHE_DIR/aws-exp.env"
+  # env 로 만료가 주어졌으면(AWS_SESSION_EXPIRATION) 파일·캐시 없이 그대로 파싱한다.
+  # 파일에서 읽은 경우에만, credentials 가 캐시보다 새 것이 아니면 캐시된 epoch 를 쓴다.
+  exp_epoch=""
+  if [ -z "${AWS_SESSION_EXPIRATION:-}" ] && [ -f "$creds" ] && [ -f "$cache" ] && [ ! "$creds" -nt "$cache" ]; then
+    while IFS='=' read -r _k _v; do
+      [ "$_k" = exp_epoch ] && exp_epoch="$_v"
+    done < "$cache"
+  fi
+  if [ -z "$exp_epoch" ]; then
+    local exp_norm
+    exp_norm=$(printf '%s' "$exp" | sed 's/\([+-][0-9][0-9]\):\([0-9][0-9]\)$/\1\2/')
+    exp_epoch=$(date -jf "%Y-%m-%dT%H:%M:%S%z" "$exp_norm" +%s 2>/dev/null || \
+                date -d "$exp" +%s 2>/dev/null || echo 0)
+    # env 가 아니라 파일에서 읽은 경우에만 캐시한다.
+    if [ -z "${AWS_SESSION_EXPIRATION:-}" ] && [ -f "$creds" ]; then
+      mkdir -p "$CACHE_DIR"
+      printf 'exp_epoch=%s\n' "$exp_epoch" > "$cache"
+    fi
+  fi
   remaining=$(( (exp_epoch - NOW_EPOCH) / 60 ))
 
   if [ "$remaining" -gt 10 ]; then
