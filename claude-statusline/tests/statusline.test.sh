@@ -471,5 +471,45 @@ assert_contains     "T31 큰 초과분 빨강 ▓" "${RED}▓" "$RAW"
 RAW=$(run_raw "$(json_pct 55 10)" 200 | grep '5h')  # fill11, 초과 1칸(<3) → 노랑 ▓
 assert_contains     "T31 작은 초과분 노랑 ▓" "${YELLOW}▓" "$RAW"
 
+# --- T34: git 브랜치 캐시 — 미스 때 git 호출, 히트 때 git 미호출 ---
+if [ "$HAVE_GIT" -eq 1 ]; then
+  CTALLY="$TMPROOT/git-calls"
+  mkdir -p "$TMPROOT/fakebin"
+  # 가짜 git: 호출을 기록하고 실제 git 으로 위임한다.
+  REAL_GIT=$(command -v git)
+  cat > "$TMPROOT/fakebin/git" <<FAKEGIT
+#!/bin/sh
+printf 'call\n' >> "$CTALLY"
+exec "$REAL_GIT" "\$@"
+FAKEGIT
+  chmod +x "$TMPROOT/fakebin/git"
+
+  rm -f "$CTALLY" "$TMPROOT/cache/claude-statusline/git-branch.env"
+  # 브랜치 fixture 를 cwd 로 주는 JSON
+  json_branch() {
+    printf '{"workspace":{"current_dir":"%s"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.11.0"}' "$GITREPO"
+  }
+  run_branch() {
+    printf '%s' "$(json_branch)" | \
+      PATH="$TMPROOT/fakebin:$PATH" CLAUDE_PLUGIN_ROOT="$TMPROOT" \
+      XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" \
+      XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" \
+      sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"
+  }
+
+  OUT1=$(run_branch)
+  CALLS1=$(wc -l < "$CTALLY" 2>/dev/null | tr -d ' ')
+  assert_contains "T34 캐시 미스 렌더에 브랜치 표시" "wip" "$OUT1"
+  assert_match    "T34 캐시 미스면 git 을 호출" "^[1-9]" "$CALLS1"
+
+  : > "$CTALLY"   # 호출 기록 초기화
+  OUT2=$(run_branch)
+  CALLS2=$(wc -l < "$CTALLY" 2>/dev/null | tr -d ' ')
+  assert_contains "T34 캐시 히트 렌더에도 브랜치 표시" "wip" "$OUT2"
+  assert_equals   "T34 캐시 히트면 git 미호출" "0" "$CALLS2"
+else
+  echo "warn: git 미설치 — T34 를 건너뜁니다" >&2
+fi
+
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
