@@ -588,5 +588,21 @@ assert_contains "T35 파일 변경 시 새 이메일 반영" "newuser@example.co
 # 원복
 printf '{"oauthAccount":{"emailAddress":"octocat@example.com"}}' > "$TMPROOT/.claude.json"
 
+# --- T36: AWS 만료 파싱 캐시 (파일 파싱 경로에서만 캐시) ---
+if command -v saml2aws >/dev/null 2>&1; then
+  rm -f "$TMPROOT/cache/claude-statusline/aws-exp.env"
+  FUT=$(( $(date +%s) + 7200 ))
+  CREDS="$TMPROOT/aws-credentials"
+  printf '[default]\nx_security_token_expires = %s\n' \
+    "$(date -r "$FUT" '+%Y-%m-%dT%H:%M:%S+0000' 2>/dev/null || date -d "@$FUT" '+%Y-%m-%dT%H:%M:%S+0000')" > "$CREDS"
+  OUT=$(printf '%s' "$(json_with)" | \
+    CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" \
+    XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" \
+    AWS_SHARED_CREDENTIALS_FILE="$CREDS" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g")
+  assert_match "T36 파일 파싱 시 만료 epoch 캐시 생성" "exp_epoch=[0-9]+" "$(cat "$TMPROOT/cache/claude-statusline/aws-exp.env" 2>/dev/null)"
+else
+  echo "warn: saml2aws 미설치 — T36 을 건너뜁니다" >&2
+fi
+
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
