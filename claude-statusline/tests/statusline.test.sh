@@ -221,6 +221,10 @@ FOOT=$(printf '%s\n' "$OUT" | tail -1)
 assert_match "T7-model ctx 줄 % 뒤 모델명" 'ctx .*% Opus 4\.8' "$CTXLN"
 assert_match "T7-model 푸터 줄 버전" '^v2\.1\.11' "$FOOT"
 
+# --- T33: 모델명 파싱이 sed 없이도 "이름 버전" 표기를 유지한다 ---
+OUT=$(run "$(json_with)" 200)
+assert_match "T33 모델 이름+버전 표기 유지" 'Opus 4\.8' "$OUT"
+
 # --- T8: 5h 와 7d 가 각자 다른 줄에 온다(세로 스택, 파이프 없음) ---
 OUT=$(run "$(json_with)" 200)
 H5=$(printf '%s\n' "$OUT" | grep '5h .*█')
