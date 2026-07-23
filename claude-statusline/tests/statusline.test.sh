@@ -511,5 +511,68 @@ else
   echo "warn: git 미설치 — T34 를 건너뜁니다" >&2
 fi
 
+# --- T37/T38/T39: git 브랜치 캐시가 "무손실"인 세 가지 위치 ---
+#    naive 하게 .git/HEAD 를 직접 읽으면 아래 세 상태에서 브랜치를 잃는다.
+#    (1) 저장소 하위 디렉터리 (2) git worktree(.git 이 파일) (3) detached HEAD.
+#    git rev-parse --abbrev-ref HEAD 와 동일한 결과가 나와야 캐시가 안전하다.
+if [ "$HAVE_GIT" -eq 1 ]; then
+  # 렌더 직전 캐시를 비운다: 캐시 키가 cwd 이므로 다른 cwd 는 어차피 미스지만,
+  # 상태 간 오염 가능성을 없애기 위해 명시적으로 지운다.
+  render_at() {
+    rm -f "$TMPROOT/cache/claude-statusline/git-branch.env"
+    run "$(printf '{"workspace":{"current_dir":"%s"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.11.0"}' "$1")" 200
+  }
+
+  # --- T37: 저장소 하위 디렉터리에서 렌더해도 브랜치가 표시된다 ---
+  #    git 은 상위 디렉터리를 탐색해 .git 을 찾으므로, .git/HEAD 만 직접 읽는 구현은
+  #    서브디렉터리에서 아무것도 찾지 못해 브랜치를 잃는다.
+  mkdir -p "$GITREPO/sub/deep"
+  OUT=$(render_at "$GITREPO/sub/deep")
+  assert_contains "T37 저장소 하위 디렉터리에서도 브랜치 표시(wip)" "wip" "$OUT"
+
+  # --- T38: git worktree(.git 이 디렉터리가 아니라 파일)에서도 브랜치가 표시된다 ---
+  WTREPO="$TMPROOT/wtrepo"
+  WTPATH="$TMPROOT/wtree-feat"
+  mkdir -p "$WTREPO"
+  if ( cd "$WTREPO" \
+       && git init -q \
+       && git symbolic-ref HEAD refs/heads/main \
+       && git -c commit.gpgsign=false -c user.email=t@example.com -c user.name=t \
+              commit -q --allow-empty -m init \
+       && git worktree add -q "$WTPATH" -b feat ); then
+    if [ -f "$WTPATH/.git" ]; then
+      ok "T38 worktree 의 .git 이 파일(디렉터리 아님)"
+    else
+      bad "T38 worktree 의 .git 이 파일(디렉터리 아님)" "$(ls -la "$WTPATH/.git" 2>&1)"
+    fi
+    OUT=$(render_at "$WTPATH")
+    assert_contains "T38 worktree 에서 브랜치 표시(feat)" "feat" "$OUT"
+    git -C "$WTREPO" worktree remove --force "$WTPATH" >/dev/null 2>&1 || rm -rf "$WTPATH"
+  else
+    echo "warn: worktree fixture 생성 실패 — T38 을 건너뜁니다" >&2
+  fi
+
+  # --- T39: detached HEAD 에서는 브랜치가 렌더되지 않는다(정당한 부재) ---
+  #    브랜치가 없는 상태이므로 첫 줄에 브랜치 글리프도, 원래 브랜치명도 나오면 안 된다.
+  DETREPO="$TMPROOT/detrepo"
+  mkdir -p "$DETREPO"
+  if ( cd "$DETREPO" \
+       && git init -q \
+       && git symbolic-ref HEAD refs/heads/main \
+       && git -c commit.gpgsign=false -c user.email=t@example.com -c user.name=t \
+              commit -q --allow-empty -m init ); then
+    SHA=$(git -C "$DETREPO" rev-parse HEAD)
+    ( cd "$DETREPO" && git -c advice.detachedHead=false checkout -q "$SHA" )
+    OUT=$(render_at "$DETREPO")
+    FIRST=$(first_line "$OUT")
+    assert_not_contains "T39 detached HEAD 첫 줄에 브랜치 글리프 없음" "$BRANCH_GLYPH" "$FIRST"
+    assert_not_contains "T39 detached HEAD 첫 줄에 원래 브랜치명(main) 없음" "main" "$FIRST"
+  else
+    echo "warn: detached HEAD fixture 생성 실패 — T39 를 건너뜁니다" >&2
+  fi
+else
+  echo "warn: git 미설치 — T37/T38/T39 를 건너뜁니다" >&2
+fi
+
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
