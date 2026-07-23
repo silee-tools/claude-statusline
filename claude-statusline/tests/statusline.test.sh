@@ -7,7 +7,7 @@
 # 레이아웃(위→아래, 값 없는 줄은 자연히 생략):
 #   줄1  시간 경로 브랜치
 #   줄2  claude이메일 gh@계정 aws:세션
-#   줄3   ctx <컨텍스트 막대> % <모델> <effort 램프>
+#   줄3   ctx <컨텍스트 막대> % <모델> <effort 글리프>
 #   줄4   5h  <막대> % ↺리셋   (초과분은 ▓ 로 강조)
 #   줄5   7d  <막대> % ↺리셋   (초과분은 ▓ 로 강조)
 #   줄6  cost 24h ... / 7d ... / <당월일수>d ...
@@ -23,6 +23,7 @@ DIMC=$(printf '\033[2m')
 GREEN=$(printf '\033[32m')
 LIME=$(printf '\033[38;5;148m')
 AMBER=$(printf '\033[38;5;214m')
+MAGENTA=$(printf '\033[35m')
 
 TMPROOT=$(mktemp -d)
 trap 'rm -rf "$TMPROOT"' EXIT
@@ -129,7 +130,7 @@ json_branch() {
 json_ctx() {
   printf '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":%s,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.1.11"}' "$1"
 }
-# 지정한 effort level 로 effort 램프 색·글리프를 검증한다. rate 없음(색 오염 방지), ctx 20%(무색).
+# 지정한 effort level 로 effort 글리프 색·모양을 검증한다. rate 없음(색 오염 방지), ctx 20%(무색).
 json_eff() {
   printf '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":40000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.1.11","effort":{"level":"%s"}}' "$1"
 }
@@ -227,19 +228,20 @@ assert_equals       "T8 7d 게이지 줄 1개" "1" "$(printf '%s\n' "$OUT" | gre
 assert_not_contains "T8 5h 줄에 7d 없음(각자 줄)" "7d" "$H5"
 assert_equals       "T8 5h 줄 파이프 없음" "0" "$(count_char '|' "$H5")"
 
-# --- T9: effort → 세로 램프 글리프 + 웜 게이지 색(low=초록 … max=빨강) ---
-#    높이(글리프)와 색이 함께 단계를 표현한다. rate 없는 json_eff 로 색 오염을 막고 색을 글리프에 직접 묶어 검증.
+# --- T9: effort → Claude Code 원형 글리프 + 웜 게이지 색(low=초록 … max=빨강, ultracode=마젠타) ---
+#    글리프 모양과 색이 함께 단계를 표현한다. rate 없는 json_eff 로 색 오염을 막고 색을 글리프에 직접 묶어 검증.
 OUT=$(run "$(json_eff high)" 200)
-assert_contains "T9 effort high 램프 글리프(▃)" "▃" "$OUT"
-RAW=$(run_raw "$(json_eff low)"    200); assert_contains "T9 low 초록 ▁"    "${GREEN}▁"  "$RAW"
-RAW=$(run_raw "$(json_eff medium)" 200); assert_contains "T9 medium 연두 ▂" "${LIME}▂"   "$RAW"
-RAW=$(run_raw "$(json_eff high)"   200); assert_contains "T9 high 노랑 ▃"   "${YELLOW}▃" "$RAW"
-RAW=$(run_raw "$(json_eff xhigh)"  200); assert_contains "T9 xhigh 주황 ▅"  "${AMBER}▅"  "$RAW"
-RAW=$(run_raw "$(json_eff max)"    200); assert_contains "T9 max 빨강 ▇"    "${RED}▇"    "$RAW"
+assert_contains "T9 effort high 글리프(●)" "●" "$OUT"
+RAW=$(run_raw "$(json_eff low)"       200); assert_contains "T9 low 초록 ○"        "${GREEN}○"    "$RAW"
+RAW=$(run_raw "$(json_eff medium)"    200); assert_contains "T9 medium 연두 ◐"     "${LIME}◐"     "$RAW"
+RAW=$(run_raw "$(json_eff high)"      200); assert_contains "T9 high 노랑 ●"       "${YELLOW}●"   "$RAW"
+RAW=$(run_raw "$(json_eff xhigh)"     200); assert_contains "T9 xhigh 주황 ◉"      "${AMBER}◉"    "$RAW"
+RAW=$(run_raw "$(json_eff max)"       200); assert_contains "T9 max 빨강 ◈"        "${RED}◈"      "$RAW"
+RAW=$(run_raw "$(json_eff ultracode)" 200); assert_contains "T9 ultracode 마젠타 ✦" "${MAGENTA}✦" "$RAW"
 
-# --- T10: effort 없으면 램프 없이 모델명만 (데이터 부재의 정당한 부재 단언) ---
+# --- T10: effort 없으면 글리프 없이 모델명만 (데이터 부재의 정당한 부재 단언) ---
 OUT=$(run "$(json_no_effort)" 200)
-assert_no_match "T10 effort 부재 시 램프 글리프 없음" "▁|▂|▃|▅|▇" "$OUT"
+assert_no_match "T10 effort 부재 시 글리프 없음" "○|◐|●|◉|◈|✦" "$OUT"
 assert_contains "T10 모델명은 유지" "Opus 4.8" "$OUT"
 
 # --- T11: 첫 줄은 시간·경로만 — 계정·브랜치는 첫 줄에 없다 ---
