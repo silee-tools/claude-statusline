@@ -30,6 +30,7 @@ trap 'rm -rf "$TMPROOT"' EXIT
 mkdir -p "$TMPROOT/scripts" "$TMPROOT/cache/claude-statusline"
 ln -sf "$SRC/scripts/statusline.sh" "$TMPROOT/scripts/statusline.sh"
 ln -sf "$SRC/scripts/shorten.sh" "$TMPROOT/scripts/shorten.sh"
+ln -sf "$SRC/scripts/shorten-lib.sh" "$TMPROOT/scripts/shorten-lib.sh"
 ln -sf "$SRC/scripts/json.awk" "$TMPROOT/scripts/json.awk"
 SL="$TMPROOT/scripts/statusline.sh"
 
