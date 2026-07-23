@@ -574,5 +574,19 @@ else
   echo "warn: git 미설치 — T37/T38/T39 를 건너뜁니다" >&2
 fi
 
+# --- T35: Claude 계정 이메일 캐시 ---
+rm -f "$TMPROOT/cache/claude-statusline/cc-account.env"
+OUT_A=$(run "$(json_with)" 200)
+assert_contains "T35 이메일 첫 렌더 표시" "octocat@example.com" "$OUT_A"
+assert_match    "T35 캐시 파일 생성" "email=octocat@example.com" "$(cat "$TMPROOT/cache/claude-statusline/cc-account.env" 2>/dev/null)"
+
+# .claude.json 을 캐시보다 새 것으로 만들고 이메일을 바꾸면 다음 렌더에 반영된다(무손실).
+sleep 1
+printf '{"oauthAccount":{"emailAddress":"newuser@example.com"}}' > "$TMPROOT/.claude.json"
+OUT_B=$(run "$(json_with)" 200)
+assert_contains "T35 파일 변경 시 새 이메일 반영" "newuser@example.com" "$OUT_B"
+# 원복
+printf '{"oauthAccount":{"emailAddress":"octocat@example.com"}}' > "$TMPROOT/.claude.json"
+
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

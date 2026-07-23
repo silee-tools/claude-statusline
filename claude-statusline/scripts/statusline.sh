@@ -319,15 +319,27 @@ format_gh() {
 format_cc_account() {
   local cf="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
   [ -f "$cf" ] || return 0
-  local email
-  email=$(awk '
-    /"oauthAccount"[[:space:]]*:[[:space:]]*\{/ { oa=1 }
-    oa && match($0, /"emailAddress"[[:space:]]*:[[:space:]]*"[^"]*"/) {
-      v=substr($0, RSTART, RLENGTH); sub(/.*:[[:space:]]*"/, "", v); sub(/"$/, "", v)
-      print v; exit
-    }
-  ' "$cf" 2>/dev/null || true)
-  email=$(strip_control "$email")
+  local cache="$CACHE_DIR/cc-account.env"
+  local email=""
+  # 캐시가 있고 .claude.json 이 그보다 새 것이 아니면(변경 없음) 캐시된 이메일을 쓴다.
+  # test -nt 는 프로세스를 만들지 않는다. .claude.json 은 런타임이 자주 다시 쓰므로 그때만
+  # 재스캔한다. 파일이 다시 쓰이면 이메일이 바뀌었어도 다음 렌더에 반영되어 손실이 없다.
+  if [ -f "$cache" ] && [ ! "$cf" -nt "$cache" ]; then
+    while IFS='=' read -r _k _v; do
+      [ "$_k" = email ] && email="$_v"
+    done < "$cache"
+  else
+    email=$(awk '
+      /"oauthAccount"[[:space:]]*:[[:space:]]*\{/ { oa=1 }
+      oa && match($0, /"emailAddress"[[:space:]]*:[[:space:]]*"[^"]*"/) {
+        v=substr($0, RSTART, RLENGTH); sub(/.*:[[:space:]]*"/, "", v); sub(/"$/, "", v)
+        print v; exit
+      }
+    ' "$cf" 2>/dev/null || true)
+    email=$(strip_control "$email")
+    mkdir -p "$CACHE_DIR"
+    printf 'email=%s\n' "$email" > "$cache"
+  fi
   [ -z "$email" ] && return 0
   printf '%s%s%s' "$CORAL173" "$email" "$RST"
 }
