@@ -3,7 +3,7 @@
 A compact, three-row statusline HUD for [Claude Code](https://code.claude.com).
 It renders location, the logged-in Claude account, git branch, GitHub/AWS
 session indicators, the Claude Code session id, context-window usage, rate
-limits, and reasoning effort — always in three rows.
+limits, and reasoning effort — in up to three rows.
 
 ```
 17:14 ~/↪1/webapp/↪1/src  feature/PROJ-123-post-editor
