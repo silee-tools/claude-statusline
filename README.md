@@ -111,10 +111,21 @@ octocat=personal,214
 some-work-login=work,27
 ```
 
-The current login is read from
+The current login and its status are read from
 `${XDG_DATA_HOME:-$HOME/.local/share}/gh-prompt-user` (written by your shell
-prompt). An unmapped login shows `gh@<login>`; an empty value shows `gh@---`;
-color codes must be numeric.
+prompt). The file holds one tab-separated record:
+
+```
+v2	<login-or-->	<state>	<deadline-epoch-or-0>
+```
+
+Each state renders differently: `ok` shows `gh@<label>`, `rate_limited`
+appends a yellow `⏳<minutes>m` until the deadline passes, `auth_failed` shows
+a red `gh@<label>!`, `unknown` shows a grey `gh@<label>?`, and `no_active`
+shows `gh@---`. A single line without tabs is read as a bare login, so a
+prompt that records only the login still works. An unmapped login shows
+`gh@<login>`; an empty or malformed file shows `gh@?`; color codes must be
+numeric.
 
 ### Claude account indicator
 
