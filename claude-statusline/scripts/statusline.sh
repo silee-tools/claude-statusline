@@ -4,6 +4,7 @@ set -eu
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 # --- ANSI ---
+ESC=$(printf '\033')
 DIM=$(printf '\033[2m')
 GREEN=$(printf '\033[32m')
 YELLOW=$(printf '\033[33m')
@@ -275,38 +276,86 @@ if [ "$cost_available" = "true" ]; then
 fi
 
 # --- GitHub 계정 표시기 ---
-# 현재 활성 GitHub 계정(로그인명)을 라벨·색으로 구분한다. 계정명은 소스에 박지 않고 설정 파일에서
-# 매핑을 읽는다: ${XDG_CONFIG_HOME:-$HOME/.config}/claude-statusline/gh-accounts
+# 활성 GitHub 계정과 그 계정의 인증·한도 상태를 라벨·색·상태 문자로 구분한다. 계정명은 소스에
+# 박지 않고 설정 파일에서 매핑을 읽는다: ${XDG_CONFIG_HOME:-$HOME/.config}/claude-statusline/gh-accounts
 #   한 줄에 하나: <github-login>=<라벨>,<256색코드>   예) octocat=personal,214   (# 로 시작하면 주석)
-# 현재 계정명은 캐시(${XDG_DATA_HOME:-$HOME/.local/share}/gh-prompt-user)에서 읽는다(셸 프롬프트가 기록).
-# 매핑에 있으면 gh@<라벨>(지정 색), 없으면 gh@<계정명>(기본색), 계정명이 비면 gh@---(흐림).
-# 수정 시 검토 관점: 색코드는 숫자만 허용해 설정 파일이 임의 이스케이프를 주입하지 못하게 가드한다.
+# 상태는 셸 프롬프트가 쓰는 캐시에서 읽는다: ${XDG_DATA_HOME:-$HOME/.local/share}/gh-prompt-user
+#   탭 네 필드 한 줄: v2<TAB><계정명 또는 -><TAB><상태><TAB><마감 로컬 epoch 또는 0>
+# 수정 시 검토 관점:
+#   - 캐시를 명령 치환으로 통째로 읽지 않는다. 제어문자 제거가 필드 구분자인 탭까지 지워 네 필드가
+#     한 덩어리로 붙는다. 내장 read 로 필드를 먼저 나눠야 이 손실이 구조적으로 생기지 않는다.
+#   - 계정명 유무를 상태보다 먼저 가른다. 순서를 뒤집으면 계정명 자리가 빈 손상 레코드가 gh@- 로 샌다.
+#   - 색코드와 마감 시각은 숫자만 허용해 설정·캐시 파일이 임의 이스케이프를 주입하지 못하게 막는다.
+#   - 이 도구는 캐시를 읽기만 한다. 갱신과 신선도 판정은 셸 프롬프트가 맡는다.
 format_gh() {
   local cache="${XDG_DATA_HOME:-$HOME/.local/share}/gh-prompt-user"
   [ -f "$cache" ] || return 0
-  local user
-  user=$(strip_control "$(cat "$cache")")
-  [ -z "$user" ] && { printf '%sgh@---%s' "$GREY240" "$RST"; return 0; }
 
+  # 파일 끝에 개행이 없으면 read 가 비영 종료코드를 내므로 set -e 대비로 흡수한다. 다섯째 변수는
+  # 필드가 넷을 넘는지 가리는 용도다(넘치면 마지막 변수에 나머지가 통째로 들어온다).
+  local f1="" f2="" f3="" f4="" f5="" user state deadline
+  IFS="$TAB" read -r f1 f2 f3 f4 f5 < "$cache" || true
+
+  if [ -z "$f2" ]; then
+    # 탭이 없는 한 줄은 계정명만 기록하는 프롬프트 구현을 위한 형식이다. 빈 파일도 여기로 들어와
+    # 계정명이 비고, 아래 계정 미상 분기가 받는다.
+    user="$f1"; state="ok"; deadline=0
+  elif [ -n "$f4" ] && [ -z "$f5" ]; then
+    user="$f2"; deadline="$f4"
+    case "$f1" in
+      v2) state="$f3" ;;
+      *)  state="unknown"; deadline=0 ;;
+    esac
+  else
+    user=""; state="unknown"; deadline=0
+  fi
+
+  case "$state" in ok|rate_limited|auth_failed|unknown|no_active) ;; *) state="unknown" ;; esac
+  case "$deadline" in ''|*[!0-9]*) deadline=0 ;; esac
+  user=$(strip_control "$user")
+
+  case "$user" in
+    ''|-)
+      case "$state" in
+        no_active) printf '%sgh@---%s' "$GREY240" "$RST" ;;
+        *)         printf '%sgh@?%s'   "$GREY240" "$RST" ;;
+      esac
+      return 0 ;;
+  esac
+
+  local label="$user" color="" base
   local conf="${XDG_CONFIG_HOME:-$HOME/.config}/claude-statusline/gh-accounts"
   if [ -f "$conf" ]; then
-    local line rest label color
+    local line rest
     while IFS= read -r line || [ -n "$line" ]; do
       case "$line" in ''|\#*) continue ;; esac
       case "$line" in
         "$user="*)
           rest="${line#*=}"
           label=$(strip_control "${rest%%,*}")
-          case "$rest" in *,*) color=$(strip_control "${rest#*,}") ;; *) color="" ;; esac
-          case "$color" in
-            ''|*[!0-9]*) printf '%sgh@%s%s' "$AMBER214" "$label" "$RST" ;;
-            *)           printf '\033[38;5;%smgh@%s%s' "$color" "$label" "$RST" ;;
-          esac
-          return 0 ;;
+          case "$rest" in *,*) color=$(strip_control "${rest#*,}") ;; esac
+          break ;;
       esac
     done < "$conf"
   fi
-  printf '%sgh@%s%s' "$AMBER214" "$user" "$RST"
+  case "$color" in
+    ''|*[!0-9]*) base="$AMBER214" ;;
+    *)           base="${ESC}[38;5;${color}m" ;;
+  esac
+
+  case "$state" in
+    auth_failed) printf '%sgh@%s!%s' "$RED" "$label" "$RST" ;;
+    unknown)     printf '%sgh@%s?%s' "$GREY240" "$label" "$RST" ;;
+    no_active)   printf '%sgh@---%s' "$GREY240" "$RST" ;;
+    rate_limited)
+      if [ "$deadline" -gt "$NOW_EPOCH" ]; then
+        printf '%sgh@%s%s%s⏳%sm%s' "$base" "$label" "$RST" "$YELLOW" \
+          "$(( (deadline - NOW_EPOCH + 59) / 60 ))" "$RST"
+      else
+        printf '%sgh@%s%s' "$base" "$label" "$RST"
+      fi ;;
+    *)           printf '%sgh@%s%s' "$base" "$label" "$RST" ;;
+  esac
 }
 
 # --- Claude Code 계정 표시기 ---
