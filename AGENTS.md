@@ -51,12 +51,14 @@ caller. Avoid bashisms:
 
 ```shell
 sh claude-statusline/tests/statusline.test.sh
+sh claude-statusline/tests/fit.test.sh
 ```
 
-The suite renders `statusline.sh` against fixture JSON and asserts layout,
-gauges, colors, and indicators. Follow Red -> Green: add a failing test before a
-behavior change, then make it pass. Report the pass/fail counts when you change
-behavior.
+`statusline.test.sh` renders `statusline.sh` against fixture JSON and asserts
+layout, gauges, colors, and indicators. `fit.test.sh` asserts `fit-line1.awk`'s
+width calculation and cut behavior directly. Follow Red -> Green: add a
+failing test before a behavior change, then make it pass. Report the pass/fail
+counts when you change behavior.
 
 Test fixtures must not contain real people, accounts, or secrets. Use
 placeholder logins (e.g. `octocat`) and RFC 2606 reserved domains

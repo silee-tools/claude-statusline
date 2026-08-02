@@ -11,13 +11,15 @@ dev@example.com gh@personal aws:✓ v2.8.0 ⧉ 3f9c1a
 ctx 68% Opus 4.8 ● 5h 47% ↺2h30m 7d 83%▲ ↺3d16h
 ```
 
-The statusline always renders three rows. Row 1 is capped by construction —
-its path and branch are fitted to stay within 74 display columns. Rows 2 and 3
-are not truncated: row 3's content is bounded by the code that builds it, and
-row 2 stays within budget for typical account and label lengths, though an
-unusually long Claude account email or `gh@` label can make it wrap. Rows with
-no data are dropped entirely. The rows group by meaning: location, then
-identity and constants, then the usage gauges.
+The statusline never renders more than three rows, and rows with no data are
+dropped entirely. Row 1 is capped by construction — its path and branch are
+fitted to stay within 74 display columns. Rows 2 and 3 are not truncated:
+row 3's width is its fixed labels plus whatever model name Claude Code
+reports, which stays short for released models but can run long for an
+unrecognized one, and row 2 stays within budget for typical account and label
+lengths, though an unusually long Claude account email or `gh@` label can make
+it wrap. The rows group by meaning: location, then identity and constants,
+then the usage gauges.
 
 - **Row 1 (location)** — time (`HH:MM`), the current path, and the git branch
   (prefixed with the ` ` branch icon, no space before the name). The path
@@ -135,10 +137,13 @@ The visuals live in `claude-statusline/scripts/statusline.sh`:
 
 ```shell
 sh claude-statusline/tests/statusline.test.sh
+sh claude-statusline/tests/fit.test.sh
 ```
 
-Shell scripts are POSIX `sh`. The test suite renders `statusline.sh` against
-fixture JSON and asserts the layout, gauges, colors, and indicators.
+Shell scripts are POSIX `sh`. `statusline.test.sh` renders `statusline.sh`
+against fixture JSON and asserts the layout, gauges, colors, and indicators.
+`fit.test.sh` asserts `fit-line1.awk`'s width calculation and cut behavior
+directly.
 
 ## License
 
