@@ -82,14 +82,6 @@ dimlabel() {
   printf '%s%s%s' "$DIM" "$1" "$RST"
 }
 
-# 소수 문자열 값이 1 이상인지 판정한다(부동소수 비교 대체). 비음수에서 v>=1 은 floor(v)>=1 과 같다.
-# 수정 시 검토 관점: 음수 입력은 가정하지 않는다(비용은 항상 0 이상).
-ge_one() {
-  _ip=${1%.*}
-  case "$_ip" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$_ip" -ge 1 ]
-}
-
 cwd=$(strip_control "$cwd")
 model_display=$(strip_control "$model_display")
 version=$(strip_control "$version")
@@ -204,39 +196,7 @@ format_rate() {
     "$(dimlabel "$label")" "$vc" "$pct" "$RST" "$pace" "$reset_str"
 }
 
-# --- 비용 데이터 ---
-# 시간 축 세그먼트: 24h(당일 모델별) / 7d(주간) / 그 달 일수(당월). 조립부에서 24h 는 cost 라벨과
-# 함께 파이프 왼쪽에, 7d·당월은 파이프 오른쪽 한 묶음(공백 구분)에 놓인다.
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline"
-cost_cache="$CACHE_DIR/cost-cache.env"
-mdays=$(date -v1d -v+1m -v-1d +%d 2>/dev/null || date -d "$(date +%Y-%m-01) +1 month -1 day" +%d 2>/dev/null || echo 30)
-# 라벨(24h/7d/당월/모델명)은 dim(dimlabel), 금액($..)은 기본 밝기로 색을 나눈다.
-daily_seg="$(dimlabel 24h) \$--" weekly_seg="$(dimlabel 7d) \$--" monthly_seg="$(dimlabel "${mdays}d") \$--"
-
-cost_available=false opus=0 sonnet=0 haiku=0 w_cost=0 m_cost=0
-if [ -f "$cost_cache" ]; then
-  # sh-safe key=value. 값은 숫자·true/false 뿐이라 while read 로 안전하다(eval·source 아님).
-  while IFS='=' read -r _k _val; do
-    case "$_k" in
-      available) cost_available="$_val" ;;
-      dailyOpus) opus="$_val" ;;
-      dailySonnet) sonnet="$_val" ;;
-      dailyHaiku) haiku="$_val" ;;
-      weekly) w_cost="$_val" ;;
-      monthly) m_cost="$_val" ;;
-    esac
-  done < "$cost_cache"
-fi
-
-if [ "$cost_available" = "true" ]; then
-  weekly_seg="$(dimlabel 7d) \$${w_cost}"
-  monthly_seg="$(dimlabel "${mdays}d") \$${m_cost}"
-  parts=""
-  ge_one "$opus"   && parts="$(dimlabel Opus) \$$(printf '%.0f' "$opus")"
-  ge_one "$sonnet" && { [ -n "$parts" ] && parts="$parts "; parts="${parts}$(dimlabel Sonnet) \$$(printf '%.0f' "$sonnet")"; }
-  ge_one "$haiku"  && { [ -n "$parts" ] && parts="$parts "; parts="${parts}$(dimlabel Haiku) \$$(printf '%.0f' "$haiku")"; }
-  daily_seg="$(dimlabel 24h) ${parts:-\$0}"
-fi
 
 # --- GitHub 계정 표시기 ---
 # 현재 활성 GitHub 계정(로그인명)을 라벨·색으로 구분한다. 계정명은 소스에 박지 않고 설정 파일에서
@@ -470,8 +430,11 @@ FITOUT
 line_loc="${time_seg} ${path_seg}"
 [ -n "$branch_name" ] && line_loc="${line_loc} ${MAGENTA}${BRANCH_GLYPH}${branch_name}${RST}"
 
-# 줄2: Claude계정 gh계정 aws세션. 계정·인증만 모은다. 값 없는 항목은 자연히 빠지고 남은 항목만
-# 공백으로 잇는다. 수정 시 검토 관점: 조립 순서를 바꾸려면 이 append_meta 호출 순서만 바꾼다.
+# 줄2: Claude계정 gh계정 aws세션 버전 세션접두. 계정·인증과 실행을 규정하는 상수값을 모은다.
+# 값 없는 항목은 자연히 빠지고 남은 항목만 공백으로 잇는다.
+# 세션 ID 는 앞 6자만 쓴다. 이 식별자는 UUID 버전 4라 어느 자리에도 시간 정보가 없고, 접두
+# 6자면 유일 식별에 충분하다.
+# 수정 시 검토 관점: 조립 순서를 바꾸려면 이 append_meta 호출 순서만 바꾼다.
 seg_cc=$(format_cc_account)
 seg_gh=$(format_gh)
 seg_aws=$(format_aws)
@@ -483,12 +446,17 @@ append_meta() {
 append_meta "$seg_cc"
 append_meta "$seg_gh"
 append_meta "$seg_aws"
+[ -n "$version" ] && append_meta "$(dimlabel "v${version}")"
+if [ -n "$session_id" ]; then
+  sid6="${session_id%"${session_id#??????}"}"
+  append_meta "${GREY240}${SESSION_GLYPH} ${sid6}${RST}"
+fi
 
-# 게이지 3종(ctx·5h·7d)은 각자 한 줄로 세로로 쌓아 소진율을 한눈에 비교하게 한다. 막대 없이
-# 라벨과 소진율(%)만 보여준다. ctx 는 곧 그 모델의 컨텍스트 창이므로 모델명(시안)과 effort
-# 글리프를 ctx 줄의 % 뒤에 붙인다.
-# 수정 시 검토 관점: rate 는 데이터가 없으면 format_rate 가 빈 문자열을 돌려주고 emit 이 그 줄을
-# 생략하므로, 5h·7d 는 각각 독립적으로 빠질 수 있다.
+# 게이지 3종(ctx·5h·7d)은 한 행(행3)에 모아 소진율을 한눈에 비교하게 한다. 막대 없이 라벨과
+# 소진율(%)만 보여준다. ctx 는 곧 그 모델의 컨텍스트 창이므로 모델명(시안)과 effort 글리프를
+# ctx 의 % 뒤에 붙인다.
+# 수정 시 검토 관점: rate 는 데이터가 없으면 format_rate 가 빈 문자열을 돌려주고, 아래 line_gauge
+# 조립의 조건부 append 가 그 세그먼트만 자연히 빼므로 5h·7d 는 각각 독립적으로 빠질 수 있다.
 model_str=$(format_model "$model_display")
 effort_ind=$(format_effort "$effort")
 line_ctx="$(format_context)"
@@ -497,18 +465,13 @@ line_ctx="$(format_context)"
 line_5h=$(format_rate 5h "$five_h" "$five_reset" 18000)
 line_7d=$(format_rate 7d "$week_h" "$week_reset" 604800)
 
-# 줄6(cost): cost 24h ... / 7d ... / <당월일수>d ...  (그룹 구분은 흐린 슬래시, 좌우 공백 한 칸)
-SLASH=" ${DIM}/${RST} "
-line_cost="$(dimlabel cost) ${daily_seg}${SLASH}${weekly_seg}${SLASH}${monthly_seg}"
+# 줄3: ctx 모델 effort 5h 7d. 게이지를 한 행에 모아 소진 상태를 한눈에 본다. rate 데이터가
+# 없으면 format_rate 가 빈 문자열을 돌려주고 그 세그먼트만 빠진다.
+line_gauge="$line_ctx"
+[ -n "$line_5h" ] && line_gauge="${line_gauge} ${line_5h}"
+[ -n "$line_7d" ] && line_gauge="${line_gauge} ${line_7d}"
 
-# 줄7(푸터): v버전 ⧉세션ID. 실행을 규정하는 저관심 상수값을 맨 아래 흐린 푸터로 내린다.
-# 수정 시 검토 관점: 세션 ID 는 다른 세션이 참조하도록 복사하는 값이라 축약하지 않고 전체 UUID 를
-# 그대로 둔다. 버전·세션이 모두 없으면 emit 이 이 줄을 생략한다.
-line_foot=""
-[ -n "$version" ] && line_foot="$(dimlabel "v${version}")"
-[ -n "$session_id" ] && { [ -n "$line_foot" ] && line_foot="${line_foot} "; line_foot="${line_foot}${GREY240}${SESSION_GLYPH} ${session_id}${RST}"; }
-
-# --- 출력: 값 없는 줄은 emit 이 생략한다. 단일 줄이 폭을 넘으면 터미널 소프트랩에 맡긴다. ---
-output=$(emit "$line_loc" "$line_meta" "$line_ctx" "$line_5h" "$line_7d" "$line_cost" "$line_foot")
+# --- 출력: 값 없는 행은 emit 이 생략한다. ---
+output=$(emit "$line_loc" "$line_meta" "$line_gauge")
 
 printf '%s' "$output"

@@ -1,17 +1,13 @@
 #!/bin/sh
 # statusline.sh 렌더링 회귀 테스트
 # 격리된 임시 PLUGIN_ROOT 에서 실제 소스 statusline.sh 를 실행하고,
-# stdin JSON(rate_limits·effort 포함/미포함)과 cost-cache fixture 로
-# 폭 무관 단일 레이아웃(세로 스택) 출력을 검증한다.
+# stdin JSON(rate_limits·effort 포함/미포함) fixture 로
+# 폭 무관 3행 레이아웃 출력을 검증한다. 비용 표시는 없다(수집 파이프라인은 유지, 표시만 제거).
 #
-# 레이아웃(위→아래, 값 없는 줄은 자연히 생략):
-#   줄1  시간 경로 브랜치
-#   줄2  claude이메일 gh@계정 aws:세션
-#   줄3   ctx <소진율>% <모델> <effort 글리프>
-#   줄4   5h  <소진율>%[▲] ↺리셋   (페이스 초과 시 ▲)
-#   줄5   7d  <소진율>%[▲] ↺리셋   (페이스 초과 시 ▲)
-#   줄6  cost 24h ... / 7d ... / <당월일수>d ...
-#   줄7  v<버전> ⧉세션ID
+# 레이아웃(위→아래, 값 없는 항목은 자연히 생략):
+#   행1  시간 경로 브랜치
+#   행2  claude이메일 gh@계정 aws:세션 v<버전> ⧉세션ID앞6자
+#   행3  ctx <소진율>% <모델> <effort 글리프> 5h <소진율>%[▲] ↺리셋 7d <소진율>%[▲] ↺리셋
 set -eu
 
 SRC=$(cd "$(dirname "$0")/.." && pwd)
@@ -81,19 +77,6 @@ monthly=605
 cachedAt=1784000000
 ENV
 rm -f "$TMPROOT/cache/claude-statusline/cost-cache.json"
-
-# bc 미존재 환경 테스트용: 고의로 실패하는 bc stub (정수부 비교로 bc 제거를 검증).
-# PATH 에 이 디렉터리를 추가하면 진정한 bc 대신 실패 스텁이 호출되므로,
-# 코드가 여전히 bc 를 쓰고 있으면 비용 세그먼트가 사라진다.
-mkdir -p "$TMPROOT/nobc-bin"
-cat > "$TMPROOT/nobc-bin/bc" <<'BCSTUB'
-#!/bin/sh
-exit 127
-BCSTUB
-chmod +x "$TMPROOT/nobc-bin/bc"
-
-# 이번 달 총 일수 (라벨 기대값)
-MDAYS=$(date -v1d -v+1m -v-1d +%d 2>/dev/null || date -d "$(date +%Y-%m-01) +1 month -1 day" +%d)
 
 NOW=$(date +%s)
 FIVE_RESET=$((NOW + 9000))    # 2h30m 뒤
@@ -191,25 +174,11 @@ assert_match "T1 5h 소진율 표시" '5h [0-9]+%' "$OUT"
 assert_match "T1 7d 소진율 표시" '7d [0-9]+%' "$OUT"
 assert_match "T1 5h 리셋 분 단위 표기" "↺[0-9]+h[0-9]+m" "$OUT"
 
-# --- T2: rate_limits 없으면 비용은 남는다 ---
-#    rate 부재 시 5h/7d 세그먼트 자체가 통째로 생략되는지는 T13 이 같은 fixture(json_without)로
-#    검증한다(단일 소유). 여기서는 그와 무관한 비용 라벨 생존만 본다.
-OUT=$(run "$(json_without)" 200)
-assert_contains "T2 24h 비용 라벨 유지" "24h" "$OUT"
-
-# --- T3: 비용이 새 형태로 나온다: 24h Opus $12 / 7d $605 / 30d $605 (흐린 슬래시 구분) ---
+# --- T2: 비용을 표시하지 않는다 ---
 OUT=$(run "$(json_with)" 200)
-assert_contains "T3 24h 접두" "24h Opus" "$OUT"
-assert_match    "T3 주간 비용 7d 라벨" '7d \$605' "$OUT"
-assert_match    "T3 당월 일수 라벨" "${MDAYS}"'d \$605' "$OUT"
-assert_match    "T3 비용: 24h/7d/당월 슬래시 구분" '\$12 +/ +7d \$605 +/ +'"${MDAYS}"'d \$605' "$OUT"
-
-# --- T3-nobc: bc 없는 환경에서도 비용 세그먼트 유지(정수부 비교로 독립) ---
-#    비용 세그먼트는 costv >= 1 판정이 필요하다. bc 가 없거나 실패해도 정수부 비교로 동작해야 한다.
-#    opus=12 이므로 'Opus $12' 가 나타나야 하고, bc 대신 정수부 비교를 쓰고 있음을 증명한다.
-OUT=$(PATH="$TMPROOT/nobc-bin:$PATH" run "$(json_with)" 200)
-assert_contains "T3-nobc bc 미존재에도 비용 Opus 세그먼트 유지" "Opus" "$OUT"
-assert_match    "T3-nobc 정수부 비교로 opus>=1 판정" 'Opus.*\$12' "$OUT"
+assert_not_contains "T2 24h 비용 라벨 없음" "24h" "$OUT"
+assert_not_contains "T2 7d 비용 금액 없음" "\$605" "$OUT"
+assert_not_contains "T2 cost 라벨 없음" "cost" "$OUT"
 
 # --- T4: 소진율 90% 이상이면 빨간색 경고 ---
 RAW=$(run_raw "$(json_high)" 200)
@@ -221,34 +190,33 @@ A=$(run "$(json_with)" 200)
 B=$(run "$(json_with)" 55)
 assert_equals "T5 폭 200과 55 출력 동일" "$(mask_time "$A")" "$(mask_time "$B")"
 
-# --- T7: 단일 세로 스택 줄 구성 (rate 있음, 브랜치·세션 없음) = 7줄 ---
-#    줄1 시간·경로 / 줄2 계정 / 줄3 ctx+모델 / 줄4 5h / 줄5 7d / 줄6 cost / 줄7 푸터(버전).
-#    cwd=/tmp 는 브랜치가 없어 줄1은 시간·경로만, 줄2엔 계정만 남는다.
+# --- T7: 세 행 구성 (rate 있음, 브랜치 없음) ---
+#    행1 시간·경로 / 행2 계정·버전·세션 / 행3 ctx·모델·effort·5h·7d.
 OUT=$(run "$(json_with)" 200)
-assert_equals   "T7 총 7줄(시간·계정·ctx·5h·7d·cost·푸터)" "7" "$(nlines "$OUT")"
-assert_match    "T7 ctx 게이지 줄"  'ctx [0-9]'  "$OUT"
-assert_match    "T7 5h rate 존재" '5h [0-9]'    "$OUT"
-assert_match    "T7 7d rate 존재" '7d [0-9]'    "$OUT"
-assert_contains "T7 cost 줄 존재" "cost " "$OUT"
+assert_equals "T7 총 3행" "3" "$(nlines "$OUT")"
+assert_match  "T7 행3 ctx"  'ctx [0-9]'  "$(nth_line 3 "$OUT")"
+assert_match  "T7 행3 5h"   '5h [0-9]'   "$(nth_line 3 "$OUT")"
+assert_match  "T7 행3 7d"   '7d [0-9]'   "$(nth_line 3 "$OUT")"
 
-# --- T7-model: 모델·effort 는 ctx 줄 % 뒤에, 버전은 맨 아래 푸터 줄에 온다 ---
+# --- T7-model: 모델·effort 는 ctx 뒤에, 버전은 행2 에 온다 ---
 OUT=$(run "$(json_with)" 200)
-CTXLN=$(printf '%s\n' "$OUT" | grep '^ctx ')
-FOOT=$(printf '%s\n' "$OUT" | tail -1)
-assert_match "T7-model ctx 줄 % 뒤 모델명" 'ctx .*% Opus 4\.8' "$CTXLN"
-assert_match "T7-model 푸터 줄 버전" '^v2\.1\.11' "$FOOT"
+assert_match    "T7-model ctx 뒤 모델명" 'ctx [0-9]+% Opus 4\.8' "$(nth_line 3 "$OUT")"
+assert_contains "T7-model 행2 버전" "v2.1.11" "$(nth_line 2 "$OUT")"
 
 # --- T33: 모델명 파싱이 sed 없이도 "이름 버전" 표기를 유지한다 ---
 OUT=$(run "$(json_with)" 200)
 assert_match "T33 모델 이름+버전 표기 유지" 'Opus 4\.8' "$OUT"
 
-# --- T8: 5h 와 7d 가 각자 다른 줄에 온다(세로 스택, 파이프 없음) ---
+# --- T8: 5h 와 7d 는 ctx 와 같은 행(행3)에 병합되어 나온다(파이프 없음) ---
+#    Task 4 의 게이지 병합으로 각자 줄에 온다는 이전 기대는 성립하지 않는다. 5h·7d 는
+#    행3 하나에만 나타나고(중복 없음), 그 행에 파이프 구분자는 쓰지 않는다.
 OUT=$(run "$(json_with)" 200)
-H5=$(printf '%s\n' "$OUT" | grep '5h [0-9]')
-assert_equals       "T8 5h 게이지 줄 1개" "1" "$(printf '%s\n' "$OUT" | grep -c '5h [0-9]')"
-assert_equals       "T8 7d 게이지 줄 1개" "1" "$(printf '%s\n' "$OUT" | grep -c '7d [0-9]')"
-assert_not_contains "T8 5h 줄에 7d 없음(각자 줄)" "7d" "$H5"
-assert_equals       "T8 5h 줄 파이프 없음" "0" "$(count_char '|' "$H5")"
+L3=$(nth_line 3 "$OUT")
+assert_equals   "T8 5h 게이지 1개(행3)" "1" "$(printf '%s\n' "$OUT" | grep -c '5h [0-9]')"
+assert_equals   "T8 7d 게이지 1개(행3)" "1" "$(printf '%s\n' "$OUT" | grep -c '7d [0-9]')"
+assert_contains "T8 5h 는 행3 에 있음" "5h" "$L3"
+assert_contains "T8 7d 는 행3 에 있음" "7d" "$L3"
+assert_equals   "T8 행3 파이프 없음" "0" "$(count_char '|' "$L3")"
 
 # --- T9: effort → Claude Code 원형 글리프 + 웜 게이지 색(low=초록 … max=빨강, ultracode=마젠타) ---
 #    글리프 모양과 색이 함께 단계를 표현한다. rate 없는 json_eff 로 색 오염을 막고 색을 글리프에 직접 묶어 검증.
@@ -266,30 +234,22 @@ OUT=$(run "$(json_no_effort)" 200)
 assert_no_match "T10 effort 부재 시 글리프 없음" "○|◐|●|◉|◈|✦" "$OUT"
 assert_contains "T10 모델명은 유지" "Opus 4.8" "$OUT"
 
-# --- T11: 첫 줄은 시간·경로만 — 계정·브랜치는 첫 줄에 없다 ---
+# --- T11: 행1 은 시간·경로만 — 계정·버전·세션은 행2 ---
 OUT=$(run "$(json_with)" 200)
 FIRST=$(first_line "$OUT")
-assert_equals   "T11 첫 줄 파이프 없음" "0" "$(count_char '|' "$FIRST")"
-assert_not_contains "T11 첫 줄에 gh 계정 없음" "gh@" "$FIRST"
-assert_contains "T11 둘째 줄에 gh 계정" "gh@personal" "$(nth_line 2 "$OUT")"
+assert_not_contains "T11 행1 에 gh 계정 없음" "gh@" "$FIRST"
+assert_not_contains "T11 행1 에 버전 없음" "v2.1.11" "$FIRST"
+assert_contains     "T11 행2 에 gh 계정" "gh@personal" "$(nth_line 2 "$OUT")"
 
-# --- T12: 비용 줄은 24h/7d/당월을 흐린 슬래시로 구분(파이프 없음) ---
-OUT=$(run "$(json_with)" 55)
-COSTLN=$(printf '%s\n' "$OUT" | grep 'cost ')
-assert_match  "T12 cost 24h/7d 슬래시" '^cost +24h .*\$.* +/ +7d' "$COSTLN"
-assert_equals "T12 cost 줄 파이프 없음" "0" "$(count_char '|' "$COSTLN")"
-assert_equals "T12 cost 줄 슬래시 정확히 2개" "2" "$(count_char '/' "$COSTLN")"
+# --- T13: rate 부재면 행3 에 ctx 만 남고 행 수는 그대로 3 ---
+OUT=$(run "$(json_without)" 200)
+assert_equals   "T13 rate 부재에도 3행" "3" "$(nlines "$OUT")"
+assert_match    "T13 행3 ctx 유지" 'ctx [0-9]' "$(nth_line 3 "$OUT")"
+assert_no_match "T13 5h 없음" '5h [0-9]' "$OUT"
+assert_no_match "T13 7d 없음" '7d [0-9]' "$OUT"
 
-# --- T13: rate 부재 시 rate 줄(5h·7d) 통째 생략 (시간·계정·ctx+모델·cost·푸터 5줄) ---
-#    데이터가 없는 경우의 정당한 부재 단언(안전 게이트).
-OUT=$(run "$(json_without)" 55)
-assert_equals   "T13 rate 부재 시 5줄" "5" "$(nlines "$OUT")"
-assert_no_match "T13 5h rate 줄 없음" '5h [0-9]' "$OUT"
-assert_no_match "T13 7d rate 줄 없음" '7d [0-9]' "$OUT"
-assert_contains "T13 cost 줄은 유지" "cost " "$OUT"
-
-# --- T14: 버전 무손실 — 버전 표시 (폭 무관 동일) ---
-OUT=$(run "$(json_with)" 55)
+# --- T14: 버전 무손실 ---
+OUT=$(run "$(json_with)" 200)
 assert_contains "T14 버전 표시" "v2.1.11" "$OUT"
 
 # --- T15: 리셋 무손실 — 5h·7d 리셋(↺) 둘 다 유지 ---
@@ -356,17 +316,30 @@ CORAL=$(printf '\033[38;5;173m')
 RAW=$(run_raw "$(json_without)" 200)
 assert_contains "T26 계정 이메일 coral(173) 색" "${CORAL}octocat@example.com" "$RAW"
 
-# --- T27: 세션 ID(전체 UUID)가 맨 아래 푸터 줄의 ⧉ 뒤에 축약 없이 나온다 ---
-#    브랜치 fixture 는 session_id 를 포함한다. 부재 fixture(json_without)에는 ⧉ 가 없다.
+# --- T27: 세션 ID 는 앞 6자만 행2 에 온다 ---
 if [ "$HAVE_GIT" = "1" ]; then
   OUT=$(run "$(json_branch)" 200)
-  assert_contains "T27 푸터 줄에 세션 ID 마커+전체 UUID" "⧉ ${KNOWN_SESSION}" "$(printf '%s\n' "$OUT" | tail -1)"
-  assert_not_contains "T27 첫 줄엔 세션 ID 없음" "⧉" "$(first_line "$OUT")"
+  SESS6=$(printf '%s' "$KNOWN_SESSION" | cut -c1-6)
+  assert_contains     "T27 행2 에 세션 마커+접두 6자" "⧉ ${SESS6}" "$(nth_line 2 "$OUT")"
+  assert_not_contains "T27 전체 UUID 는 표시하지 않음" "$KNOWN_SESSION" "$OUT"
+  assert_not_contains "T27 행1 에 세션 없음" "⧉" "$(first_line "$OUT")"
 else
   printf 'SKIP T27 (git fixture 미생성)\n'
 fi
 OUT=$(run "$(json_without)" 200)
 assert_not_contains "T27 session_id 부재 시 ⧉ 없음" "⧉" "$OUT"
+
+# --- T41: 모든 행이 74칼럼을 넘지 않는다 ---
+check_all_widths() {
+  _bad=0
+  printf '%s\n' "$1" | while IFS= read -r _l; do
+    [ "$(vwidth_of "$_l")" -gt 74 ] && printf 'over\n'
+  done | grep -q over && _bad=1
+  [ "$_bad" -eq 0 ] && printf 'ok' || printf 'over74'
+}
+for _fx in "$(json_with)" "$(json_without)" "$(json_high)" "$(json_pct 100 100)"; do
+  assert_equals "T41 모든 행 74칼럼 이내" "ok" "$(check_all_widths "$(run "$_fx" 200)")"
+done
 
 # --- T25: gh 라벨을 설정 파일에서 매핑 (소스에 계정명 하드코딩 없음) ---
 #    매핑된 계정은 라벨로, 미매핑은 계정명 그대로, 빈 값은 gh@---. 색코드 비숫자는 기본색으로 폴백.
