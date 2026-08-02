@@ -486,7 +486,10 @@ ${ln}"
 # 폭 0으로 세므로 색이 입혀진 경로를 그대로 넘긴다. 브랜치는 색 없는 이름만 넘기고 아이콘과
 # 색은 절단 뒤에 입힌다 — 아이콘 한 칸은 awk 의 예산 66 바깥에서 따로 셈한다.
 # 수정 시 검토 관점: 여기의 시각·공백 폭과 fit-line1.awk 의 예산 상수는 한 쌍이다. 한쪽만
-# 바꾸면 74칼럼 상한이 조용히 깨진다.
+# 바꾸면 74칼럼 상한이 조용히 깨진다. 또한 read 가 줄을 찾지 못하면 그 변수는 빈 세그먼트를
+# 뜻해야 한다 — 브랜치가 없어 awk 가 둘째 줄을 빈 문자열로 낼 때 $(...) 가 후행 개행을 모두
+# 지워 그 줄 자체가 사라질 수 있고, 그러면 read 가 EOF 로 실패한다. read 직전에 두 변수를
+# 비워 두어, 그 실패가 이전 값이 아니라 항상 빈 문자열로 귀결되게 한다.
 time_seg="${GREEN}${NOW_CLOCK}${RST}"
 path_seg=$(shorten_path "$cwd")
 branch_name=""
@@ -494,6 +497,8 @@ branch_name=""
 
 _fit=$(printf '%s\n%s\n' "$path_seg" "$branch_name" \
   | LC_ALL=C awk -f "$PLUGIN_ROOT/scripts/fit-line1.awk")
+path_seg=""
+branch_name=""
 { IFS= read -r path_seg || true; IFS= read -r branch_name || true; } <<FITOUT
 $_fit
 FITOUT
