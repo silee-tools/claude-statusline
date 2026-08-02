@@ -482,10 +482,24 @@ ${ln}"
 
 # 줄1: 시간 경로 브랜치. 브랜치는 코드상 위치라 경로와 같은 줄에 둔다. 괄호 대신 아이콘( )을
 # 이름 바로 앞에 붙인다(사이 공백 없음). 브랜치가 없으면 시간·경로만 남는다.
+# 경로와 브랜치는 가변 길이라 fit-line1.awk 가 표시 폭 예산에 맞춰 줄인다. awk 는 색 코드를
+# 폭 0으로 세므로 색이 입혀진 경로를 그대로 넘긴다. 브랜치는 색 없는 이름만 넘기고 아이콘과
+# 색은 절단 뒤에 입힌다 — 아이콘 한 칸은 awk 의 예산 66 바깥에서 따로 셈한다.
+# 수정 시 검토 관점: 여기의 시각·공백 폭과 fit-line1.awk 의 예산 상수는 한 쌍이다. 한쪽만
+# 바꾸면 74칼럼 상한이 조용히 깨진다.
 time_seg="${GREEN}${NOW_CLOCK}${RST}"
 path_seg=$(shorten_path "$cwd")
+branch_name=""
+[ -n "$branch" ] && branch_name=$(shorten_branch "$branch")
+
+_fit=$(printf '%s\n%s\n' "$path_seg" "$branch_name" \
+  | LC_ALL=C awk -f "$PLUGIN_ROOT/scripts/fit-line1.awk")
+{ IFS= read -r path_seg || true; IFS= read -r branch_name || true; } <<FITOUT
+$_fit
+FITOUT
+
 line_loc="${time_seg} ${path_seg}"
-[ -n "$branch" ] && line_loc="${line_loc} ${MAGENTA}${BRANCH_GLYPH}$(shorten_branch "$branch")${RST}"
+[ -n "$branch_name" ] && line_loc="${line_loc} ${MAGENTA}${BRANCH_GLYPH}${branch_name}${RST}"
 
 # 줄2: Claude계정 gh계정 aws세션. 계정·인증만 모은다. 값 없는 항목은 자연히 빠지고 남은 항목만
 # 공백으로 잇는다. 수정 시 검토 관점: 조립 순서를 바꾸려면 이 append_meta 호출 순서만 바꾼다.

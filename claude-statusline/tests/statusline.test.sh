@@ -32,6 +32,7 @@ ln -sf "$SRC/scripts/statusline.sh" "$TMPROOT/scripts/statusline.sh"
 ln -sf "$SRC/scripts/shorten.sh" "$TMPROOT/scripts/shorten.sh"
 ln -sf "$SRC/scripts/shorten-lib.sh" "$TMPROOT/scripts/shorten-lib.sh"
 ln -sf "$SRC/scripts/json.awk" "$TMPROOT/scripts/json.awk"
+ln -sf "$SRC/scripts/fit-line1.awk" "$TMPROOT/scripts/fit-line1.awk"
 SL="$TMPROOT/scripts/statusline.sh"
 
 # gh 계정 fixture: 현재 계정명 캐시 + 계정→라벨 매핑 설정 파일. 실제 계정명 대신 테스트용
@@ -149,6 +150,24 @@ nlines()    { printf '%s\n' "$1" | wc -l | tr -d ' '; }
 first_line(){ printf '%s\n' "$1" | sed -n '1p'; }
 nth_line()  { printf '%s\n' "$2" | sed -n "${1}p"; }
 count_char(){ printf '%s' "$2" | grep -o "$1" | wc -l | tr -d ' '; }
+
+# 색 코드를 뺀 표시 폭. 한글 등 두 칸 문자를 두 칸으로 센다(74칼럼 단언용).
+vwidth_of() {
+  printf '%s' "$1" | sed "s/${ESC}\[[0-9;]*m//g" | LC_ALL=C awk '
+    function wide(s) {
+      if (length(s) == 4) return 1
+      if (length(s) != 3) return 0
+      if (s >= "\341\204\200" && s <= "\341\205\237") return 1
+      if (s >= "\342\272\200" && s <= "\352\223\217") return 1
+      if (s >= "\352\260\200" && s <= "\355\236\243") return 1
+      return 0
+    }
+    { n=length($0); i=1; t=0
+      while (i<=n) { c=substr($0,i,1)
+        if (c < "\200") L=1; else if (c < "\340") L=2; else if (c < "\360") L=3; else L=4
+        t += wide(substr($0,i,L)) ? 2 : 1; i += L }
+      printf "%d", t }'
+}
 
 pass=0
 fail=0
@@ -311,6 +330,23 @@ if [ "$HAVE_GIT" = "1" ]; then
   assert_equals       "T18 첫 줄 파이프 없음" "0" "$(count_char '|' "$FIRST")"
 else
   printf 'SKIP T18 (git fixture 미생성)\n'
+fi
+
+# --- T40: 첫 행은 74칼럼을 넘지 않는다(긴 경로·브랜치를 폭 기준으로 절단) ---
+if [ "$HAVE_GIT" = "1" ]; then
+  LONGREPO="$TMPROOT/deep/aa/bb/cc/dd/very-long-project-directory-name"
+  mkdir -p "$LONGREPO"
+  ( cd "$LONGREPO" \
+    && git init -q \
+    && git symbolic-ref HEAD refs/heads/feature/PROJ-1469-connect-api-secrets-long \
+    && git -c commit.gpgsign=false -c user.email=t@example.com -c user.name=t \
+           commit -q --allow-empty -m init ) >/dev/null 2>&1
+  OUT=$(HOME="$TMPROOT" run "$(printf '{"workspace":{"current_dir":"%s"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.11.0"}' "$LONGREPO")" 200)
+  W1=$(vwidth_of "$(first_line "$OUT")")
+  assert_equals "T40 첫 행 74칼럼 이내" "yes" "$([ "$W1" -le 74 ] && echo yes || echo "no($W1)")"
+  assert_contains "T40 잘린 자리에 줄임표" "…" "$(first_line "$OUT")"
+else
+  printf 'SKIP T40 (git fixture 미생성)\n'
 fi
 
 # --- T26: Claude Code 계정 이메일이 둘째 줄에 나온다 (.claude.json 의 oauthAccount.emailAddress) ---
