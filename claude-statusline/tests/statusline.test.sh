@@ -571,5 +571,11 @@ else
   echo "warn: saml2aws 미설치 — T36 을 건너뜁니다" >&2
 fi
 
+# --- T42: 두 매니페스트의 버전이 같다 ---
+PV=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$SRC/.claude-plugin/plugin.json" | head -1)
+MV=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$(dirname "$SRC")/.claude-plugin/marketplace.json" | sed -n 2p)
+assert_equals "T42 plugin.json 과 marketplace.json 버전 일치" "$PV" "$MV"
+assert_equals "T42 버전이 3.0.0 으로 올라감" "3.0.0" "$PV"
+
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
