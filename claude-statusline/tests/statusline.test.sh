@@ -191,11 +191,10 @@ assert_match "T1 5h 소진율 표시" '5h [0-9]+%' "$OUT"
 assert_match "T1 7d 소진율 표시" '7d [0-9]+%' "$OUT"
 assert_match "T1 5h 리셋 분 단위 표기" "↺[0-9]+h[0-9]+m" "$OUT"
 
-# --- T2: rate_limits 없으면 rate 막대 줄이 없고, 비용은 남는다 ---
-#    비용의 '7d $605' 라벨과 구분되도록 '막대를 동반한 rate' 부재로 검사한다.
+# --- T2: rate_limits 없으면 비용은 남는다 ---
+#    rate 부재 시 5h/7d 세그먼트 자체가 통째로 생략되는지는 T13 이 같은 fixture(json_without)로
+#    검증한다(단일 소유). 여기서는 그와 무관한 비용 라벨 생존만 본다.
 OUT=$(run "$(json_without)" 200)
-assert_no_match "T2 5h rate 세그먼트 부재" "5h +█" "$OUT"
-assert_no_match "T2 7d rate 세그먼트 부재" "7d +█" "$OUT"
 assert_contains "T2 24h 비용 라벨 유지" "24h" "$OUT"
 
 # --- T3: 비용이 새 형태로 나온다: 24h Opus $12 / 7d $605 / 30d $605 (흐린 슬래시 구분) ---
