@@ -14,6 +14,9 @@ assert_equals() { if [ "$3" = "$2" ]; then ok "$1"; else bad "$1 (expected [$2])
 # 두 줄을 넣고 두 줄을 받는다.
 fit() { printf '%s\n%s\n' "$1" "$2" | LC_ALL=C awk -f "$AWKP"; }
 # 색 코드를 뺀 표시 폭. 한글 등 두 칸 문자를 두 칸으로 센다.
+# fit-line1.awk 의 is_wide 가 다루는 8개 범위 중 이 스위트의 픽스처가 실제로 쓰는 3개
+# (한글 자모·CJK·한글 음절)만 옮겼다. 의도적인 부분 오라클이다 — 구현에서 그대로 가져와
+# 쓰지 않고 독립적으로 유지하기 위해서다. 완전한 폭 분류기로 오인하지 않는다.
 vwidth() {
   printf '%s' "$1" | sed "s/${ESC}\[[0-9;]*m//g" | LC_ALL=C awk '
     function wide(s) {

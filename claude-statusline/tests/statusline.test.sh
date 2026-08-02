@@ -134,7 +134,38 @@ first_line(){ printf '%s\n' "$1" | sed -n '1p'; }
 nth_line()  { printf '%s\n' "$2" | sed -n "${1}p"; }
 count_char(){ printf '%s' "$2" | grep -o "$1" | wc -l | tr -d ' '; }
 
+# 문자열(색 코드 제거 후)이 완전한 UTF-8 시퀀스로만 이뤄져 있는지 검증한다. 잘린 다중바이트
+# 문자(선행 바이트만 남거나 연속 바이트가 모자란 경우)가 있으면 "bad", 없으면 "ok".
+# fit-line1.awk 의 절단이 두 칸 문자를 반으로 쪼개지 않는지를 실제 렌더 결과로 확인할 때 쓴다.
+utf8_intact() {
+  printf '%s' "$1" | sed "s/${ESC}\[[0-9;]*m//g" | LC_ALL=C awk '
+    {
+      n = length($0); i = 1; ok = 1
+      while (i <= n) {
+        c = substr($0, i, 1)
+        if (c < "\200")                    { L = 1 }
+        else if (c >= "\300" && c < "\340") { L = 2 }
+        else if (c >= "\340" && c < "\360") { L = 3 }
+        else if (c >= "\360" && c < "\370") { L = 4 }
+        else                                { ok = 0; break }
+        if (i + L - 1 > n) { ok = 0; break }
+        j = 1
+        while (j < L) {
+          cc = substr($0, i + j, 1)
+          if (cc < "\200" || cc >= "\300") { ok = 0; break }
+          j++
+        }
+        if (!ok) break
+        i += L
+      }
+      print (ok ? "ok" : "bad")
+    }'
+}
+
 # 색 코드를 뺀 표시 폭. 한글 등 두 칸 문자를 두 칸으로 센다(74칼럼 단언용).
+# 구현(fit-line1.awk 의 is_wide)이 다루는 8개 범위 중 이 스위트의 픽스처가 실제로 쓰는
+# 3개(한글 자모·CJK·한글 음절)만 옮겼다. 의도적인 부분 오라클이다 — 구현에서 그대로 가져와
+# 쓰지 않고 독립적으로 유지하기 위해서다. 완전한 폭 분류기로 오인하지 않는다.
 vwidth_of() {
   printf '%s' "$1" | sed "s/${ESC}\[[0-9;]*m//g" | LC_ALL=C awk '
     function wide(s) {
@@ -291,21 +322,40 @@ else
 fi
 
 # --- T40: 첫 행은 74칼럼을 넘지 않는다(긴 경로·브랜치를 폭 기준으로 절단) ---
+#    브랜치명에 한글을 넣어 fit-line1.awk 의 바이트 지향 계약(LC_ALL=C 호출)을 fit.test.sh 의
+#    직접 awk 호출이 아니라 statusline.sh 의 실제 호출부를 거쳐 검증한다. 이 호출부에서
+#    LC_ALL=C 가 빠지면(문자 지향 awk 로 length()/substr() 가 바뀌는 구현에서) 두 칸 문자가
+#    반으로 쪼개지거나 폭 계산이 틀어질 수 있는데, 그 회귀는 fit.test.sh(자체 LC_ALL=C 로
+#    awk 를 직접 호출)와 T40 의 옛 ASCII 브랜치 픽스처 어느 쪽도 잡지 못했다.
 if [ "$HAVE_GIT" = "1" ]; then
   LONGREPO="$TMPROOT/deep/aa/bb/cc/dd/very-long-project-directory-name"
   mkdir -p "$LONGREPO"
   ( cd "$LONGREPO" \
     && git init -q \
-    && git symbolic-ref HEAD refs/heads/feature/PROJ-1469-connect-api-secrets-long \
+    && git symbolic-ref HEAD "refs/heads/한글브랜치이름아주길게테스트용문자열모음입니다" \
     && git -c commit.gpgsign=false -c user.email=t@example.com -c user.name=t \
            commit -q --allow-empty -m init ) >/dev/null 2>&1
   OUT=$(HOME="$TMPROOT" run "$(printf '{"workspace":{"current_dir":"%s"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.11.0"}' "$LONGREPO")" 200)
-  W1=$(vwidth_of "$(first_line "$OUT")")
+  FIRST=$(first_line "$OUT")
+  W1=$(vwidth_of "$FIRST")
   assert_equals "T40 첫 행 74칼럼 이내" "yes" "$([ "$W1" -le 74 ] && echo yes || echo "no($W1)")"
-  assert_contains "T40 잘린 자리에 줄임표" "…" "$(first_line "$OUT")"
+  assert_contains "T40 잘린 자리에 줄임표" "…" "$FIRST"
+  assert_contains "T40 한글 브랜치가 첫 행에 온다" "한글브랜치" "$FIRST"
+  assert_equals   "T40 한글 브랜치가 반으로 쪼개지지 않음(유효 UTF-8)" "ok" "$(utf8_intact "$FIRST")"
 else
   printf 'SKIP T40 (git fixture 미생성)\n'
 fi
+
+# --- T43: fit-line1.awk 가 없거나 실행에 실패해도 statusline 은 빈 출력이 아니다 ---
+#    _fit=$(... | awk -f ...) 를 set -eu 아래서 감싸지 않으면, 그 프로그램 파일을 못 여는
+#    실패가 스크립트 전체를 조기 종료시켜 stdout 이 0바이트가 된다. fit-line1.awk 심볼릭
+#    링크를 잠시 치워 그 실패를 재현하고, 출력이 비지 않고 경로가 남는지(미절단 저하) 확인한다.
+FITLINK="$TMPROOT/scripts/fit-line1.awk"
+mv "$FITLINK" "$FITLINK.bak"
+OUT=$(run "$(json_without)" 200)
+assert_equals   "T43 awk 프로그램 부재에도 출력이 비지 않음" "no" "$([ -z "$OUT" ] && echo yes || echo no)"
+assert_contains "T43 awk 프로그램 부재에도 경로는 유지됨(미절단 저하)" "/tmp" "$OUT"
+mv "$FITLINK.bak" "$FITLINK"
 
 # --- T26: Claude Code 계정 이메일이 둘째 줄에 나온다 (.claude.json 의 oauthAccount.emailAddress) ---
 #    라벨 접두 없이 이메일 그대로, coral(173) 색으로 렌더한다. cwd=/tmp 라 브랜치 없이 계정만 있는 줄2.
@@ -329,7 +379,20 @@ fi
 OUT=$(run "$(json_without)" 200)
 assert_not_contains "T27 session_id 부재 시 ⧉ 없음" "⧉" "$OUT"
 
-# --- T41: 모든 행이 74칼럼을 넘지 않는다 ---
+# --- T44: 세션 id 가 6자 미만이면 접두 대신 전체 값을 그대로 쓴다 ---
+#    ${var#??????} 는 6자 미만 문자열에 매치하지 않아 원본이 그대로 남고, 이어지는
+#    ${var%"$var"} 는 빈 문자열이 된다 — 그 결과 마커만 남고 id 가 사라진다. 실제 세션 id 는
+#    36자 UUID 라 이 경로를 타지 않지만, 가드 한 줄로 그 빈 접두를 막는다.
+json_short_session() {
+  printf '{"session_id":"abc","workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.11.0"}'
+}
+OUT=$(run "$(json_short_session)" 200)
+assert_contains "T44 6자 미만 세션 id 는 전체 값 표시" "⧉ abc" "$(nth_line 2 "$OUT")"
+
+# --- T41: 이 픽스처 조합에서는 우연히 모든 행이 74칼럼 안에 든다(캐노리, 상한 아님) ---
+#    2행과 3행은 설계상(비목표 문서 참고) 폭 상한이 없다. 아래 픽스처는 전부 cwd=/tmp 처럼
+#    짧은 값만 쓰므로 이 단언은 "그 조합이 지금 이 정도"를 보는 캐노리일 뿐, 2·3행에 74칼럼
+#    상한이 있다는 보증이 아니다. 상한은 T40 이 검증하는 1행에만 있다.
 check_all_widths() {
   _bad=0
   printf '%s\n' "$1" | while IFS= read -r _l; do
@@ -338,7 +401,7 @@ check_all_widths() {
   [ "$_bad" -eq 0 ] && printf 'ok' || printf 'over74'
 }
 for _fx in "$(json_with)" "$(json_without)" "$(json_high)" "$(json_pct 100 100)"; do
-  assert_equals "T41 모든 행 74칼럼 이내" "ok" "$(check_all_widths "$(run "$_fx" 200)")"
+  assert_equals "T41 짧은 cwd 픽스처의 우연한 74칼럼 이내(캐노리, 상한 아님)" "ok" "$(check_all_widths "$(run "$_fx" 200)")"
 done
 
 # --- T25: gh 라벨을 설정 파일에서 매핑 (소스에 계정명 하드코딩 없음) ---
@@ -572,10 +635,13 @@ else
 fi
 
 # --- T42: 두 매니페스트의 버전이 같다 ---
+#    불변은 두 매니페스트의 버전 동일성이다. 리터럴 버전을 못박으면 다음 기능 변경의
+#    버전 범프(AGENTS.md 의 필수 절차)마다 이 테스트가 붉어진다 — 그래서 특정 값을 이름
+#    붙이지 않고 SemVer 세 자리 형태인지만 모양으로 가드한다.
 PV=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$SRC/.claude-plugin/plugin.json" | head -1)
 MV=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$(dirname "$SRC")/.claude-plugin/marketplace.json" | sed -n 2p)
 assert_equals "T42 plugin.json 과 marketplace.json 버전 일치" "$PV" "$MV"
-assert_equals "T42 버전이 3.0.0 으로 올라감" "3.0.0" "$PV"
+assert_match  "T42 버전이 SemVer 세 자리 형태" '^[0-9]+\.[0-9]+\.[0-9]+$' "$PV"
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
