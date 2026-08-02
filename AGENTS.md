@@ -3,9 +3,9 @@
 Guidance for AI agents and contributors working in this repository.
 
 This repo is a single Claude Code plugin, `claude-statusline`: a
-three-row statusline HUD capped at 74 display columns. End-user documentation
-lives in [README.md](README.md); this file covers how to change the code
-safely.
+three-row statusline HUD whose first row is capped at 74 display columns.
+End-user documentation lives in [README.md](README.md); this file covers how
+to change the code safely.
 
 ## Structure
 
