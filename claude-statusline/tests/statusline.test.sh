@@ -42,6 +42,21 @@ printf 'octocat=personal,214\ntestwork=work,27\nbadcolor=weird,zz\n' > "$TMPROOT
 # RFC 2606 예약 도메인으로 실재 계정과 충돌을 막는다.
 printf '{"oauthAccount":{"emailAddress":"octocat@example.com"}}' > "$TMPROOT/.claude.json"
 
+# AWS 세션 fixture: format_aws 가 개발자의 실제 ~/.aws/credentials 를 읽지 않도록 먼 미래의
+# 만료 시각만 담은 자격증명 파일을 만든다. 진짜 액세스 키·시크릿 같은 키 자료는 없고, 파서가
+# 읽는 x_security_token_expires 필드만 담는다. saml2aws 가 설치돼 있으면 이 fixture 가
+# aws:✓ 를 결정론적으로 렌더하고, saml2aws 가 없으면 format_aws 는 이 파일을 열어보지도
+# 않고 즉시 빈 문자열을 반환하므로(첫 줄의 command -v 가드) 두 환경 모두에서 suite 가
+# 통과한다. 파일명을 T36 전용 fixture($TMPROOT/aws-credentials)와 다르게 둬, 공유 캐시
+# ($CACHE_DIR/aws-exp.env)가 mtime 비교로 서로의 파싱 결과를 잘못 재사용하지 않게 한다.
+# date 포맷팅은 -u 로 UTC 값을 찍는다 — 로컬 시각을 찍고 +0000 라벨만 붙이면(로컬 타임존이
+# UTC 가 아닐 때) format_aws 가 파싱한 epoch 가 로컬 UTC 오프셋만큼 어긋난다.
+AWS_FIXTURE_EXP=$(( $(date +%s) + 315360000 ))  # ~10년 뒤
+AWS_CREDS_FIXTURE="$TMPROOT/aws-credentials-fixture"
+printf '[default]\nx_security_token_expires = %s\n' \
+  "$(date -u -r "$AWS_FIXTURE_EXP" '+%Y-%m-%dT%H:%M:%S+0000' 2>/dev/null || date -u -d "@$AWS_FIXTURE_EXP" '+%Y-%m-%dT%H:%M:%S+0000')" \
+  > "$AWS_CREDS_FIXTURE"
+
 # 세션 ID fixture: 알려진 UUID. 축약 없이 전체가 그대로 렌더되는지 검증한다.
 KNOWN_SESSION="11111111-2222-3333-4444-555555555555"
 
@@ -120,10 +135,11 @@ json_eff() {
   printf '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":40000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.1.11","effort":{"level":"%s"}}' "$1"
 }
 
-# 색 코드 제거한 출력. XDG_DATA_HOME·XDG_CONFIG_HOME·XDG_CACHE_HOME 을 TMPROOT 로 고정해 gh 계정·매핑·비용 캐시를 결정론화한다.
-run() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" COLUMNS="$2" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
+# 색 코드 제거한 출력. XDG_DATA_HOME·XDG_CONFIG_HOME·XDG_CACHE_HOME 을 TMPROOT 로, AWS_SHARED_CREDENTIALS_FILE
+# 을 위 fixture 로 고정해 gh 계정·매핑·비용 캐시·AWS 세션 표시를 모두 결정론화한다.
+run() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS_FIXTURE" COLUMNS="$2" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
 # 색 코드 포함 원본 출력
-run_raw() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" COLUMNS="$2" sh "$SL" 2>/dev/null; }
+run_raw() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS_FIXTURE" COLUMNS="$2" sh "$SL" 2>/dev/null; }
 
 # 출력 끝에 개행이 없어 명령 치환이 후행 개행을 지우므로, 한 줄을 다시 붙여 세면 정확하다.
 # 폭 불변성 비교(T5)용. 두 렌더 사이 분 경계를 넘어도 흔들리지 않도록 시각(HH:MM)과
@@ -295,7 +311,8 @@ else
 fi
 
 # --- T17: 절대 소진율 색 임계 — 노랑 80%, 빨강 90% (페이스 오버레이 없는 fixture 로 격리) ---
-#    다른 색 소스(aws:⏳ 노랑, aws:expired 빨강)는 이 환경에 없으므로 YELLOW/RED 존재가 절대색을 가린다.
+#    다른 색 소스(aws:⏳ 노랑, aws:expired 빨강)는 AWS_SHARED_CREDENTIALS_FILE 을 먼 미래
+#    만료 fixture 로 고정해 격리했으므로 YELLOW/RED 존재가 절대색만 가리킨다.
 #    json_pct_nr 로 reset 을 빼 초과분 ▓ 강조가 색 판정에 섞이지 않게 한다.
 YELLOW=$(printf '\033[33m')
 RAW=$(run_raw "$(json_pct_nr 80 10)" 200)
