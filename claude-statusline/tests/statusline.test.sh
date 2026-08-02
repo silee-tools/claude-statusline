@@ -344,11 +344,83 @@ OUT=$(run "$(json_without)" 200)
 assert_contains "T25 미매핑 계정 → gh@<계정명>" "gh@nobody-xyz" "$(nth_line 2 "$OUT")"
 printf '' > "$TMPROOT/gh-prompt-user"
 OUT=$(run "$(json_without)" 200)
-assert_contains "T25 계정명 비면 gh@---" "gh@---" "$(nth_line 2 "$OUT")"
+assert_contains "T25 빈 캐시는 판정 이전이라 gh@?" "gh@?" "$(nth_line 2 "$OUT")"
 printf 'badcolor' > "$TMPROOT/gh-prompt-user"
 OUT=$(run "$(json_without)" 200)
 assert_contains "T25 비숫자 색코드도 라벨은 렌더(가드)" "gh@weird" "$(nth_line 2 "$OUT")"
 printf 'octocat' > "$TMPROOT/gh-prompt-user"   # 이후 테스트 위해 원복
+
+# --- T37: 캐시의 탭 네 필드 레코드를 상태별로 렌더 ---
+#    셸 프롬프트가 쓰는 레코드에서 계정명·상태·마감 시각을 각각 읽어 상태 문자(⏳Nm·!·?)와
+#    색을 붙인다. 마감 시각은 고정 숫자로 두면 시간이 지나 항상 마감 후로 판정돼 마커 검증이
+#    조용히 무력해지므로, 렌더 시점 기준 상대값으로 만든다.
+gh_cache() { printf 'v2\t%s\t%s\t%s\n' "$1" "$2" "$3" > "$TMPROOT/gh-prompt-user"; }
+GH_NOW=$(date +%s)
+
+gh_cache octocat ok 0
+OUT=$(run "$(json_without)" 200)
+assert_contains     "T37 ok 은 라벨만"              "gh@personal" "$(nth_line 2 "$OUT")"
+assert_not_contains "T37 ok 에 인증 실패 문자 없음" "gh@personal!" "$(nth_line 2 "$OUT")"
+assert_not_contains "T37 ok 에 판정 불가 문자 없음" "gh@personal?" "$(nth_line 2 "$OUT")"
+assert_not_contains "T37 ok 에 한도 마커 없음"      "⏳" "$(nth_line 2 "$OUT")"
+
+gh_cache octocat auth_failed 0
+OUT=$(run "$(json_without)" 200)
+RAW=$(run_raw "$(json_without)" 200)
+assert_contains     "T37 auth_failed 는 gh@personal!" "gh@personal!" "$(nth_line 2 "$OUT")"
+assert_contains     "T37 auth_failed 는 전체 빨강"    "${RED}gh@personal!" "$RAW"
+
+gh_cache octocat unknown 0
+OUT=$(run "$(json_without)" 200)
+RAW=$(run_raw "$(json_without)" 200)
+assert_contains     "T37 unknown 은 gh@personal?"  "gh@personal?" "$(nth_line 2 "$OUT")"
+assert_contains     "T37 unknown 은 전체 회색"     "$(printf '\033[38;5;240m')gh@personal?" "$RAW"
+
+gh_cache testwork rate_limited "$((GH_NOW + 540))"
+OUT=$(run "$(json_without)" 200)
+RAW=$(run_raw "$(json_without)" 200)
+assert_contains     "T37 rate_limited 는 gh@work⏳9m" "gh@work⏳9m" "$(nth_line 2 "$OUT")"
+assert_contains     "T37 라벨은 설정 색, 마커만 노랑" \
+  "$(printf '\033[38;5;27m')gh@work$(printf '\033[0m')$(printf '\033[33m')⏳9m" "$RAW"
+
+gh_cache testwork rate_limited "$((GH_NOW + 30))"
+OUT=$(run "$(json_without)" 200)
+assert_contains     "T37 1분 미만 남으면 1m 으로 올림" "gh@work⏳1m" "$(nth_line 2 "$OUT")"
+
+gh_cache testwork rate_limited "$((GH_NOW - 60))"
+OUT=$(run "$(json_without)" 200)
+assert_contains     "T37 마감이 지나면 라벨만"     "gh@work" "$(nth_line 2 "$OUT")"
+assert_not_contains "T37 마감이 지나면 마커 제거"  "⏳" "$(nth_line 2 "$OUT")"
+
+gh_cache testwork rate_limited notanumber
+OUT=$(run "$(json_without)" 200)
+assert_not_contains "T37 마감 시각이 숫자가 아니면 마커 없음" "⏳" "$(nth_line 2 "$OUT")"
+
+gh_cache - no_active 0
+OUT=$(run "$(json_without)" 200)
+assert_contains     "T37 no_active 는 gh@---"      "gh@---" "$(nth_line 2 "$OUT")"
+
+gh_cache - unknown 0
+OUT=$(run "$(json_without)" 200)
+assert_contains     "T37 계정명 없는 unknown 은 gh@?" "gh@?" "$(nth_line 2 "$OUT")"
+
+gh_cache - ok 0
+OUT=$(run "$(json_without)" 200)
+assert_contains     "T37 계정명 자리가 - 이면 상태보다 먼저 걸러 gh@?" "gh@?" "$(nth_line 2 "$OUT")"
+assert_no_match     "T37 gh@- 로 새지 않음" 'gh@-[[:space:]]' "$(nth_line 2 "$OUT")"
+
+printf 'v1\toctocat\tok\t0\n' > "$TMPROOT/gh-prompt-user"
+OUT=$(run "$(json_without)" 200)
+assert_contains     "T37 형식을 모르는 네 필드는 계정명만 살리고 판정 불가" \
+  "gh@personal?" "$(nth_line 2 "$OUT")"
+
+printf 'v2\toctocat\n' > "$TMPROOT/gh-prompt-user"
+OUT=$(run "$(json_without)" 200)
+assert_contains     "T37 필드 수가 어긋나면 gh@?" "gh@?" "$(nth_line 2 "$OUT")"
+
+printf 'octocat' > "$TMPROOT/gh-prompt-user"
+OUT=$(run "$(json_without)" 200)
+assert_contains     "T37 탭 없는 한 줄은 계정명으로 해석" "gh@personal" "$(nth_line 2 "$OUT")"
 
 # --- T19: 게이지(ctx·5h·7d)와 cost 값이 같은 열에서 시작한다(라벨 폭4 우측정렬) ---
 #    라벨(ctx/5h/7d/cost)을 폭4에 우측정렬해 뒤따르는 값(막대·24h)이 세로로 한 열에 선다.
