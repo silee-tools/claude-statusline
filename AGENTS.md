@@ -3,8 +3,9 @@
 Guidance for AI agents and contributors working in this repository.
 
 This repo is a single Claude Code plugin, `claude-statusline`: a
-width-independent, vertical-stack statusline HUD. End-user documentation lives in
-[README.md](README.md); this file covers how to change the code safely.
+three-row statusline HUD whose first row is capped at 74 display columns.
+End-user documentation lives in [README.md](README.md); this file covers how
+to change the code safely.
 
 ## Structure
 
@@ -19,9 +20,12 @@ width-independent, vertical-stack statusline HUD. End-user documentation lives i
     ├── scripts/
     │   ├── statusline.sh             # stdin JSON -> rendered statusline
     │   ├── shorten.sh                # path/branch shortening helper
+    │   ├── fit-line1.awk             # row-1 path/branch -> width-capped text
     │   ├── hook-handler.sh           # cost refresh + auto-setup
     │   └── refresh-cost.sh           # session log aggregation -> cost cache, background
-    └── tests/statusline.test.sh      # fixture-driven render tests
+    └── tests/
+        ├── statusline.test.sh        # fixture-driven render tests
+        └── fit.test.sh               # fit-line1.awk width and cut assertions
 ```
 
 `hooks.json` is auto-discovered; do not also declare a `hooks` field in
@@ -47,12 +51,14 @@ caller. Avoid bashisms:
 
 ```shell
 sh claude-statusline/tests/statusline.test.sh
+sh claude-statusline/tests/fit.test.sh
 ```
 
-The suite renders `statusline.sh` against fixture JSON and asserts layout, bars,
-colors, and indicators. Follow Red -> Green: add a failing test before a
-behavior change, then make it pass. Report the pass/fail counts when you change
-behavior.
+`statusline.test.sh` renders `statusline.sh` against fixture JSON and asserts
+layout, gauges, colors, and indicators. `fit.test.sh` asserts `fit-line1.awk`'s
+width calculation and cut behavior directly. Follow Red -> Green: add a
+failing test before a behavior change, then make it pass. Report the pass/fail
+counts when you change behavior.
 
 Test fixtures must not contain real people, accounts, or secrets. Use
 placeholder logins (e.g. `octocat`) and RFC 2606 reserved domains
