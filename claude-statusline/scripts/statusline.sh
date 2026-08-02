@@ -83,20 +83,6 @@ dimlabel() {
   printf '%s%s%s' "$DIM" "$1" "$RST"
 }
 
-# 라벨 텍스트를 지정 폭으로 우측 정렬한다(앞에 공백 채움). 색 코드가 없는 순수 텍스트에만 쓰고
-# 결과를 dimlabel 로 감싼다 — 정렬 폭은 표시 문자 수 기준이라 색 코드가 섞이면 어긋난다.
-# 수정 시 검토 관점: 정렬 대상 라벨(왼쪽 v버전·5h·cost, 오른쪽 ctx·7d)은 같은 폭 인자를 공유해야
-# 값 열이 세로로 맞는다. 한 열의 폭 계산을 바꾸면 그 열의 모든 라벨 호출을 함께 본다.
-ralign() { printf '%*s' "$2" "$1"; }
-
-# 소수 문자열 값이 1 이상인지 판정한다(부동소수 비교 대체). 비음수에서 v>=1 은 floor(v)>=1 과 같다.
-# 수정 시 검토 관점: 음수 입력은 가정하지 않는다(비용은 항상 0 이상).
-ge_one() {
-  _ip=${1%.*}
-  case "$_ip" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$_ip" -ge 1 ]
-}
-
 cwd=$(strip_control "$cwd")
 model_display=$(strip_control "$model_display")
 version=$(strip_control "$version")
@@ -130,8 +116,8 @@ format_model() {
 # effort(추론 강도) → Claude Code 세션 헤더와 같은 원형 글리프(low ○ / medium ◐ / high ● /
 # xhigh ◉ / max ◈ / ultracode ✦) + 웜 게이지 색(초록→빨강, ultracode 는 마젠타). 미지원·부재면 빈 문자열.
 # 모양과 색이 함께 단계를 표현한다: low=빈 원·초록 → max=채운 마름모·빨강, ultracode 는 별·마젠타.
-# 수정 시 검토 관점: 이 글리프들은 ctx·rate 막대 문자(█ ░ ▓)와 겹치지 않아야 회귀 테스트가
-# 글리프로 effort 를 특정할 수 있다. 막대 문자와 겹치는 글리프를 새로 넣지 않는다.
+# 수정 시 검토 관점: 이 글리프들은 페이스 마커(▲)나 다른 렌더 기호와 겹치지 않아야 회귀 테스트가
+# 글리프로 effort 를 특정할 수 있다. 겹치는 글리프를 새로 넣지 않는다.
 format_effort() {
   case "$1" in
     low)       printf '%s○%s' "$GREEN" "$RST" ;;
@@ -144,44 +130,19 @@ format_effort() {
   esac
 }
 
-# 소진율(0~100)을 20칸 막대로 만든다(한 칸 5%, 내림). fill_color·empty_color 로 채움/빈칸
-# 색을 입힌다(빈 문자열이면 기본 밝기). 컨텍스트·rate 막대가 같은 폭·모양을 쓰도록 공용화한다.
-# 수정 시 검토 관점: 채움은 내림이라 100% 전에는 20칸이 다 차지 않는다(예 99%→19칸). 인접
-# 5% 구간을 구분하려면 내림을 유지한다(반올림은 25% 경계 양쪽 값을 같은 칸으로 묶는다).
-render_bar() {
-  local pct="$1" fc="${2:-}" ec="${3:-}" budget="${4:-}" oc="${5:-}"
-  [ "$pct" -gt 100 ] && pct=100
-  [ "$pct" -lt 0 ] && pct=0
-  local filled=$(( pct * 20 / 100 ))  # 내림한 채움 칸 수(0~20)
-  local bar="" i=0
-  while [ "$i" -lt 20 ]; do
-    if [ "$i" -lt "$filled" ]; then
-      # budget(페이스 예산 칸)을 넘어선 채움은 초과분이므로 ▓(oc 색)으로 강조한다.
-      if [ -n "$budget" ] && [ "$i" -ge "$budget" ]; then bar="${bar}${oc}▓${RST}"
-      else bar="${bar}${fc}█${RST}"
-      fi
-    else bar="${bar}${ec}░${RST}"
-    fi
-    i=$((i + 1))
-  done
-  printf '%s' "$bar"
-}
-
-# 컨텍스트 막대: rate 막대와 같은 색 방식을 쓴다 — 채움·빈칸·% 가 한 색(cc)을 따라가고 평상시
-# 기본 밝기다. 소진율 40% 이상 노랑·70% 이상 빨강으로 승격한다(임계값만 rate 의 80/90 과 다르게
-# 더 일찍 경고). 수정 시 검토 관점: cc 를 render_bar 의 채움·빈칸 인자와 % 에 모두 넘겨 세 요소가
-# 같은 색을 쓴다는 불변조건을 유지한다 — 한 곳만 바꾸면 rate 와 색 방식이 다시 어긋난다.
-format_context_bar() {
+# 컨텍스트 소진율. 라벨은 dim, 숫자는 임계에 따라 색이 오른다(40% 노랑, 70% 빨강).
+# 수정 시 검토 관점: 이 임계(40/70)는 rate 의 80/90 과 별개다. 컨텍스트는 더 일찍 경고한다.
+format_context() {
   local current=$((input_tokens + cache_create + cache_read))
   if [ "$window_size" -le 0 ]; then
     window_size=200000
   fi
   local pct=$((current * 100 / window_size))
-  local cc=""  # 평상시 기본 밝기
+  local cc=""
   if [ "$pct" -ge 70 ]; then cc="$RED"
   elif [ "$pct" -ge 40 ]; then cc="$YELLOW"
   fi
-  printf '%s %s%d%%%s' "$(render_bar "$pct" "$cc" "$cc")" "$cc" "$pct" "$RST"
+  printf '%s %s%d%%%s' "$(dimlabel ctx)" "$cc" "$pct" "$RST"
 }
 
 # 리셋까지 남은 시간을 분 단위까지 표기한다: ↺2d3h / ↺1h23m / ↺48m
@@ -202,78 +163,42 @@ format_reset() {
 }
 
 # rate limit 세그먼트를 만든다. 소진율이 비어 있으면(구독 없음/응답 전) 빈 문자열.
-# label 은 컬럼 정렬용 라벨(dim). 막대·% 는 평상시 기본 밝기, 한도가 임박하면 노랑→빨강으로
-# 승격해 경고한다(절대 소진율 80/90 임계). 리셋(↺)은 dim.
-# window(윈도우 초: 5h=18000, 7d=604800)가 주어지면 경과 시간 비례 예산(budget) 칸을 계산해,
-# 그 칸을 넘어선 채움(시간보다 빨리 쓴 초과분)을 render_bar 가 ▓ 로 강조한다. 초과 폭이 작으면
-# 노랑, 크면(3칸 이상) 빨강. 여유(채움 ≤ 예산)면 초과분이 없어 표시되지 않는다.
-# 수정 시 검토 관점: 정보 무손실 원칙상 리셋(↺)은 항상 켠다. 폭 압박에도 떼지 않는다. 절대 소진율
-# 색(vc)과 페이스 초과색(oc)은 별개 신호다 — vc 는 "한도에 얼마나 가까운가", oc 는 "시간 대비
-# 얼마나 빨리 쓰는가". 둘을 한 색으로 합치지 않는다.
+# 소진율 숫자는 평상시 기본 밝기, 한도가 임박하면 노랑(80%)→빨강(90%)으로 승격한다.
+# window(윈도우 초: 5h=18000, 7d=604800)가 주어지면 경과 시간 비례 예산을 계산해, 그보다 앞서
+# 쓴 만큼을 ▲ 로 표시한다. 앞선 폭이 3칸(15%p) 이상이면 빨강, 그보다 적으면 노랑, 앞서지
+# 않았으면 기호를 붙이지 않는다.
+# 수정 시 검토 관점: 정보 무손실 원칙상 리셋(↺)은 항상 켠다. 절대 소진율 색과 페이스 색은 별개
+# 신호다 — 앞의 것은 한도까지의 거리, 뒤의 것은 시간 대비 속도다. 둘을 한 색으로 합치지 않는다.
 format_rate() {
   local label="$1" pct_raw="$2" reset="$3" window="${4:-}"
   [ -z "$pct_raw" ] && return 0
   local pct="${pct_raw%.*}"
   [ -z "$pct" ] && pct=0
-  local vc=""  # 값(막대·%) 색: 평상시 기본 밝기
+  local vc=""
   if [ "$pct" -ge 90 ]; then vc="$RED"
   elif [ "$pct" -ge 80 ]; then vc="$YELLOW"
   fi
-  local budget="" oc=""
+  local pace=""
   if [ -n "$reset" ] && [ -n "$window" ] && [ "$window" -gt 0 ]; then
-    local diff elapsed fill over
+    local diff elapsed budget fill over
     diff=$((reset - NOW_EPOCH)); [ "$diff" -lt 0 ] && diff=0
     elapsed=$((window - diff)); [ "$elapsed" -lt 0 ] && elapsed=0
-    budget=$(( (elapsed * 20 + window / 2) / window ))  # 반올림한 예산 칸(0~20)
+    budget=$(( (elapsed * 20 + window / 2) / window ))
     [ "$budget" -gt 20 ] && budget=20
     fill=$(( pct * 20 / 100 ))
     over=$(( fill - budget ))
-    if [ "$over" -ge 3 ]; then oc="$RED"
-    else oc="$YELLOW"
+    if [ "$over" -ge 3 ]; then pace="${RED}▲${RST}"
+    elif [ "$over" -gt 0 ]; then pace="${YELLOW}▲${RST}"
     fi
   fi
   local reset_str=""
   [ -n "$reset" ] && reset_str=" ${DIM}$(format_reset "$reset")${RST}"
-  printf '%s %s %s%d%%%s%s' \
-    "$(dimlabel "$label")" \
-    "$(render_bar "$pct" "$vc" "$vc" "$budget" "$oc")" \
-    "$vc" "$pct" "$RST" \
-    "$reset_str"
+  printf '%s %s%d%%%s%s%s' \
+    "$(dimlabel "$label")" "$vc" "$pct" "$RST" "$pace" "$reset_str"
 }
 
-# --- 비용 데이터 ---
-# 시간 축 세그먼트: 24h(당일 모델별) / 7d(주간) / 그 달 일수(당월). 조립부에서 24h 는 cost 라벨과
-# 함께 파이프 왼쪽에, 7d·당월은 파이프 오른쪽 한 묶음(공백 구분)에 놓인다.
+# cc-account.env·aws-exp.env·git-branch.env 세 캐시가 이 경로를 공유하는 기준이라 남겨 둔다.
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline"
-cost_cache="$CACHE_DIR/cost-cache.env"
-mdays=$(date -v1d -v+1m -v-1d +%d 2>/dev/null || date -d "$(date +%Y-%m-01) +1 month -1 day" +%d 2>/dev/null || echo 30)
-# 라벨(24h/7d/당월/모델명)은 dim(dimlabel), 금액($..)은 기본 밝기로 색을 나눈다.
-daily_seg="$(dimlabel 24h) \$--" weekly_seg="$(dimlabel 7d) \$--" monthly_seg="$(dimlabel "${mdays}d") \$--"
-
-cost_available=false opus=0 sonnet=0 haiku=0 w_cost=0 m_cost=0
-if [ -f "$cost_cache" ]; then
-  # sh-safe key=value. 값은 숫자·true/false 뿐이라 while read 로 안전하다(eval·source 아님).
-  while IFS='=' read -r _k _val; do
-    case "$_k" in
-      available) cost_available="$_val" ;;
-      dailyOpus) opus="$_val" ;;
-      dailySonnet) sonnet="$_val" ;;
-      dailyHaiku) haiku="$_val" ;;
-      weekly) w_cost="$_val" ;;
-      monthly) m_cost="$_val" ;;
-    esac
-  done < "$cost_cache"
-fi
-
-if [ "$cost_available" = "true" ]; then
-  weekly_seg="$(dimlabel 7d) \$${w_cost}"
-  monthly_seg="$(dimlabel "${mdays}d") \$${m_cost}"
-  parts=""
-  ge_one "$opus"   && parts="$(dimlabel Opus) \$$(printf '%.0f' "$opus")"
-  ge_one "$sonnet" && { [ -n "$parts" ] && parts="$parts "; parts="${parts}$(dimlabel Sonnet) \$$(printf '%.0f' "$sonnet")"; }
-  ge_one "$haiku"  && { [ -n "$parts" ] && parts="$parts "; parts="${parts}$(dimlabel Haiku) \$$(printf '%.0f' "$haiku")"; }
-  daily_seg="$(dimlabel 24h) ${parts:-\$0}"
-fi
 
 # --- GitHub 계정 표시기 ---
 # 활성 GitHub 계정과 그 계정의 인증·한도 상태를 라벨·색·상태 문자로 구분한다. 계정명은 소스에
@@ -531,13 +456,40 @@ ${ln}"
 
 # 줄1: 시간 경로 브랜치. 브랜치는 코드상 위치라 경로와 같은 줄에 둔다. 괄호 대신 아이콘( )을
 # 이름 바로 앞에 붙인다(사이 공백 없음). 브랜치가 없으면 시간·경로만 남는다.
+# 경로와 브랜치는 가변 길이라 fit-line1.awk 가 표시 폭 예산에 맞춰 줄인다. awk 는 색 코드를
+# 폭 0으로 세므로 색이 입혀진 경로를 그대로 넘긴다. 브랜치는 색 없는 이름만 넘기고 아이콘과
+# 색은 절단 뒤에 입힌다 — 아이콘 한 칸은 awk 의 예산 66 바깥에서 따로 셈한다.
+# 수정 시 검토 관점: 여기의 시각·공백 폭과 fit-line1.awk 의 예산 상수는 한 쌍이다. 한쪽만
+# 바꾸면 74칼럼 상한이 조용히 깨진다. 또한 read 가 줄을 찾지 못하면 그 변수는 빈 세그먼트를
+# 뜻해야 한다 — 브랜치가 없어 awk 가 둘째 줄을 빈 문자열로 낼 때 $(...) 가 후행 개행을 모두
+# 지워 그 줄 자체가 사라질 수 있고, 그러면 read 가 EOF 로 실패한다. read 직전에 두 변수를
+# 비워 두어, 그 실패가 이전 값이 아니라 항상 빈 문자열로 귀결되게 한다.
 time_seg="${GREEN}${NOW_CLOCK}${RST}"
 path_seg=$(shorten_path "$cwd")
-line_loc="${time_seg} ${path_seg}"
-[ -n "$branch" ] && line_loc="${line_loc} ${MAGENTA}${BRANCH_GLYPH}$(shorten_branch "$branch")${RST}"
+branch_name=""
+[ -n "$branch" ] && branch_name=$(shorten_branch "$branch")
 
-# 줄2: Claude계정 gh계정 aws세션. 계정·인증만 모은다. 값 없는 항목은 자연히 빠지고 남은 항목만
-# 공백으로 잇는다. 수정 시 검토 관점: 조립 순서를 바꾸려면 이 append_meta 호출 순서만 바꾼다.
+# fit-line1.awk 가 없거나 실행에 실패해도(권한·문법 오류 등) 이 한 줄이 set -eu 로 스크립트
+# 전체를 조기 종료시켜서는 안 된다. if 조건으로 감싸 실패를 흡수하고, 실패하면 path_seg·
+# branch_name 을 미절단 원본 그대로 둔다 — 74칼럼을 넘어 줄바꿈되는 저하는 감수해도 빈
+# statusline(무출력)은 감수하지 않는다.
+if _fit=$(printf '%s\n%s\n' "$path_seg" "$branch_name" \
+  | LC_ALL=C awk -f "$PLUGIN_ROOT/scripts/fit-line1.awk" 2>/dev/null); then
+  path_seg=""
+  branch_name=""
+  { IFS= read -r path_seg || true; IFS= read -r branch_name || true; } <<FITOUT
+$_fit
+FITOUT
+fi
+
+line_loc="${time_seg} ${path_seg}"
+[ -n "$branch_name" ] && line_loc="${line_loc} ${MAGENTA}${BRANCH_GLYPH}${branch_name}${RST}"
+
+# 줄2: Claude계정 gh계정 aws세션 버전 세션접두. 계정·인증과 실행을 규정하는 상수값을 모은다.
+# 값 없는 항목은 자연히 빠지고 남은 항목만 공백으로 잇는다.
+# 세션 ID 는 앞 6자만 쓴다. 이 식별자는 UUID 버전 4라 어느 자리에도 시간 정보가 없고, 접두
+# 6자면 유일 식별에 충분하다.
+# 수정 시 검토 관점: 조립 순서를 바꾸려면 이 append_meta 호출 순서만 바꾼다.
 seg_cc=$(format_cc_account)
 seg_gh=$(format_gh)
 seg_aws=$(format_aws)
@@ -549,34 +501,38 @@ append_meta() {
 append_meta "$seg_cc"
 append_meta "$seg_gh"
 append_meta "$seg_aws"
+[ -n "$version" ] && append_meta "$(dimlabel "v${version}")"
+if [ -n "$session_id" ]; then
+  if [ "${#session_id}" -lt 6 ]; then
+    # 6자 미만이면 ${var#??????} 패턴이 매치하지 않아 원본이 그대로 남고, 그 뒤 ${var%"$var"}
+    # 는 빈 문자열이 된다. 실제 UUID(36자)에서는 일어나지 않지만 전체 값으로 대체해 둔다.
+    sid6="$session_id"
+  else
+    sid6="${session_id%"${session_id#??????}"}"
+  fi
+  append_meta "${GREY240}${SESSION_GLYPH} ${sid6}${RST}"
+fi
 
-# 게이지 3종(ctx·5h·7d)은 각자 한 줄로 세로로 쌓아 채움 정도를 한눈에 비교하게 한다. 라벨
-# (ctx·5h·7d)과 cost 를 같은 폭 GW 에 우측 정렬해 뒤따르는 값(막대·금액)이 같은 열에서 시작한다.
-# ctx 는 곧 그 모델의 컨텍스트 창이므로 모델명(시안)과 effort 글리프를 ctx 줄의 % 뒤에 붙인다.
-# 수정 시 검토 관점: 네 라벨(ctx·5h·7d·cost)이 같은 GW 를 공유해야 값 열이 세로로 맞는다 — 한 곳만
-# 바꾸면 오류 없이 정렬만 조용히 어긋난다. rate 는 데이터가 없으면 format_rate 가 빈 문자열을
-# 돌려주고 emit 이 그 줄을 생략하므로, 5h·7d 는 각각 독립적으로 빠질 수 있다.
-GW=4
+# 게이지 3종(ctx·5h·7d)은 한 행(행3)에 모아 소진율을 한눈에 비교하게 한다. 막대 없이 라벨과
+# 소진율(%)만 보여준다. ctx 는 곧 그 모델의 컨텍스트 창이므로 모델명(시안)과 effort 글리프를
+# ctx 의 % 뒤에 붙인다.
+# 수정 시 검토 관점: rate 는 데이터가 없으면 format_rate 가 빈 문자열을 돌려주고, 아래 line_gauge
+# 조립의 조건부 append 가 그 세그먼트만 자연히 빼므로 5h·7d 는 각각 독립적으로 빠질 수 있다.
 model_str=$(format_model "$model_display")
 effort_ind=$(format_effort "$effort")
-line_ctx="$(dimlabel "$(ralign ctx "$GW")") $(format_context_bar)"
+line_ctx="$(format_context)"
 [ -n "$model_str" ] && line_ctx="${line_ctx} ${CYAN}${model_str}${RST}"
 [ -n "$effort_ind" ] && line_ctx="${line_ctx} ${effort_ind}"
-line_5h=$(format_rate "$(ralign 5h "$GW")" "$five_h" "$five_reset" 18000)
-line_7d=$(format_rate "$(ralign 7d "$GW")" "$week_h" "$week_reset" 604800)
+line_5h=$(format_rate 5h "$five_h" "$five_reset" 18000)
+line_7d=$(format_rate 7d "$week_h" "$week_reset" 604800)
 
-# 줄6(cost): cost 24h ... / 7d ... / <당월일수>d ...  (그룹 구분은 흐린 슬래시, 좌우 공백 한 칸)
-SLASH=" ${DIM}/${RST} "
-line_cost="$(dimlabel "$(ralign cost "$GW")") ${daily_seg}${SLASH}${weekly_seg}${SLASH}${monthly_seg}"
+# 줄3: ctx 모델 effort 5h 7d. 게이지를 한 행에 모아 소진 상태를 한눈에 본다. rate 데이터가
+# 없으면 format_rate 가 빈 문자열을 돌려주고 그 세그먼트만 빠진다.
+line_gauge="$line_ctx"
+[ -n "$line_5h" ] && line_gauge="${line_gauge} ${line_5h}"
+[ -n "$line_7d" ] && line_gauge="${line_gauge} ${line_7d}"
 
-# 줄7(푸터): v버전 ⧉세션ID. 실행을 규정하는 저관심 상수값을 맨 아래 흐린 푸터로 내린다.
-# 수정 시 검토 관점: 세션 ID 는 다른 세션이 참조하도록 복사하는 값이라 축약하지 않고 전체 UUID 를
-# 그대로 둔다. 버전·세션이 모두 없으면 emit 이 이 줄을 생략한다.
-line_foot=""
-[ -n "$version" ] && line_foot="$(dimlabel "v${version}")"
-[ -n "$session_id" ] && { [ -n "$line_foot" ] && line_foot="${line_foot} "; line_foot="${line_foot}${GREY240}${SESSION_GLYPH} ${session_id}${RST}"; }
-
-# --- 출력: 값 없는 줄은 emit 이 생략한다. 단일 줄이 폭을 넘으면 터미널 소프트랩에 맡긴다. ---
-output=$(emit "$line_loc" "$line_meta" "$line_ctx" "$line_5h" "$line_7d" "$line_cost" "$line_foot")
+# --- 출력: 값 없는 행은 emit 이 생략한다. ---
+output=$(emit "$line_loc" "$line_meta" "$line_gauge")
 
 printf '%s' "$output"

@@ -1,14 +1,13 @@
 {
   "name": "claude-statusline",
-  "description": "세로 스택 statusline: 환경 모니터링 + 비용 표시",
-  "version": "2.13.0",
+  "description": "3행 statusline: 위치·계정·세션 + 컨텍스트·사용량 게이지",
+  "version": "3.0.1",
   "author": {
     "name": "silee9019"
   },
   "keywords": [
     "statusline",
     "hud",
-    "cost",
     "context"
   ]
 }
