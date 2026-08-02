@@ -196,6 +196,7 @@ format_rate() {
     "$(dimlabel "$label")" "$vc" "$pct" "$RST" "$pace" "$reset_str"
 }
 
+# cc-account.env·aws-exp.env·git-branch.env 세 캐시가 이 경로를 공유하는 기준이라 남겨 둔다.
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline"
 
 # --- GitHub 계정 표시기 ---
@@ -419,13 +420,18 @@ path_seg=$(shorten_path "$cwd")
 branch_name=""
 [ -n "$branch" ] && branch_name=$(shorten_branch "$branch")
 
-_fit=$(printf '%s\n%s\n' "$path_seg" "$branch_name" \
-  | LC_ALL=C awk -f "$PLUGIN_ROOT/scripts/fit-line1.awk")
-path_seg=""
-branch_name=""
-{ IFS= read -r path_seg || true; IFS= read -r branch_name || true; } <<FITOUT
+# fit-line1.awk 가 없거나 실행에 실패해도(권한·문법 오류 등) 이 한 줄이 set -eu 로 스크립트
+# 전체를 조기 종료시켜서는 안 된다. if 조건으로 감싸 실패를 흡수하고, 실패하면 path_seg·
+# branch_name 을 미절단 원본 그대로 둔다 — 74칼럼을 넘어 줄바꿈되는 저하는 감수해도 빈
+# statusline(무출력)은 감수하지 않는다.
+if _fit=$(printf '%s\n%s\n' "$path_seg" "$branch_name" \
+  | LC_ALL=C awk -f "$PLUGIN_ROOT/scripts/fit-line1.awk" 2>/dev/null); then
+  path_seg=""
+  branch_name=""
+  { IFS= read -r path_seg || true; IFS= read -r branch_name || true; } <<FITOUT
 $_fit
 FITOUT
+fi
 
 line_loc="${time_seg} ${path_seg}"
 [ -n "$branch_name" ] && line_loc="${line_loc} ${MAGENTA}${BRANCH_GLYPH}${branch_name}${RST}"
@@ -448,7 +454,13 @@ append_meta "$seg_gh"
 append_meta "$seg_aws"
 [ -n "$version" ] && append_meta "$(dimlabel "v${version}")"
 if [ -n "$session_id" ]; then
-  sid6="${session_id%"${session_id#??????}"}"
+  if [ "${#session_id}" -lt 6 ]; then
+    # 6자 미만이면 ${var#??????} 패턴이 매치하지 않아 원본이 그대로 남고, 그 뒤 ${var%"$var"}
+    # 는 빈 문자열이 된다. 실제 UUID(36자)에서는 일어나지 않지만 전체 값으로 대체해 둔다.
+    sid6="$session_id"
+  else
+    sid6="${session_id%"${session_id#??????}"}"
+  fi
   append_meta "${GREY240}${SESSION_GLYPH} ${sid6}${RST}"
 fi
 
