@@ -246,7 +246,7 @@ BEGIN {
 - [ ] **Step 4: 테스트를 돌려 통과를 확인한다**
 
 Run: `sh claude-statusline/tests/fit.test.sh`
-Expected: PASS. `TOTAL pass=15 fail=0`
+Expected: PASS. `TOTAL pass=17 fail=0`
 
 - [ ] **Step 5: 커밋한다**
 
