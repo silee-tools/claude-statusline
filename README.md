@@ -3,7 +3,7 @@
 A compact, three-row statusline HUD for [Claude Code](https://code.claude.com).
 It renders location, the logged-in Claude account, git branch, GitHub/AWS
 session indicators, the Claude Code session id, context-window usage, rate
-limits, and reasoning effort — in three rows that never exceed 74 columns.
+limits, and reasoning effort — always in three rows.
 
 ```
 17:14 ~/↪1/webapp/↪1/src  feature/PROJ-123-post-editor
@@ -11,9 +11,13 @@ dev@example.com gh@personal aws:✓ v2.8.0 ⧉ 3f9c1a
 ctx 68% Opus 4.8 ● 5h 47% ↺2h30m 7d 83%▲ ↺3d16h
 ```
 
-The statusline always renders three rows and caps each at 74 display columns.
-Rows with no data are dropped entirely. The rows group by meaning: location,
-then identity and constants, then the usage gauges.
+The statusline always renders three rows. Row 1 is capped by construction —
+its path and branch are fitted to stay within 74 display columns. Rows 2 and 3
+are not truncated: row 3's content is bounded by the code that builds it, and
+row 2 stays within budget for typical account and label lengths, though an
+unusually long Claude account email or `gh@` label can make it wrap. Rows with
+no data are dropped entirely. The rows group by meaning: location, then
+identity and constants, then the usage gauges.
 
 - **Row 1 (location)** — time (`HH:MM`), the current path, and the git branch
   (prefixed with the ` ` branch icon, no space before the name). The path
@@ -43,8 +47,9 @@ at 90%.
 The `5h` and `7d` gauges also track a time-based pace budget. Over each window
 the elapsed fraction defines how much you could spend and stay on pace. When
 usage runs ahead of that budget a `▲` follows the percentage — yellow for a
-small overshoot, red once it exceeds 15 percentage points. No marker means you
-are on or under pace.
+small overshoot, red once the gap reaches about 15 percentage points. The
+comparison is quantized in 5-point steps, so that boundary is approximate, not
+an exact cutover. No marker means you are on or under pace.
 
 Costs are not displayed. The background cost cache is still refreshed, so
 restoring the display later needs no new collection.
