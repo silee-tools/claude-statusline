@@ -712,13 +712,17 @@ if command -v saml2aws >/dev/null 2>&1; then
   rm -f "$TMPROOT/cache/claude-statusline/aws-exp.env"
   FUT=$(( $(date +%s) + 7200 ))
   CREDS="$TMPROOT/aws-credentials"
+  # date 포맷팅은 -u 로 UTC 값을 찍는다 — 로컬 시각을 찍고 +0000 라벨만 붙이면(로컬 타임존이
+  # UTC 가 아닐 때) format_aws 가 파싱한 epoch 가 로컬 UTC 오프셋만큼 어긋난다.
   printf '[default]\nx_security_token_expires = %s\n' \
-    "$(date -r "$FUT" '+%Y-%m-%dT%H:%M:%S+0000' 2>/dev/null || date -d "@$FUT" '+%Y-%m-%dT%H:%M:%S+0000')" > "$CREDS"
+    "$(date -u -r "$FUT" '+%Y-%m-%dT%H:%M:%S+0000' 2>/dev/null || date -u -d "@$FUT" '+%Y-%m-%dT%H:%M:%S+0000')" > "$CREDS"
   OUT=$(printf '%s' "$(json_with)" | \
     CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" \
     XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" \
     AWS_SHARED_CREDENTIALS_FILE="$CREDS" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g")
-  assert_match "T36 파일 파싱 시 만료 epoch 캐시 생성" "exp_epoch=[0-9]+" "$(cat "$TMPROOT/cache/claude-statusline/aws-exp.env" 2>/dev/null)"
+  # 자릿수만 보는 정규식은 로컬 타임존 오프셋만큼 어긋난 epoch 도 통과시킨다. fixture 가
+  # 만든 만료 시각($FUT)과 캐시된 값이 정확히 같은지까지 확인해야 그 어긋남을 잡는다.
+  assert_equals "T36 파일 파싱 시 만료 epoch 캐시가 fixture 만료와 정확히 일치" "exp_epoch=$FUT" "$(cat "$TMPROOT/cache/claude-statusline/aws-exp.env" 2>/dev/null)"
 else
   echo "warn: saml2aws 미설치 — T36 을 건너뜁니다" >&2
 fi
