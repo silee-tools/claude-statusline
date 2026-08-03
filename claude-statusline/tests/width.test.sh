@@ -18,6 +18,11 @@ mkdir -p "$FAKEBIN"
 PS_TALLY="$TMPROOT/ps-calls"
 STTY_TALLY="$TMPROOT/stty-calls"
 PS_QUEUE="$TMPROOT/ps-queue"
+CLAUDE_STATUSLINE_TTY_DIR="$TMPROOT/dev"
+mkdir -p "$CLAUDE_STATUSLINE_TTY_DIR"
+for tty in ttys001 ttys002 ttys003 ttys004 ttys005 ttys006 ttys007 ttys008 ttys009 ttys010; do
+  : > "$CLAUDE_STATUSLINE_TTY_DIR/$tty"
+done
 
 # 가짜 ps: 실제 pid 인자는 무시하고, 호출 순번에 맞는 큐의 한 줄("tty ppid")을 낸다.
 # 큐가 바닥나면 존재하지 않는 프로세스를 조회한 것처럼 실패(exit 1)한다.
@@ -31,16 +36,24 @@ printf '%s\n' "$line"
 FAKEPS
 chmod +x "$FAKEBIN/ps"
 
-# 가짜 stty: STTY_FAIL=1 이면 터미널이 사라진 상황을 흉내 내 실패하고, 아니면 STTY_SIZE 를 낸다.
+# 가짜 stty: -f·-F 인자를 받으면 실패한다 — BSD·GNU 두 유저랜드를 리다이렉션 한
+# 형태로 묶는 이식성 계약을 이 가짜가 강제한다. flag 없이 부르면(표준입력 리다이렉션
+# 형태) STTY_FAIL=1 일 때만 터미널이 사라진 상황을 흉내 내 실패하고, 아니면 STTY_SIZE
+# 를 낸다.
 cat > "$FAKEBIN/stty" <<'FAKESTTY'
 #!/bin/sh
 printf 'call\n' >> "$STTY_TALLY"
+for a in "$@"; do
+  case "$a" in
+    -f|-F) exit 1 ;;
+  esac
+done
 [ "${STTY_FAIL:-0}" = "1" ] && exit 1
 printf '%s\n' "${STTY_SIZE:-24 80}"
 FAKESTTY
 chmod +x "$FAKEBIN/stty"
 
-export PS_TALLY STTY_TALLY PS_QUEUE
+export PS_TALLY STTY_TALLY PS_QUEUE CLAUDE_STATUSLINE_TTY_DIR
 PATH="$FAKEBIN:$PATH"
 export PATH
 
@@ -90,7 +103,7 @@ reset_env
 queue "ttys003 300"
 STTY_SIZE="40 132"
 OUT=$(term_width)
-assert_equals "T3 부모 tty 로 폭 산출" "132" "$OUT"
+assert_equals "T3 주입된 장치 디렉터리의 부모 tty 로 폭 산출" "132" "$OUT"
 
 # T4: 조상을 여러 단계 올라가야 tty 를 찾는 경우에도 폭을 낸다.
 reset_env
@@ -159,6 +172,16 @@ queue "ttys009 900"
 OUT3=$(term_width)
 assert_equals "T8 폐기 후 다음 호출은 재프로브해 값 복구" "88" "$OUT3"
 assert_equals "T8 폐기 후 다음 호출은 ps 를 다시 호출" "1" "$(ps_calls)"
+
+# T9: 이식성 계약 핀 — stty 를 -f/-F 플래그가 아니라 표준입력 리다이렉션으로 부른다.
+#     가짜 stty 는 -f 나 -F 인자를 받으면 실패하므로, 값이 나온다는 사실 자체가 플래그
+#     없이 불렀다는 증거다. term-width.sh 가 다시 `stty -f`/`stty -F` 로 "단순화"되면
+#     이 테스트가 가장 먼저, 그리고 명시적으로 깨진다.
+reset_env
+queue "ttys010 1000"
+STTY_SIZE="70 240"
+OUT=$(term_width)
+assert_equals "T9 stty 를 -f/-F 없이(리다이렉션 형태로) 호출" "240" "$OUT"
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
