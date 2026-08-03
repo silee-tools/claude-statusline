@@ -4,7 +4,8 @@
 # 수정 시 검토 관점: 폭 계산은 UTF-8 의 바이트 순서가 코드포인트 순서를 보존한다는 성질에
 # 기댄다. 경계 시퀀스를 옥탈 리터럴로 비교하므로 awk 구현의 유니코드 지원에 의존하지 않는다.
 # 이 성질을 깨는 방식(코드포인트 산술, length() 의 문자 수 가정)으로 바꾸지 않는다.
-# 예산 상수 66 과 68 은 statusline.sh 의 첫 행 조립과 짝이다. 한쪽만 바꾸면 74칼럼이 깨진다.
+# 전체 예산은 호출자가 `-v budget=...` 으로 넘긴다. 첫 행의 시각·공백·브랜치 아이콘처럼
+# 이 파일이 렌더하지 않는 고정 폭을 여기서 다시 계산하면 조립부와 조용히 어긋난다.
 
 function is_wide(sq) {
   if (length(sq) == 4) return 1          # 4바이트 시퀀스는 이모지 평면으로 보고 두 칸
@@ -69,11 +70,11 @@ function fit(s, limit) {
 }
 
 BEGIN {
+  if (budget == "") exit 2
   getline path_seg
   getline branch_seg
   pw = vwidth(path_seg)
   bw = vwidth(branch_seg)
-  budget = (bw > 0) ? 66 : 68
   if (pw + bw <= budget) {
     plim = pw; blim = bw
   } else {

@@ -2,8 +2,8 @@
 
 Guidance for AI agents and contributors working in this repository.
 
-This repo is a single Claude Code plugin, `claude-statusline`: a
-three-row statusline HUD whose first row is capped at 74 display columns.
+This repo is a single Claude Code plugin, `claude-statusline`: a width-aware
+statusline HUD with a compact three-row layout and a full seven-row layout.
 End-user documentation lives in [README.md](README.md); this file covers how
 to change the code safely.
 
@@ -18,14 +18,18 @@ to change the code safely.
     ├── .claude-plugin/plugin.json    # plugin manifest (name, version, ...)
     ├── hooks/hooks.json              # SessionStart hook (auto-discovered)
     ├── scripts/
-    │   ├── statusline.sh             # stdin JSON -> rendered statusline
+    │   ├── statusline.sh             # stdin JSON -> shared formatted state
+    │   ├── term-width.sh             # parent tty discovery and width refresh
+    │   ├── render-compact.sh          # width-capped three-row layout
+    │   ├── render-full.sh             # detailed seven-row layout
     │   ├── shorten.sh                # path/branch shortening helper
     │   ├── fit-line1.awk             # row-1 path/branch -> width-capped text
     │   ├── hook-handler.sh           # cost refresh + auto-setup
     │   └── refresh-cost.sh           # session log aggregation -> cost cache, background
     └── tests/
         ├── statusline.test.sh        # fixture-driven render tests
-        └── fit.test.sh               # fit-line1.awk width and cut assertions
+        ├── fit.test.sh               # fit-line1.awk width and cut assertions
+        └── width.test.sh             # tty width detection and cache assertions
 ```
 
 `hooks.json` is auto-discovered; do not also declare a `hooks` field in
@@ -52,13 +56,15 @@ caller. Avoid bashisms:
 ```shell
 sh claude-statusline/tests/statusline.test.sh
 sh claude-statusline/tests/fit.test.sh
+sh claude-statusline/tests/width.test.sh
 ```
 
 `statusline.test.sh` renders `statusline.sh` against fixture JSON and asserts
-layout, gauges, colors, and indicators. `fit.test.sh` asserts `fit-line1.awk`'s
-width calculation and cut behavior directly. Follow Red -> Green: add a
-failing test before a behavior change, then make it pass. Report the pass/fail
-counts when you change behavior.
+both layouts, gauges, colors, and indicators. `fit.test.sh` asserts
+`fit-line1.awk`'s width calculation and cut behavior directly. `width.test.sh`
+asserts tty discovery, caching, and width refresh behavior. Follow Red -> Green:
+add a failing test before a behavior change, then make it pass. Report the
+pass/fail counts when you change behavior.
 
 Test fixtures must not contain real people, accounts, or secrets. Use
 placeholder logins (e.g. `octocat`) and RFC 2606 reserved domains
