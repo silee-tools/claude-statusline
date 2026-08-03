@@ -1,60 +1,83 @@
 # claude-statusline
 
-A compact, three-row statusline HUD for [Claude Code](https://code.claude.com).
-It renders location, the logged-in Claude account, git branch, GitHub/AWS
-session indicators, the Claude Code session id, context-window usage, rate
-limits, and reasoning effort — in up to three rows.
+A width-aware statusline HUD for [Claude Code](https://code.claude.com). It
+shows location, accounts, session state, context usage, rate limits, reasoning
+effort, and cost without forcing the same layout onto every terminal.
 
-```
-17:14 ~/↪1/webapp/↪1/src  feature/PROJ-123-post-editor
-dev@example.com gh@personal aws:✓ v2.8.0 ⧉ 3f9c1a
+At 80 columns or fewer, the compact layout uses up to three rows:
+
+```text
+17:14 ~/↪1/webapp/↪1/src feature/PROJ-123-post-editor
+dev@example.com gh@personal aws:✓ v3.1.0 ⧉ 3f9c1a
 ctx 68% Opus 4.8 ● 5h 47% ↺2h30m 7d 83%▲ ↺3d16h
 ```
 
-The statusline never renders more than three rows, and rows with no data are
-dropped entirely. Row 1 is capped by construction — its path and branch are
-fitted to stay within 74 display columns. Rows 2 and 3 are not truncated:
-row 3's width is its fixed labels plus whatever model name Claude Code
-reports, which stays short for released models but can run long for an
-unrecognized one, and row 2 stays within budget for typical account and label
-lengths, though an unusually long Claude account email or `gh@` label can make
-it wrap. The rows group by meaning: location, then identity and constants,
-then the usage gauges.
+At 81 columns or more, the full layout uses up to seven rows:
 
-- **Row 1 (location)** — time (`HH:MM`), the current path, and the git branch
-  (prefixed with the ` ` branch icon, no space before the name). The path
-  collapses `$HOME` to `~`, keeps git-repo names and the current folder, and marks
-  skipped segments as `↪N` (N = folders omitted). Path and branch share a
-  66-column budget; when they exceed it each is capped at 33 columns, with the
-  unused remainder handed to the other. Whatever still overflows is cut and
-  marked with `…`. Cutting counts display columns, so a wide character (Hangul,
-  CJK) is never split in half.
-- **Row 2 (identity and constants)** — the logged-in Claude account email,
-  `gh@<account>`, `aws:<session>`, the Claude Code version, and the session id
-  (`⧉ <first 6 chars>`). Each appears only when it has a value.
-- **Row 3 (gauges)** — context-window usage (`ctx`), the model name and
-  reasoning-effort indicator, then the 5-hour and 7-day usage limits. Each rate
-  gauge carries its percentage, a pace marker (`▲`) when usage runs ahead of the
-  elapsed-time budget, and time-until-reset (`↺`). A rate gauge is dropped when
-  its data is absent.
-- The branch icon and session marker need a Nerd Font to render; without one
-  they show as `□`.
+```text
+17:14 ~/↪1/webapp/↪1/src feature/PROJ-123-post-editor
+dev@example.com gh@personal aws:✓
+ ctx █████████████░░░░░░░ 68% Opus 4.8 ●
+  5h █████████░░░░░░░░░░░ 47% ↺2h30m
+  7d ████████████████▓░░░ 83% ↺3d16h
+cost 24h Opus $12 / 7d $42 / 31d $105
+v3.1.0 ⧉ 11111111-2222-3333-4444-555555555555
+```
 
-## Gauges
+Rows with no data are omitted in either layout.
 
-Percentages are bright by default and escalate with usage: the context gauge
-turns yellow at 40% and red at 70%; the rate gauges turn yellow at 80% and red
-at 90%.
+## Width selection
 
-The `5h` and `7d` gauges also track a time-based pace budget. Over each window
-the elapsed fraction defines how much you could spend and stay on pace. When
-usage runs ahead of that budget a `▲` follows the percentage — yellow for a
-small overshoot, red once the gap reaches about 15 percentage points. The
-comparison is quantized in 5-point steps, so that boundary is approximate, not
-an exact cutover. No marker means you are on or under pace.
+`CLAUDE_STATUSLINE_WIDTH` overrides automatic detection when it contains only
+digits. Otherwise the statusline follows the parent process chain to a tty and
+reads that device's current width. It caches only the tty path; the width is
+read again on every render so a terminal resize takes effect on the next
+update. `COLUMNS` is intentionally ignored because an exported value can stay
+stale after a resize.
 
-Costs are not displayed. The background cost cache is still refreshed, so
-restoring the display later needs no new collection.
+The full layout is selected when width detection fails. This fallback keeps
+all information visible when the available width is uncertain.
+
+## Layouts
+
+The compact layout groups related values into three rows:
+
+- **Row 1 (location)** contains time, the current path, and the git branch.
+  Its display width is capped at the detected terminal width. With a branch,
+  the path and branch share `width - 8` columns; without one, the path can use
+  `width - 6`. Overflow is marked with `…`, ANSI color codes count as zero
+  width, and wide characters such as Hangul and CJK are never split.
+- **Row 2 (identity and constants)** contains the Claude account,
+  `gh@<account>`, `aws:<session>`, the Claude Code version, and the first six
+  characters of the session id.
+- **Row 3 (gauges)** contains context usage, model, reasoning effort, and the
+  5-hour and 7-day limits. Rate data that is absent is omitted independently.
+
+The full layout keeps the location and identity rows, gives `ctx`, `5h`, and
+`7d` separate 20-cell gauge rows, restores the cost row, and puts the version
+and full session id in a footer. Its first row is not truncated. Widths from
+81 through 85 can therefore wrap when both the shortened path and branch are
+long.
+
+The path collapses `$HOME` to `~`, preserves repository and current-directory
+names, and marks skipped segments as `↪N`. The branch and session glyphs need a
+Nerd Font; without one they may render as placeholder boxes.
+
+## Gauges and cost
+
+Both layouts use the same thresholds. Context usage turns yellow at 40% and
+red at 70%; rate usage turns yellow at 80% and red at 90%.
+
+The `5h` and `7d` gauges also compare usage with the elapsed-time budget. The
+compact layout adds `▲` after the percentage when usage is ahead of pace. The
+full layout colors the filled bar cells beyond the pace budget with `▓`.
+Small overshoots are yellow and overshoots of about 15 percentage points or
+more are red. The comparison uses 20 five-point cells, so the boundary is
+quantized rather than exact.
+
+Cost is displayed only in the full layout. The background cost cache is
+refreshed for both layouts, so switching widths does not require new
+collection.
 
 ## Reasoning effort
 
@@ -66,12 +89,13 @@ header, plus a warm-gauge color: `low ○` (green) · `medium ◐` (lime) ·
 ## Install
 
 Requires [Claude Code](https://code.claude.com), a POSIX `sh`, and `awk`. `git`
-powers the branch display. `curl` is optional: it refreshes the model pricing
+powers the branch display. `ps` and `stty` provide automatic terminal-width
+detection. `curl` is optional: it refreshes the model pricing
 table once a day from the public
 [LiteLLM price table](https://github.com/BerriAI/litellm); without it (or if
-the fetch fails), a built-in price table is used. The statusline itself does
-not display cost, but a per-model cost tally (`24h` / `7d` / month) is still
-computed directly from local Claude Code session logs
+the fetch fails), a built-in price table is used. The full layout displays a
+per-model cost tally (`24h` / `7d` / month) computed directly from local Claude
+Code session logs
 (`~/.claude/projects/**/*.jsonl`) and cached under
 `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/`.
 
@@ -92,6 +116,7 @@ background — no manual `settings.json` edit is needed.
 | `sh` (POSIX) | required | running the scripts |
 | `awk` | required | parsing the statusline JSON and aggregating the background cost cache |
 | `git` | required | the branch indicator |
+| `ps`, `stty` | optional | automatic terminal-width detection (falls back to the full layout) |
 | `curl` | optional | daily model-pricing refresh (falls back to a built-in table) |
 | `saml2aws` | optional | the `aws:` session indicator |
 
@@ -137,9 +162,11 @@ file.
 
 ### Customizing
 
-The visuals live in `claude-statusline/scripts/statusline.sh`:
+Shared data formatting lives in `claude-statusline/scripts/statusline.sh`, and
+the two layouts are assembled in `render-compact.sh` and `render-full.sh`:
 
-- **Gauge thresholds** — `format_context` (40/70) and `format_rate` (80/90).
+- **Gauge thresholds** — `set_context_gauge` (40/70) and `set_rate_gauge`
+  (80/90).
 - **Effort colors/glyphs** — `format_effort`.
 - **Branch shortening length** — `max_words` in `shorten.sh`'s `shorten_branch`
   (default 4).
@@ -149,12 +176,14 @@ The visuals live in `claude-statusline/scripts/statusline.sh`:
 ```shell
 sh claude-statusline/tests/statusline.test.sh
 sh claude-statusline/tests/fit.test.sh
+sh claude-statusline/tests/width.test.sh
 ```
 
 Shell scripts are POSIX `sh`. `statusline.test.sh` renders `statusline.sh`
-against fixture JSON and asserts the layout, gauges, colors, and indicators.
+against fixture JSON and asserts both layouts, gauges, colors, and indicators.
 `fit.test.sh` asserts `fit-line1.awk`'s width calculation and cut behavior
-directly.
+directly. `width.test.sh` verifies tty discovery, width refresh, caching, and
+fallback behavior.
 
 ## License
 

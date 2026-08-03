@@ -2,7 +2,7 @@
 # statusline.sh 렌더링 회귀 테스트
 # 격리된 임시 PLUGIN_ROOT 에서 실제 소스 statusline.sh 를 실행하고,
 # stdin JSON(rate_limits·effort 포함/미포함) fixture 로
-# 폭 무관 3행 레이아웃 출력을 검증한다. 비용 표시는 없다(수집 파이프라인은 유지, 표시만 제거).
+# 80열 이하 3행과 81열 이상 7행 레이아웃 출력을 함께 검증한다.
 #
 # 레이아웃(위→아래, 값 없는 항목은 자연히 생략):
 #   행1  시간 경로 브랜치
@@ -29,6 +29,9 @@ ln -sf "$SRC/scripts/shorten.sh" "$TMPROOT/scripts/shorten.sh"
 ln -sf "$SRC/scripts/shorten-lib.sh" "$TMPROOT/scripts/shorten-lib.sh"
 ln -sf "$SRC/scripts/json.awk" "$TMPROOT/scripts/json.awk"
 ln -sf "$SRC/scripts/fit-line1.awk" "$TMPROOT/scripts/fit-line1.awk"
+ln -sf "$SRC/scripts/term-width.sh" "$TMPROOT/scripts/term-width.sh"
+ln -sf "$SRC/scripts/render-compact.sh" "$TMPROOT/scripts/render-compact.sh"
+ln -sf "$SRC/scripts/render-full.sh" "$TMPROOT/scripts/render-full.sh"
 SL="$TMPROOT/scripts/statusline.sh"
 
 # gh 계정 fixture: 현재 계정명 캐시 + 계정→라벨 매핑 설정 파일. 실제 계정명 대신 테스트용
@@ -137,9 +140,20 @@ json_eff() {
 
 # 색 코드 제거한 출력. XDG_DATA_HOME·XDG_CONFIG_HOME·XDG_CACHE_HOME 을 TMPROOT 로, AWS_SHARED_CREDENTIALS_FILE
 # 을 위 fixture 로 고정해 gh 계정·매핑·비용 캐시·AWS 세션 표시를 모두 결정론화한다.
-run() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS_FIXTURE" COLUMNS="$2" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
+run() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS_FIXTURE" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
 # 색 코드 포함 원본 출력
-run_raw() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS_FIXTURE" COLUMNS="$2" sh "$SL" 2>/dev/null; }
+run_raw() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS_FIXTURE" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null; }
+# 폭 주입을 비우고 tty 장치 디렉터리를 존재하지 않는 곳으로 고정해 판정 불가 경로를 만든다.
+run_auto() {
+  (
+    unset CLAUDE_STATUSLINE_WIDTH
+    printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" \
+      XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" \
+      AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS_FIXTURE" \
+      CLAUDE_STATUSLINE_TTY_DIR="$TMPROOT/missing-dev" COLUMNS=40 sh "$SL" 2>/dev/null \
+      | sed "s/${ESC}\[[0-9;]*m//g"
+  )
+}
 
 # 출력 끝에 개행이 없어 명령 치환이 후행 개행을 지우므로, 한 줄을 다시 붙여 세면 정확하다.
 # 폭 불변성 비교(T5)용. 두 렌더 사이 분 경계를 넘어도 흔들리지 않도록 시각(HH:MM)과
@@ -178,7 +192,7 @@ utf8_intact() {
     }'
 }
 
-# 색 코드를 뺀 표시 폭. 한글 등 두 칸 문자를 두 칸으로 센다(74칼럼 단언용).
+# 색 코드를 뺀 표시 폭. 한글 등 두 칸 문자를 두 칸으로 센다(감지 폭 단언용).
 # 구현(fit-line1.awk 의 is_wide)이 다루는 8개 범위 중 이 스위트의 픽스처가 실제로 쓰는
 # 3개(한글 자모·CJK·한글 음절)만 옮겼다. 의도적인 부분 오라클이다 — 구현에서 그대로 가져와
 # 쓰지 않고 독립적으로 유지하기 위해서다. 완전한 폭 분류기로 오인하지 않는다.
@@ -211,53 +225,80 @@ assert_no_match()     { if printf '%s' "$3" | grep -Eq "$2"; then bad "$1 (shoul
 assert_equals()       { if [ "$3" = "$2" ]; then ok "$1"; else bad "$1 (expected [$2])" "$3"; fi; }
 
 # =====================================================================
-# 폭은 렌더에 영향을 주지 않는다(단일 레이아웃). 폭 상수는 불변성 검증에만 쓴다.
-# 넓음=200, 좁음=55.
+# 폭 80 이하는 압축 레이아웃, 81 이상은 전체 레이아웃을 렌더한다.
 # =====================================================================
 
+# --- T46: 경계값에서 레이아웃이 갈리고 전체 레이아웃에만 비용이 나온다 ---
+OUT80=$(run "$(json_with)" 80)
+OUT81=$(run "$(json_with)" 81)
+assert_equals     "T46 폭 80은 압축 3행" "3" "$(nlines "$OUT80")"
+assert_equals     "T46 폭 81은 전체 7행" "7" "$(nlines "$OUT81")"
+assert_not_contains "T46 압축 레이아웃은 비용 없음" "cost" "$OUT80"
+assert_contains     "T46 전체 레이아웃은 비용 표시" "cost" "$OUT81"
+
+# --- T47: 전체 레이아웃은 막대·비용·전체 세션 ID를 보존한다 ---
+FULL=$(run "$(json_with)" 81)
+assert_equals "T47 전체 레이아웃 5h 막대는 20칸" "20" "$(count_char '[█░▓]' "$(nth_line 4 "$FULL")")"
+assert_contains "T47 전체 레이아웃 비용 금액" '$605' "$FULL"
+PACE_FULL=$(run "$(json_pct 70 10)" 81)
+assert_contains "T47 전체 레이아웃 페이스 초과는 막대 칸" "▓" "$(nth_line 4 "$PACE_FULL")"
+assert_not_contains "T47 전체 레이아웃은 압축 페이스 기호 없음" "▲" "$PACE_FULL"
+if [ "$HAVE_GIT" = 1 ]; then
+  FULL_SESSION=$(run "$(json_branch)" 81)
+  assert_contains "T47 전체 레이아웃 푸터에 전체 세션 ID" "$KNOWN_SESSION" "$(nth_line 7 "$FULL_SESSION")"
+fi
+
+# --- T48: 폭을 못 재면 COLUMNS 값과 무관하게 전체 레이아웃을 쓴다 ---
+AUTO=$(run_auto "$(json_with)")
+assert_equals "T48 폭 판정 불가 시 전체 7행" "7" "$(nlines "$AUTO")"
+assert_contains "T48 오래된 COLUMNS=40을 무시하고 비용 표시" "cost" "$AUTO"
+
 # --- T1: rate_limits 있으면 5h/7d 라벨과 소진율이 나온다 ---
-OUT=$(run "$(json_with)" 200)
+OUT=$(run "$(json_with)" 80)
 assert_match "T1 5h 소진율 표시" '5h [0-9]+%' "$OUT"
 assert_match "T1 7d 소진율 표시" '7d [0-9]+%' "$OUT"
 assert_match "T1 5h 리셋 분 단위 표기" "↺[0-9]+h[0-9]+m" "$OUT"
 
 # --- T2: 비용을 표시하지 않는다 ---
-OUT=$(run "$(json_with)" 200)
+OUT=$(run "$(json_with)" 80)
 assert_not_contains "T2 24h 비용 라벨 없음" "24h" "$OUT"
 assert_not_contains "T2 7d 비용 금액 없음" "\$605" "$OUT"
 assert_not_contains "T2 cost 라벨 없음" "cost" "$OUT"
 
 # --- T4: 소진율 90% 이상이면 빨간색 경고 ---
-RAW=$(run_raw "$(json_high)" 200)
+RAW=$(run_raw "$(json_high)" 80)
 assert_contains "T4 90%+ 빨간색 경고" "$RED" "$RAW"
 
-# --- T5: 폭 불변성 — 넓음(200)과 좁음(55) 출력이 완전히 동일 ---
-#    tier 사다리 제거의 핵심 회귀. 폭이 달라도 같은 레이아웃을 렌더한다.
-A=$(run "$(json_with)" 200)
-B=$(run "$(json_with)" 55)
-assert_equals "T5 폭 200과 55 출력 동일" "$(mask_time "$A")" "$(mask_time "$B")"
+# --- T5: 폭 경계를 넘으면 전체와 압축 레이아웃의 출력이 달라진다 ---
+A=$(run "$(json_with)" 81)
+B=$(run "$(json_with)" 80)
+if [ "$(mask_time "$A")" != "$(mask_time "$B")" ]; then
+  ok "T5 폭 81과 80의 출력이 다름"
+else
+  bad "T5 폭 81과 80의 출력이 다름" "identical output"
+fi
 
 # --- T7: 세 행 구성 (rate 있음, 브랜치 없음) ---
 #    행1 시간·경로 / 행2 계정·버전·세션 / 행3 ctx·모델·effort·5h·7d.
-OUT=$(run "$(json_with)" 200)
+OUT=$(run "$(json_with)" 80)
 assert_equals "T7 총 3행" "3" "$(nlines "$OUT")"
 assert_match  "T7 행3 ctx"  'ctx [0-9]'  "$(nth_line 3 "$OUT")"
 assert_match  "T7 행3 5h"   '5h [0-9]'   "$(nth_line 3 "$OUT")"
 assert_match  "T7 행3 7d"   '7d [0-9]'   "$(nth_line 3 "$OUT")"
 
 # --- T7-model: 모델·effort 는 ctx 뒤에, 버전은 행2 에 온다 ---
-OUT=$(run "$(json_with)" 200)
+OUT=$(run "$(json_with)" 80)
 assert_match    "T7-model ctx 뒤 모델명" 'ctx [0-9]+% Opus 4\.8' "$(nth_line 3 "$OUT")"
 assert_contains "T7-model 행2 버전" "v2.1.11" "$(nth_line 2 "$OUT")"
 
 # --- T33: 모델명 파싱이 sed 없이도 "이름 버전" 표기를 유지한다 ---
-OUT=$(run "$(json_with)" 200)
+OUT=$(run "$(json_with)" 80)
 assert_match "T33 모델 이름+버전 표기 유지" 'Opus 4\.8' "$OUT"
 
 # --- T8: 5h 와 7d 는 ctx 와 같은 행(행3)에 병합되어 나온다(파이프 없음) ---
 #    Task 4 의 게이지 병합으로 각자 줄에 온다는 이전 기대는 성립하지 않는다. 5h·7d 는
 #    행3 하나에만 나타나고(중복 없음), 그 행에 파이프 구분자는 쓰지 않는다.
-OUT=$(run "$(json_with)" 200)
+OUT=$(run "$(json_with)" 80)
 L3=$(nth_line 3 "$OUT")
 assert_equals   "T8 5h 게이지 1개(행3)" "1" "$(printf '%s\n' "$OUT" | grep -c '5h [0-9]')"
 assert_equals   "T8 7d 게이지 1개(행3)" "1" "$(printf '%s\n' "$OUT" | grep -c '7d [0-9]')"
@@ -267,40 +308,40 @@ assert_equals   "T8 행3 파이프 없음" "0" "$(count_char '|' "$L3")"
 
 # --- T9: effort → Claude Code 원형 글리프 + 웜 게이지 색(low=초록 … max=빨강, ultracode=마젠타) ---
 #    글리프 모양과 색이 함께 단계를 표현한다. rate 없는 json_eff 로 색 오염을 막고 색을 글리프에 직접 묶어 검증.
-OUT=$(run "$(json_eff high)" 200)
+OUT=$(run "$(json_eff high)" 80)
 assert_contains "T9 effort high 글리프(●)" "●" "$OUT"
-RAW=$(run_raw "$(json_eff low)"       200); assert_contains "T9 low 초록 ○"        "${GREEN}○"    "$RAW"
-RAW=$(run_raw "$(json_eff medium)"    200); assert_contains "T9 medium 연두 ◐"     "${LIME}◐"     "$RAW"
-RAW=$(run_raw "$(json_eff high)"      200); assert_contains "T9 high 노랑 ●"       "${YELLOW}●"   "$RAW"
-RAW=$(run_raw "$(json_eff xhigh)"     200); assert_contains "T9 xhigh 주황 ◉"      "${AMBER}◉"    "$RAW"
-RAW=$(run_raw "$(json_eff max)"       200); assert_contains "T9 max 빨강 ◈"        "${RED}◈"      "$RAW"
-RAW=$(run_raw "$(json_eff ultracode)" 200); assert_contains "T9 ultracode 마젠타 ✦" "${MAGENTA}✦" "$RAW"
+RAW=$(run_raw "$(json_eff low)"       80); assert_contains "T9 low 초록 ○"        "${GREEN}○"    "$RAW"
+RAW=$(run_raw "$(json_eff medium)"    80); assert_contains "T9 medium 연두 ◐"     "${LIME}◐"     "$RAW"
+RAW=$(run_raw "$(json_eff high)"      80); assert_contains "T9 high 노랑 ●"       "${YELLOW}●"   "$RAW"
+RAW=$(run_raw "$(json_eff xhigh)"     80); assert_contains "T9 xhigh 주황 ◉"      "${AMBER}◉"    "$RAW"
+RAW=$(run_raw "$(json_eff max)"       80); assert_contains "T9 max 빨강 ◈"        "${RED}◈"      "$RAW"
+RAW=$(run_raw "$(json_eff ultracode)" 80); assert_contains "T9 ultracode 마젠타 ✦" "${MAGENTA}✦" "$RAW"
 
 # --- T10: effort 없으면 글리프 없이 모델명만 (데이터 부재의 정당한 부재 단언) ---
-OUT=$(run "$(json_no_effort)" 200)
+OUT=$(run "$(json_no_effort)" 80)
 assert_no_match "T10 effort 부재 시 글리프 없음" "○|◐|●|◉|◈|✦" "$OUT"
 assert_contains "T10 모델명은 유지" "Opus 4.8" "$OUT"
 
 # --- T11: 행1 은 시간·경로만 — 계정·버전·세션은 행2 ---
-OUT=$(run "$(json_with)" 200)
+OUT=$(run "$(json_with)" 80)
 FIRST=$(first_line "$OUT")
 assert_not_contains "T11 행1 에 gh 계정 없음" "gh@" "$FIRST"
 assert_not_contains "T11 행1 에 버전 없음" "v2.1.11" "$FIRST"
 assert_contains     "T11 행2 에 gh 계정" "gh@personal" "$(nth_line 2 "$OUT")"
 
 # --- T13: rate 부재면 행3 에 ctx 만 남고 행 수는 그대로 3 ---
-OUT=$(run "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
 assert_equals   "T13 rate 부재에도 3행" "3" "$(nlines "$OUT")"
 assert_match    "T13 행3 ctx 유지" 'ctx [0-9]' "$(nth_line 3 "$OUT")"
 assert_no_match "T13 5h 없음" '5h [0-9]' "$OUT"
 assert_no_match "T13 7d 없음" '7d [0-9]' "$OUT"
 
 # --- T14: 버전 무손실 ---
-OUT=$(run "$(json_with)" 200)
+OUT=$(run "$(json_with)" 80)
 assert_contains "T14 버전 표시" "v2.1.11" "$OUT"
 
 # --- T15: 리셋 무손실 — 5h·7d 리셋(↺) 둘 다 유지 ---
-OUT=$(run "$(json_with)" 200)
+OUT=$(run "$(json_with)" 80)
 assert_equals "T15 리셋 2개 유지" "2" "$(count_char '↺' "$OUT")"
 
 # --- T16: 제거 안전 게이트 — 소스에 옛 화살표 글리프가 없다 (정적 검사) ---
@@ -315,19 +356,19 @@ fi
 #    만료 fixture 로 고정해 격리했으므로 YELLOW/RED 존재가 절대색만 가리킨다.
 #    json_pct_nr 로 reset 을 빼 초과분 ▓ 강조가 색 판정에 섞이지 않게 한다.
 YELLOW=$(printf '\033[33m')
-RAW=$(run_raw "$(json_pct_nr 80 10)" 200)
+RAW=$(run_raw "$(json_pct_nr 80 10)" 80)
 assert_contains     "T17 80%면 노란색 경고" "$YELLOW" "$RAW"
-RAW=$(run_raw "$(json_pct_nr 75 10)" 200)
+RAW=$(run_raw "$(json_pct_nr 75 10)" 80)
 assert_not_contains "T17 75%면 노란색 없음(노랑 임계 미만)" "$YELLOW" "$RAW"
-RAW=$(run_raw "$(json_pct_nr 90 10)" 200)
+RAW=$(run_raw "$(json_pct_nr 90 10)" 80)
 assert_contains     "T17 90%면 빨간색 경고" "$RED" "$RAW"
-RAW=$(run_raw "$(json_pct_nr 85 10)" 200)
+RAW=$(run_raw "$(json_pct_nr 85 10)" 80)
 assert_not_contains "T17 85%면 빨강 없음(빨강 임계 미만)" "$RED" "$RAW"
 
 # --- T18: 브랜치가 있으면 첫 줄(경로 옆)에 온다. 괄호 대신 브랜치 아이콘( ) 접두(사이 공백 없음) ---
 BRANCH_GLYPH=$(printf '\356\202\240')   #  U+E0A0 (Powerline git branch)
 if [ "$HAVE_GIT" = "1" ]; then
-  OUT=$(run "$(json_branch)" 200)
+  OUT=$(run "$(json_branch)" 80)
   FIRST=$(first_line "$OUT")
   SECOND=$(nth_line 2 "$OUT")
   assert_contains     "T18 첫 줄에 브랜치 아이콘+이름(사이 공백 없음)" "${BRANCH_GLYPH}wip" "$FIRST"
@@ -338,7 +379,7 @@ else
   printf 'SKIP T18 (git fixture 미생성)\n'
 fi
 
-# --- T40: 첫 행은 74칼럼을 넘지 않는다(긴 경로·브랜치를 폭 기준으로 절단) ---
+# --- T40: 압축 첫 행은 감지 폭을 넘지 않는다(긴 경로·브랜치를 폭 기준으로 절단) ---
 #    브랜치명에 한글을 넣어 fit-line1.awk 의 바이트 지향 계약(LC_ALL=C 호출)을 fit.test.sh 의
 #    직접 awk 호출이 아니라 statusline.sh 의 실제 호출부를 거쳐 검증한다. 이 호출부에서
 #    LC_ALL=C 가 빠지면(문자 지향 awk 로 length()/substr() 가 바뀌는 구현에서) 두 칸 문자가
@@ -352,10 +393,10 @@ if [ "$HAVE_GIT" = "1" ]; then
     && git symbolic-ref HEAD "refs/heads/한글브랜치이름아주길게테스트용문자열모음입니다" \
     && git -c commit.gpgsign=false -c user.email=t@example.com -c user.name=t \
            commit -q --allow-empty -m init ) >/dev/null 2>&1
-  OUT=$(HOME="$TMPROOT" run "$(printf '{"workspace":{"current_dir":"%s"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.11.0"}' "$LONGREPO")" 200)
+  OUT=$(HOME="$TMPROOT" run "$(printf '{"workspace":{"current_dir":"%s"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.11.0"}' "$LONGREPO")" 80)
   FIRST=$(first_line "$OUT")
   W1=$(vwidth_of "$FIRST")
-  assert_equals "T40 첫 행 74칼럼 이내" "yes" "$([ "$W1" -le 74 ] && echo yes || echo "no($W1)")"
+  assert_equals "T40 첫 행이 감지 폭 80칼럼 이내" "yes" "$([ "$W1" -le 80 ] && echo yes || echo "no($W1)")"
   assert_contains "T40 잘린 자리에 줄임표" "…" "$FIRST"
   assert_contains "T40 한글 브랜치가 첫 행에 온다" "한글브랜치" "$FIRST"
   assert_equals   "T40 한글 브랜치가 반으로 쪼개지지 않음(유효 UTF-8)" "ok" "$(utf8_intact "$FIRST")"
@@ -369,23 +410,23 @@ fi
 #    링크를 잠시 치워 그 실패를 재현하고, 출력이 비지 않고 경로가 남는지(미절단 저하) 확인한다.
 FITLINK="$TMPROOT/scripts/fit-line1.awk"
 mv "$FITLINK" "$FITLINK.bak"
-OUT=$(run "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
 assert_equals   "T43 awk 프로그램 부재에도 출력이 비지 않음" "no" "$([ -z "$OUT" ] && echo yes || echo no)"
 assert_contains "T43 awk 프로그램 부재에도 경로는 유지됨(미절단 저하)" "/tmp" "$OUT"
 mv "$FITLINK.bak" "$FITLINK"
 
 # --- T26: Claude Code 계정 이메일이 둘째 줄에 나온다 (.claude.json 의 oauthAccount.emailAddress) ---
 #    라벨 접두 없이 이메일 그대로, coral(173) 색으로 렌더한다. cwd=/tmp 라 브랜치 없이 계정만 있는 줄2.
-OUT=$(run "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
 assert_contains "T26 둘째 줄에 Claude 계정 이메일" "octocat@example.com" "$(nth_line 2 "$OUT")"
 assert_not_contains "T26 이메일 앞 cc: 접두 없음" "cc:octocat" "$OUT"
 CORAL=$(printf '\033[38;5;173m')
-RAW=$(run_raw "$(json_without)" 200)
+RAW=$(run_raw "$(json_without)" 80)
 assert_contains "T26 계정 이메일 coral(173) 색" "${CORAL}octocat@example.com" "$RAW"
 
 # --- T27: 세션 ID 는 앞 6자만 행2 에 온다 ---
 if [ "$HAVE_GIT" = "1" ]; then
-  OUT=$(run "$(json_branch)" 200)
+  OUT=$(run "$(json_branch)" 80)
   SESS6=$(printf '%s' "$KNOWN_SESSION" | cut -c1-6)
   assert_contains     "T27 행2 에 세션 마커+접두 6자" "⧉ ${SESS6}" "$(nth_line 2 "$OUT")"
   assert_not_contains "T27 전체 UUID 는 표시하지 않음" "$KNOWN_SESSION" "$OUT"
@@ -393,7 +434,7 @@ if [ "$HAVE_GIT" = "1" ]; then
 else
   printf 'SKIP T27 (git fixture 미생성)\n'
 fi
-OUT=$(run "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
 assert_not_contains "T27 session_id 부재 시 ⧉ 없음" "⧉" "$OUT"
 
 # --- T44: 세션 id 가 6자 미만이면 접두 대신 전체 값을 그대로 쓴다 ---
@@ -403,37 +444,37 @@ assert_not_contains "T27 session_id 부재 시 ⧉ 없음" "⧉" "$OUT"
 json_short_session() {
   printf '{"session_id":"abc","workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.11.0"}'
 }
-OUT=$(run "$(json_short_session)" 200)
+OUT=$(run "$(json_short_session)" 80)
 assert_contains "T44 6자 미만 세션 id 는 전체 값 표시" "⧉ abc" "$(nth_line 2 "$OUT")"
 
-# --- T41: 이 픽스처 조합에서는 우연히 모든 행이 74칼럼 안에 든다(캐노리, 상한 아님) ---
+# --- T41: 짧은 압축 픽스처의 모든 행은 감지 폭 80 안에 든다(캐노리, 상한 아님) ---
 #    2행과 3행은 설계상(비목표 문서 참고) 폭 상한이 없다. 아래 픽스처는 전부 cwd=/tmp 처럼
-#    짧은 값만 쓰므로 이 단언은 "그 조합이 지금 이 정도"를 보는 캐노리일 뿐, 2·3행에 74칼럼
+#    짧은 값만 쓰므로 이 단언은 "그 조합이 지금 이 정도"를 보는 캐노리일 뿐, 2·3행에 80칼럼
 #    상한이 있다는 보증이 아니다. 상한은 T40 이 검증하는 1행에만 있다.
 check_all_widths() {
   _bad=0
   printf '%s\n' "$1" | while IFS= read -r _l; do
-    [ "$(vwidth_of "$_l")" -gt 74 ] && printf 'over\n'
+    [ "$(vwidth_of "$_l")" -gt 80 ] && printf 'over\n'
   done | grep -q over && _bad=1
-  [ "$_bad" -eq 0 ] && printf 'ok' || printf 'over74'
+  [ "$_bad" -eq 0 ] && printf 'ok' || printf 'over80'
 }
 for _fx in "$(json_with)" "$(json_without)" "$(json_high)" "$(json_pct 100 100)"; do
-  assert_equals "T41 짧은 cwd 픽스처의 우연한 74칼럼 이내(캐노리, 상한 아님)" "ok" "$(check_all_widths "$(run "$_fx" 200)")"
+  assert_equals "T41 짧은 압축 픽스처의 80칼럼 이내(캐노리, 상한 아님)" "ok" "$(check_all_widths "$(run "$_fx" 80)")"
 done
 
 # --- T25: gh 라벨을 설정 파일에서 매핑 (소스에 계정명 하드코딩 없음) ---
 #    매핑된 계정은 라벨로, 미매핑은 계정명 그대로, 빈 값은 gh@---. 색코드 비숫자는 기본색으로 폴백.
 printf 'testwork' > "$TMPROOT/gh-prompt-user"
-OUT=$(run "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
 assert_contains "T25 config 매핑 계정 → 라벨(gh@work)" "gh@work" "$(nth_line 2 "$OUT")"
 printf 'nobody-xyz' > "$TMPROOT/gh-prompt-user"
-OUT=$(run "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
 assert_contains "T25 미매핑 계정 → gh@<계정명>" "gh@nobody-xyz" "$(nth_line 2 "$OUT")"
 printf '' > "$TMPROOT/gh-prompt-user"
-OUT=$(run "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
 assert_contains "T25 빈 캐시는 판정 이전이라 gh@?" "gh@?" "$(nth_line 2 "$OUT")"
 printf 'badcolor' > "$TMPROOT/gh-prompt-user"
-OUT=$(run "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
 assert_contains "T25 비숫자 색코드도 라벨은 렌더(가드)" "gh@weird" "$(nth_line 2 "$OUT")"
 printf 'octocat' > "$TMPROOT/gh-prompt-user"   # 이후 테스트 위해 원복
 
@@ -445,91 +486,90 @@ gh_cache() { printf 'v2\t%s\t%s\t%s\n' "$1" "$2" "$3" > "$TMPROOT/gh-prompt-user
 GH_NOW=$(date +%s)
 
 gh_cache octocat ok 0
-OUT=$(run "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
 assert_contains     "T45 ok 은 라벨만"              "gh@personal" "$(nth_line 2 "$OUT")"
 assert_not_contains "T45 ok 에 인증 실패 문자 없음" "gh@personal!" "$(nth_line 2 "$OUT")"
 assert_not_contains "T45 ok 에 판정 불가 문자 없음" "gh@personal?" "$(nth_line 2 "$OUT")"
 assert_not_contains "T45 ok 에 한도 마커 없음"      "⏳" "$(nth_line 2 "$OUT")"
 
 gh_cache octocat auth_failed 0
-OUT=$(run "$(json_without)" 200)
-RAW=$(run_raw "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
+RAW=$(run_raw "$(json_without)" 80)
 assert_contains     "T45 auth_failed 는 gh@personal!" "gh@personal!" "$(nth_line 2 "$OUT")"
 assert_contains     "T45 auth_failed 는 전체 빨강"    "${RED}gh@personal!" "$RAW"
 
 gh_cache octocat unknown 0
-OUT=$(run "$(json_without)" 200)
-RAW=$(run_raw "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
+RAW=$(run_raw "$(json_without)" 80)
 assert_contains     "T45 unknown 은 gh@personal?"  "gh@personal?" "$(nth_line 2 "$OUT")"
 assert_contains     "T45 unknown 은 전체 회색"     "$(printf '\033[38;5;240m')gh@personal?" "$RAW"
 
 gh_cache testwork rate_limited "$((GH_NOW + 540))"
-OUT=$(run "$(json_without)" 200)
-RAW=$(run_raw "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
+RAW=$(run_raw "$(json_without)" 80)
 assert_contains     "T45 rate_limited 는 gh@work⏳9m" "gh@work⏳9m" "$(nth_line 2 "$OUT")"
 assert_contains     "T45 라벨은 설정 색, 마커만 노랑" \
   "$(printf '\033[38;5;27m')gh@work$(printf '\033[0m')$(printf '\033[33m')⏳9m" "$RAW"
 
 gh_cache testwork rate_limited "$((GH_NOW + 30))"
-OUT=$(run "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
 assert_contains     "T45 1분 미만 남으면 1m 으로 올림" "gh@work⏳1m" "$(nth_line 2 "$OUT")"
 
 gh_cache testwork rate_limited "$((GH_NOW - 60))"
-OUT=$(run "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
 assert_contains     "T45 마감이 지나면 라벨만"     "gh@work" "$(nth_line 2 "$OUT")"
 assert_not_contains "T45 마감이 지나면 마커 제거"  "⏳" "$(nth_line 2 "$OUT")"
 
 gh_cache testwork rate_limited notanumber
-OUT=$(run "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
 assert_not_contains "T45 마감 시각이 숫자가 아니면 마커 없음" "⏳" "$(nth_line 2 "$OUT")"
 
 gh_cache - no_active 0
-OUT=$(run "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
 assert_contains     "T45 no_active 는 gh@---"      "gh@---" "$(nth_line 2 "$OUT")"
 
 gh_cache - unknown 0
-OUT=$(run "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
 assert_contains     "T45 계정명 없는 unknown 은 gh@?" "gh@?" "$(nth_line 2 "$OUT")"
 
 gh_cache - ok 0
-OUT=$(run "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
 assert_contains     "T45 계정명 자리가 - 이면 상태보다 먼저 걸러 gh@?" "gh@?" "$(nth_line 2 "$OUT")"
 assert_no_match     "T45 gh@- 로 새지 않음" 'gh@-[[:space:]]' "$(nth_line 2 "$OUT")"
 
 printf 'v1\toctocat\tok\t0\n' > "$TMPROOT/gh-prompt-user"
-OUT=$(run "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
 assert_contains     "T45 형식을 모르는 네 필드는 계정명만 살리고 판정 불가" \
   "gh@personal?" "$(nth_line 2 "$OUT")"
 
 printf 'v2\toctocat\n' > "$TMPROOT/gh-prompt-user"
-OUT=$(run "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
 assert_contains     "T45 필드 수가 어긋나면 gh@?" "gh@?" "$(nth_line 2 "$OUT")"
 
 printf 'octocat' > "$TMPROOT/gh-prompt-user"
-OUT=$(run "$(json_without)" 200)
+OUT=$(run "$(json_without)" 80)
 assert_contains     "T45 탭 없는 한 줄은 계정명으로 해석" "gh@personal" "$(nth_line 2 "$OUT")"
 
 # --- T20: 요소별 색 — 모델명 시안, 파이프·라벨 등 dim 유지 ---
-RAW=$(run_raw "$(json_with)" 200)
+RAW=$(run_raw "$(json_with)" 80)
 assert_contains "T20 모델명 시안(36)" "$CYAN" "$RAW"
 assert_contains "T20 파이프·라벨 등 dim 유지" "$DIMC" "$RAW"
 
-# --- T21: 막대 문자를 쓰지 않는다(정적 검사) ---
-if grep -q '█' "$SRC/scripts/statusline.sh"; then
-  bad "T21 막대 문자 제거" "found █ in statusline.sh"
-else
-  ok "T21 막대 문자 제거"
-fi
+# --- T21: 압축 레이아웃은 막대를 쓰지 않고 전체 레이아웃은 20칸 막대를 쓴다 ---
+COMPACT=$(run "$(json_with)" 80)
+FULL=$(run "$(json_with)" 81)
+assert_no_match "T21 압축 레이아웃은 막대 문자 없음" '█|░|▓' "$COMPACT"
+assert_match    "T21 전체 레이아웃은 막대 문자 있음" '█|░|▓' "$FULL"
 
 # --- T22: 소진율 경계값(0%/100%)이 숫자로 그대로 나온다 ---
-OUT=$(run "$(json_pct_nr 0 100)" 200)
+OUT=$(run "$(json_pct_nr 0 100)" 80)
 assert_match "T22 0% 표기" '5h 0%' "$OUT"
 assert_match "T22 100% 표기" '7d 100%' "$OUT"
 
 # --- T23: ctx 임계 색 — 40%+ 노랑, 70%+ 빨강, 미만은 색 없음 ---
-ctx30=$(run_raw "$(json_ctx 60000)"  200 | grep 'ctx')
-ctx45=$(run_raw "$(json_ctx 90000)"  200 | grep 'ctx')
-ctx75=$(run_raw "$(json_ctx 150000)" 200 | grep 'ctx')
+ctx30=$(run_raw "$(json_ctx 60000)"  80 | grep 'ctx')
+ctx45=$(run_raw "$(json_ctx 90000)"  80 | grep 'ctx')
+ctx75=$(run_raw "$(json_ctx 150000)" 80 | grep 'ctx')
 assert_not_contains "T23 30% ctx 노랑 없음" "$YELLOW" "$ctx30"
 assert_not_contains "T23 30% ctx 빨강 없음" "$RED" "$ctx30"
 assert_contains     "T23 45% ctx 노랑(40%+)" "$YELLOW" "$ctx45"
@@ -537,7 +577,7 @@ assert_not_contains "T23 45% ctx 빨강 없음(70% 미만)" "$RED" "$ctx45"
 assert_contains     "T23 75% ctx 빨강(70%+)" "$RED" "$ctx75"
 
 # --- T24: ctx 소진율 숫자에 임계 색이 붙는다 ---
-ctx45r=$(run_raw "$(json_ctx 90000)" 200 | grep 'ctx')
+ctx45r=$(run_raw "$(json_ctx 90000)" 80 | grep 'ctx')
 assert_contains "T24 45% ctx 숫자 노랑" "${YELLOW}45%" "$ctx45r"
 
 # --- T6: HOME 경계는 문자열 접두사가 아니라 경로 구성요소로 판정한다 ---
@@ -581,13 +621,13 @@ assert_contains "T32 슬래시 없는 선행 세그먼트 정상 종료" "eee" "
 # --- T31: 페이스 초과를 ▲ 로 표시한다 ---
 #    FIVE_RESET=now+9000, 5h(18000s) 윈도우 → 경과 9000s → 예산 10칸. fill 이 예산을 넘으면
 #    ▲ 가 붙고, 넘지 않으면 붙지 않는다. 초과 3칸 이상이면 빨강, 그보다 적으면 노랑.
-OUT=$(run "$(json_pct 70 10)" 200)
+OUT=$(run "$(json_pct 70 10)" 80)
 assert_contains     "T31 초과 시 ▲ 표시" "▲" "$(printf '%s\n' "$OUT" | grep '5h')"
-OUT=$(run "$(json_pct 40 10)" 200)
+OUT=$(run "$(json_pct 40 10)" 80)
 assert_not_contains "T31 여유면 ▲ 없음" "▲" "$(printf '%s\n' "$OUT" | grep '5h')"
-RAW=$(run_raw "$(json_pct 70 10)" 200 | grep '5h')
+RAW=$(run_raw "$(json_pct 70 10)" 80 | grep '5h')
 assert_contains     "T31 큰 초과 빨강 ▲" "${RED}▲" "$RAW"
-RAW=$(run_raw "$(json_pct 55 10)" 200 | grep '5h')
+RAW=$(run_raw "$(json_pct 55 10)" 80 | grep '5h')
 assert_contains     "T31 작은 초과 노랑 ▲" "${YELLOW}▲" "$RAW"
 
 # --- T34: git 브랜치 캐시 — 미스 때 git 호출, 히트 때 git 미호출 ---
@@ -613,6 +653,7 @@ FAKEGIT
       PATH="$TMPROOT/fakebin:$PATH" CLAUDE_PLUGIN_ROOT="$TMPROOT" \
       XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" \
       XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" \
+      CLAUDE_STATUSLINE_WIDTH=80 \
       sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"
   }
 
@@ -639,7 +680,7 @@ if [ "$HAVE_GIT" -eq 1 ]; then
   # 상태 간 오염 가능성을 없애기 위해 명시적으로 지운다.
   render_at() {
     rm -f "$TMPROOT/cache/claude-statusline/git-branch.env"
-    run "$(printf '{"workspace":{"current_dir":"%s"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.11.0"}' "$1")" 200
+    run "$(printf '{"workspace":{"current_dir":"%s"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.11.0"}' "$1")" 80
   }
 
   # --- T37: 저장소 하위 디렉터리에서 렌더해도 브랜치가 표시된다 ---
@@ -695,14 +736,14 @@ fi
 
 # --- T35: Claude 계정 이메일 캐시 ---
 rm -f "$TMPROOT/cache/claude-statusline/cc-account.env"
-OUT_A=$(run "$(json_with)" 200)
+OUT_A=$(run "$(json_with)" 80)
 assert_contains "T35 이메일 첫 렌더 표시" "octocat@example.com" "$OUT_A"
 assert_match    "T35 캐시 파일 생성" "email=octocat@example.com" "$(cat "$TMPROOT/cache/claude-statusline/cc-account.env" 2>/dev/null)"
 
 # .claude.json 을 캐시보다 새 것으로 만들고 이메일을 바꾸면 다음 렌더에 반영된다(무손실).
 sleep 1
 printf '{"oauthAccount":{"emailAddress":"newuser@example.com"}}' > "$TMPROOT/.claude.json"
-OUT_B=$(run "$(json_with)" 200)
+OUT_B=$(run "$(json_with)" 80)
 assert_contains "T35 파일 변경 시 새 이메일 반영" "newuser@example.com" "$OUT_B"
 # 원복
 printf '{"oauthAccount":{"emailAddress":"octocat@example.com"}}' > "$TMPROOT/.claude.json"
@@ -719,6 +760,7 @@ if command -v saml2aws >/dev/null 2>&1; then
   OUT=$(printf '%s' "$(json_with)" | \
     CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" \
     XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" \
+    CLAUDE_STATUSLINE_WIDTH=80 \
     AWS_SHARED_CREDENTIALS_FILE="$CREDS" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g")
   # 자릿수만 보는 정규식은 로컬 타임존 오프셋만큼 어긋난 epoch 도 통과시킨다. fixture 가
   # 만든 만료 시각($FUT)과 캐시된 값이 정확히 같은지까지 확인해야 그 어긋남을 잡는다.
