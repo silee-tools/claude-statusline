@@ -1,0 +1,18 @@
+{
+  "description": "Rate limit resume hooks",
+  "hooks": {
+    "StopFailure": [
+      {
+        "matcher": "rate_limit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh ${CLAUDE_PLUGIN_ROOT}/scripts/resume.sh",
+            "asyncRewake": true,
+            "timeout": 600
+          }
+        ]
+      }
+    ]
+  }
+}
