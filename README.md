@@ -1,5 +1,12 @@
 # claude-statusline
 
+This repository publishes two Claude Code plugins through one marketplace,
+`silee-tools`. The sections up to and including [Development](#development)
+document `claude-statusline`; [rate-limit-resume](#rate-limit-resume) follows
+them in its own section.
+
+## claude-statusline
+
 A width-aware statusline HUD for [Claude Code](https://code.claude.com). It
 shows location, accounts, session state, context usage, rate limits, reasoning
 effort, and cost without forcing the same layout onto every terminal.
@@ -184,6 +191,67 @@ against fixture JSON and asserts both layouts, gauges, colors, and indicators.
 `fit.test.sh` asserts `fit-line1.awk`'s width calculation and cut behavior
 directly. `width.test.sh` verifies tty discovery, width refresh, caching, and
 fallback behavior.
+
+## rate-limit-resume
+
+A `StopFailure` hook that resumes a turn a usage limit cut short. When Claude
+Code ends a turn because the account hit its 5-hour or 7-day limit, the hook
+waits out the limit and then wakes the model with a short prompt, so the
+session picks the work back up without anyone typing "continue".
+
+### Install
+
+```shell
+claude plugin marketplace add silee-tools/claude-statusline
+claude plugin install rate-limit-resume@silee-tools
+claude   # restart
+```
+
+No `settings.json` edit is needed. `hooks/hooks.json` is auto-discovered and
+matches only the `rate_limit` error, so no other stop reason triggers it.
+
+### How it works
+
+Claude Code fires `StopFailure` with `error: "rate_limit"` when a turn ends
+against a usage limit. The hook entry sets `asyncRewake`, so the command runs
+in the background while the session sits idle. `resume.sh` sleeps for
+`CLAUDE_RESUME_WAIT_SECONDS` and then exits with code 2 — the code that tells
+Claude Code to wake the model — and whatever it wrote to **stderr** becomes the
+prompt for the new turn. Text on stdout is not injected.
+
+The hook does not read the reset time, which never reaches it as a machine
+value. It polls instead: if the limit is still in force, the new turn is
+rejected, `StopFailure` fires again, and the next wait starts. A rejected
+attempt is refused before any tokens are billed, so polling costs nothing but
+elapsed time.
+
+A per-session attempt counter under
+`${XDG_STATE_HOME:-$HOME/.local/state}/rate-limit-resume/` bounds that loop.
+Once a session passes `CLAUDE_RESUME_MAX_ATTEMPTS`, the hook exits 0 and the
+session stays stopped. Counter files older than seven days are cleaned up on
+each run.
+
+### Settings
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CLAUDE_RESUME_WAIT_SECONDS` | `300` | seconds to wait before waking the model |
+| `CLAUDE_RESUME_MAX_ATTEMPTS` | `72` | attempts per session before giving up |
+| `CLAUDE_RESUME_STATE_DIR` | `${XDG_STATE_HOME:-$HOME/.local/state}/rate-limit-resume` | where attempt counters are kept |
+
+Keep the wait below the `timeout` in `hooks/hooks.json` (600 seconds); a longer
+wait is cut off and the session is never resumed. With the defaults, one
+session retries for roughly six hours before it gives up.
+
+### Limits
+
+Resuming needs a live interactive session. Under `claude -p` the process exits
+before the background hook finishes, so nothing is resumed.
+
+The `rate_limit` path has not been exercised against a real usage limit. The
+resume mechanism was verified with a stand-in `Stop` hook, and the
+`rate_limit` matcher value comes from Claude Code's own list of `StopFailure`
+error values.
 
 ## License
 

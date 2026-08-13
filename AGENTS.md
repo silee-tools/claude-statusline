@@ -2,10 +2,12 @@
 
 Guidance for AI agents and contributors working in this repository.
 
-This repo is a single Claude Code plugin, `claude-statusline`: a width-aware
-statusline HUD with a compact three-row layout and a full seven-row layout.
-End-user documentation lives in [README.md](README.md); this file covers how
-to change the code safely.
+This repo holds two Claude Code plugins published through one marketplace
+catalog. `claude-statusline` is a width-aware statusline HUD with a compact
+three-row layout and a full seven-row layout. `rate-limit-resume` is a
+`StopFailure` hook that waits out a usage limit and then resumes the
+interrupted turn. End-user documentation lives in [README.md](README.md); this
+file covers how to change the code safely.
 
 ## Structure
 
@@ -14,22 +16,37 @@ to change the code safely.
 ├── .claude-plugin/marketplace.json   # marketplace catalog (name: silee-tools)
 ├── README.md                         # end-user docs
 ├── LICENSE                           # MIT
-└── claude-statusline/                # the plugin
+├── docs/superpowers/                 # design docs and plans kept from past changes
+├── claude-statusline/                # plugin: the statusline HUD
+│   ├── .claude-plugin/plugin.json    # plugin manifest (name, version, ...)
+│   ├── hooks/hooks.json              # SessionStart hook (auto-discovered)
+│   ├── scripts/
+│   │   ├── statusline.sh             # stdin JSON -> shared formatted state
+│   │   ├── term-width.sh             # parent tty discovery and width refresh
+│   │   ├── render-compact.sh         # width-capped three-row layout
+│   │   ├── render-full.sh            # detailed seven-row layout
+│   │   ├── shorten-lib.sh            # sourceable path/branch shortening functions
+│   │   ├── shorten.sh                # CLI wrapper over shorten-lib.sh
+│   │   ├── fit-line1.awk             # row-1 path/branch -> width-capped text
+│   │   ├── json.awk                  # JSON scanner -> `dotted.path<TAB>scalar`
+│   │   ├── settings-update.awk       # rewrite settings.json's top-level statusLine
+│   │   ├── hook-handler.sh           # cost refresh + auto-setup
+│   │   ├── refresh-cost.sh           # session log aggregation -> cost cache, background
+│   │   ├── aggregate-cost.awk        # session JSONL x price table -> day/week/month cost
+│   │   └── fetch-prices.sh           # daily model price refresh with fallbacks
+│   └── tests/
+│       ├── statusline.test.sh        # fixture-driven render tests
+│       ├── fit.test.sh               # fit-line1.awk width and cut assertions
+│       ├── width.test.sh             # tty width detection and cache assertions
+│       ├── json.test.sh              # json.awk scanner assertions
+│       ├── settings.test.sh          # settings-update.awk rewrite assertions
+│       ├── cost.test.sh              # aggregate-cost.awk aggregation assertions
+│       └── prices.test.sh            # fetch-prices.sh fallback assertions
+└── rate-limit-resume/                # plugin: resume after a usage limit
     ├── .claude-plugin/plugin.json    # plugin manifest (name, version, ...)
-    ├── hooks/hooks.json              # SessionStart hook (auto-discovered)
-    ├── scripts/
-    │   ├── statusline.sh             # stdin JSON -> shared formatted state
-    │   ├── term-width.sh             # parent tty discovery and width refresh
-    │   ├── render-compact.sh          # width-capped three-row layout
-    │   ├── render-full.sh             # detailed seven-row layout
-    │   ├── shorten.sh                # path/branch shortening helper
-    │   ├── fit-line1.awk             # row-1 path/branch -> width-capped text
-    │   ├── hook-handler.sh           # cost refresh + auto-setup
-    │   └── refresh-cost.sh           # session log aggregation -> cost cache, background
-    └── tests/
-        ├── statusline.test.sh        # fixture-driven render tests
-        ├── fit.test.sh               # fit-line1.awk width and cut assertions
-        └── width.test.sh             # tty width detection and cache assertions
+    ├── hooks/hooks.json              # StopFailure hook, matcher `rate_limit`
+    ├── scripts/resume.sh             # wait out the limit, exit 2 to rewake
+    └── tests/resume.test.sh          # attempt cap, exit code, injected prompt
 ```
 
 `hooks.json` is auto-discovered; do not also declare a `hooks` field in
@@ -53,18 +70,21 @@ caller. Avoid bashisms:
 
 ## Testing
 
+Run every suite from the repo root; the exit code is the gate, so a suite that
+fails to start fails the run rather than reporting zero failures:
+
 ```shell
-sh claude-statusline/tests/statusline.test.sh
-sh claude-statusline/tests/fit.test.sh
-sh claude-statusline/tests/width.test.sh
+sh -c 'rc=0; for t in */tests/*.test.sh; do sh "$t" || rc=1; done; exit "$rc"'
 ```
 
 `statusline.test.sh` renders `statusline.sh` against fixture JSON and asserts
 both layouts, gauges, colors, and indicators. `fit.test.sh` asserts
 `fit-line1.awk`'s width calculation and cut behavior directly. `width.test.sh`
-asserts tty discovery, caching, and width refresh behavior. Follow Red -> Green:
-add a failing test before a behavior change, then make it pass. Report the
-pass/fail counts when you change behavior.
+asserts tty discovery, caching, and width refresh behavior. `resume.test.sh`
+asserts the retry cap, exit codes, and the prompt `resume.sh` injects; it
+overrides the wait and the cap through environment variables so the suite
+stays fast. Follow Red -> Green: add a failing test before a behavior change,
+then make it pass. Report the pass/fail counts when you change behavior.
 
 Test fixtures must not contain real people, accounts, or secrets. Use
 placeholder logins (e.g. `octocat`) and RFC 2606 reserved domains
@@ -72,11 +92,11 @@ placeholder logins (e.g. `octocat`) and RFC 2606 reserved domains
 
 ## Versioning
 
-The plugin is loaded from a **version-pinned cache**, so any change that should
+Each plugin is loaded from a **version-pinned cache**, so any change that should
 reach installed users needs a version bump. On every functional change:
 
-1. Bump `claude-statusline/.claude-plugin/plugin.json` `version` (SemVer).
-2. Set the matching plugin entry `version` in `.claude-plugin/marketplace.json`
+1. Bump `<plugin>/.claude-plugin/plugin.json` `version` (SemVer).
+2. Set that plugin's entry `version` in `.claude-plugin/marketplace.json`
    to the same value.
 
 Keep the two versions identical. Commits follow Conventional Commits
