@@ -9,48 +9,10 @@ three-row layout and a full seven-row layout. `rate-limit-resume` is a
 interrupted turn. End-user documentation lives in [README.md](README.md); this
 file covers how to change the code safely.
 
-## Structure
-
-```
-.
-├── .claude-plugin/marketplace.json   # marketplace catalog (name: silee-tools)
-├── README.md                         # end-user docs
-├── LICENSE                           # MIT
-├── docs/superpowers/                 # design docs and plans kept from past changes
-├── claude-statusline/                # plugin: the statusline HUD
-│   ├── .claude-plugin/plugin.json    # plugin manifest (name, version, ...)
-│   ├── hooks/hooks.json              # SessionStart hook (auto-discovered)
-│   ├── scripts/
-│   │   ├── statusline.sh             # stdin JSON -> shared formatted state
-│   │   ├── term-width.sh             # parent tty discovery and width refresh
-│   │   ├── render-compact.sh         # width-capped three-row layout
-│   │   ├── render-full.sh            # detailed seven-row layout
-│   │   ├── shorten-lib.sh            # sourceable path/branch shortening functions
-│   │   ├── shorten.sh                # CLI wrapper over shorten-lib.sh
-│   │   ├── fit-line1.awk             # row-1 path/branch -> width-capped text
-│   │   ├── json.awk                  # JSON scanner -> `dotted.path<TAB>scalar`
-│   │   ├── settings-update.awk       # rewrite settings.json's top-level statusLine
-│   │   ├── hook-handler.sh           # cost refresh + auto-setup
-│   │   ├── refresh-cost.sh           # session log aggregation -> cost cache, background
-│   │   ├── aggregate-cost.awk        # session JSONL x price table -> day/week/month cost
-│   │   └── fetch-prices.sh           # daily model price refresh with fallbacks
-│   └── tests/
-│       ├── statusline.test.sh        # fixture-driven render tests
-│       ├── fit.test.sh               # fit-line1.awk width and cut assertions
-│       ├── width.test.sh             # tty width detection and cache assertions
-│       ├── json.test.sh              # json.awk scanner assertions
-│       ├── settings.test.sh          # settings-update.awk rewrite assertions
-│       ├── cost.test.sh              # aggregate-cost.awk aggregation assertions
-│       └── prices.test.sh            # fetch-prices.sh fallback assertions
-└── rate-limit-resume/                # plugin: resume after a usage limit
-    ├── .claude-plugin/plugin.json    # plugin manifest (name, version, ...)
-    ├── hooks/hooks.json              # StopFailure hook, matcher `rate_limit`
-    ├── scripts/resume.sh             # wait out the limit, exit 2 to rewake
-    └── tests/resume.test.sh          # attempt cap, exit code, injected prompt
-```
-
-`hooks.json` is auto-discovered; do not also declare a `hooks` field in
-`plugin.json` (double-registration errors out).
+Each plugin owns a directory named after it, holding `.claude-plugin/plugin.json`,
+`hooks/hooks.json`, `scripts/`, and `tests/`. `hooks.json` is auto-discovered;
+do not also declare a `hooks` field in `plugin.json` (double-registration errors
+out).
 
 ## Shell scripts: POSIX sh
 
