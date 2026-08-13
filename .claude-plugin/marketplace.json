@@ -23,6 +23,22 @@
         "context"
       ],
       "category": "utility"
+    },
+    {
+      "name": "rate-limit-resume",
+      "source": "./rate-limit-resume",
+      "description": "사용량 한도로 끊긴 턴을 한도가 풀린 뒤 자동으로 이어서 재개한다",
+      "version": "0.1.0",
+      "author": {
+        "name": "silee9019"
+      },
+      "license": "MIT",
+      "keywords": [
+        "rate-limit",
+        "resume",
+        "hook"
+      ],
+      "category": "utility"
     }
   ]
 }
