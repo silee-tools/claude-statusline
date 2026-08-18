@@ -4,8 +4,8 @@
 set -eu
 
 # 대기가 hooks.json 의 timeout 을 넘으면 훅이 잘려 재개되지 않는다. 둘을 함께 조정한다.
-WAIT_SECONDS="${CLAUDE_RESUME_WAIT_SECONDS:-300}"
-MAX_ATTEMPTS="${CLAUDE_RESUME_MAX_ATTEMPTS:-72}"
+WAIT_SECONDS="${CLAUDE_RESUME_WAIT_SECONDS:-120}"
+MAX_ATTEMPTS="${CLAUDE_RESUME_MAX_ATTEMPTS:-90}"
 STATE_DIR="${CLAUDE_RESUME_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/rate-limit-resume}"
 
 input=$(cat)
