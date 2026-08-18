@@ -235,13 +235,13 @@ each run.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CLAUDE_RESUME_WAIT_SECONDS` | `300` | seconds to wait before waking the model |
-| `CLAUDE_RESUME_MAX_ATTEMPTS` | `72` | attempts per session before giving up |
+| `CLAUDE_RESUME_WAIT_SECONDS` | `120` | seconds to wait before waking the model |
+| `CLAUDE_RESUME_MAX_ATTEMPTS` | `90` | attempts per session before giving up |
 | `CLAUDE_RESUME_STATE_DIR` | `${XDG_STATE_HOME:-$HOME/.local/state}/rate-limit-resume` | where attempt counters are kept |
 
 Keep the wait below the `timeout` in `hooks/hooks.json` (600 seconds); a longer
 wait is cut off and the session is never resumed. With the defaults, one
-session retries for roughly six hours before it gives up.
+session retries for roughly three hours before it gives up.
 
 ### Limits
 
