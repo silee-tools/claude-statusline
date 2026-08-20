@@ -82,6 +82,13 @@ Small overshoots are yellow and overshoots of about 15 percentage points or
 more are red. The comparison uses 20 five-point cells, so the boundary is
 quantized rather than exact.
 
+The `5h` and `7d` windows are shared between sessions through
+`${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/rate-limits.env`. Whichever
+session observes a window leaves it there, so every other session picks it up on
+its next render and a session that has just opened shows both windows from its
+first render. A window whose reset time has passed is not drawn, because its
+usage no longer describes the current window.
+
 Cost is displayed only in the full layout. The background cost cache is
 refreshed for both layouts, so switching widths does not require new
 collection.

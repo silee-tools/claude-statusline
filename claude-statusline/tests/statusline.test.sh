@@ -148,13 +148,19 @@ json_eff() {
   printf '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":40000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.1.11","effort":{"level":"%s"}}' "$1"
 }
 
+# 세션 공유 5h·7d 캐시. 렌더가 이 파일에 쓰므로 케이스마다 지워 앞 케이스의 값이 뒤로 새지
+# 않게 한다. 캐시 디렉터리 전체를 지우면 같은 곳에 사는 binary-path 포인터까지 날아가 shim 이
+# 저하 표시를 내므로 이 파일 하나만 지운다.
+RATE_CACHE="$TMPROOT/cache/claude-statusline/rate-limits.env"
+seed_rate_cache() { printf 'fivePct=%s\nfiveReset=%s\nweekPct=%s\nweekReset=%s\n' "$1" "$2" "$3" "$4" > "$RATE_CACHE"; }
+
 # 색 코드 제거한 출력. XDG_DATA_HOME·XDG_CONFIG_HOME·XDG_CACHE_HOME 을 TMPROOT 로, AWS_SHARED_CREDENTIALS_FILE
 # 을 위 fixture 로 고정해 gh 계정·매핑·비용 캐시·AWS 세션 표시를 모두 결정론화한다.
-run() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS_FIXTURE" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
+_render() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS_FIXTURE" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
 # 색 코드 포함 원본 출력
-run_raw() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS_FIXTURE" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null; }
+_render_raw() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS_FIXTURE" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null; }
 # 폭 주입을 비우고 tty 장치 디렉터리를 존재하지 않는 곳으로 고정해 판정 불가 경로를 만든다.
-run_auto() {
+_render_auto() {
   (
     unset CLAUDE_STATUSLINE_WIDTH
     printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" \
@@ -164,6 +170,15 @@ run_auto() {
       | sed "s/${ESC}\[[0-9;]*m//g"
   )
 }
+
+# 기본 렌더는 공유 캐시를 지우고 시작한다. seed_rate_cache 로 심은 값을 그대로 쓰는 케이스만
+# run_keep 을 부른다. `KEEP=1 run ...` 처럼 호출 앞에 변수를 붙이는 형태는 쓰지 않는다 — 그
+# 할당이 호출 뒤에도 남는지를 POSIX 가 정하지 않아 macOS 의 /bin/sh 에서는 남고 dash 에서는
+# 남지 않으며, 남는 쪽에서는 이후 모든 렌더가 격리를 잃은 채 스위트가 통과한다.
+run()      { rm -f "$RATE_CACHE"; _render "$@"; }
+run_raw()  { rm -f "$RATE_CACHE"; _render_raw "$@"; }
+run_auto() { rm -f "$RATE_CACHE"; _render_auto "$@"; }
+run_keep() { _render "$@"; }
 
 # 출력 끝에 개행이 없어 명령 치환이 후행 개행을 지우므로, 한 줄을 다시 붙여 세면 정확하다.
 # 폭 불변성 비교(T5)용. 두 렌더 사이 분 경계를 넘어도 흔들리지 않도록 시각(HH:MM)과
@@ -339,12 +354,19 @@ assert_not_contains "T11 행1 에 gh 계정 없음" "gh@" "$FIRST"
 assert_not_contains "T11 행1 에 버전 없음" "v2.1.11" "$FIRST"
 assert_contains     "T11 행2 에 gh 계정" "gh@personal" "$(nth_line 2 "$OUT")"
 
-# --- T13: rate 부재면 행3 에 ctx 만 남고 행 수는 그대로 3 ---
+# --- T13a: rate 도 캐시도 없으면 행3 에 ctx 만 남고 행 수는 그대로 3 ---
 OUT=$(run "$(json_without)" 80)
-assert_equals   "T13 rate 부재에도 3행" "3" "$(nlines "$OUT")"
-assert_match    "T13 행3 ctx 유지" 'ctx [0-9]' "$(nth_line 3 "$OUT")"
-assert_no_match "T13 5h 없음" '5h [0-9]' "$OUT"
-assert_no_match "T13 7d 없음" '7d [0-9]' "$OUT"
+assert_equals   "T13a rate 부재에도 3행" "3" "$(nlines "$OUT")"
+assert_match    "T13a 행3 ctx 유지" 'ctx [0-9]' "$(nth_line 3 "$OUT")"
+assert_no_match "T13a 캐시가 비면 5h 없음" '5h [0-9]' "$OUT"
+assert_no_match "T13a 캐시가 비면 7d 없음" '7d [0-9]' "$OUT"
+
+# --- T13b: rate 는 없어도 유효한 캐시가 있으면 그 값을 그린다 ---
+seed_rate_cache 24 "$FIVE_RESET" 41 "$WEEK_RESET"
+OUT=$(run_keep "$(json_without)" 80)
+assert_match "T13b 캐시에서 5h 공급" '5h 24%' "$OUT"
+assert_match "T13b 캐시에서 7d 공급" '7d 41%' "$OUT"
+rm -f "$RATE_CACHE"
 
 # --- T14: 버전 무손실 ---
 OUT=$(run "$(json_with)" 80)
@@ -774,6 +796,42 @@ PV=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$SRC/.claude-plugin/plugin.jso
 MV=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$(dirname "$SRC")/.claude-plugin/marketplace.json" | sed -n 2p)
 assert_equals "T42 plugin.json 과 marketplace.json 버전 일치" "$PV" "$MV"
 assert_match  "T42 버전이 SemVer 세 자리 형태" '^[0-9]+\.[0-9]+\.[0-9]+$' "$PV"
+
+# --- T50: 만료된 캐시 창은 그리지 않는다. 지난 창의 소진율은 더 이상 참이 아니다 ---
+seed_rate_cache 94 "$((NOW - 60))" 41 "$WEEK_RESET"
+OUT=$(run_keep "$(json_without)" 80)
+assert_no_match "T50 만료된 5h 는 감춘다" '5h [0-9]' "$OUT"
+assert_match    "T50 만료 안 된 7d 는 남는다" '7d 41%' "$OUT"
+rm -f "$RATE_CACHE"
+
+# --- T51: stdin 값이 캐시보다 새것이면 파일이 갱신된다 ---
+seed_rate_cache 24 "$FIVE_RESET" 41 "$WEEK_RESET"
+run_keep "$(json_pct 55 60)" 80 >/dev/null
+assert_contains "T51 새 소진율이 저장됨" "fivePct=55" "$(cat "$RATE_CACHE")"
+rm -f "$RATE_CACHE"
+
+# --- T52: 낡은 stdin 값은 파일도 화면도 되돌리지 못한다 ---
+seed_rate_cache 60 "$FIVE_RESET" 90 "$WEEK_RESET"
+OUT=$(run_keep "$(json_pct 24 41)" 80)
+assert_contains "T52 파일은 그대로" "fivePct=60" "$(cat "$RATE_CACHE")"
+assert_match    "T52 화면도 되돌아가지 않음" '5h 60%' "$OUT"
+rm -f "$RATE_CACHE"
+
+# --- T53: 세션 최초 렌더에서도 캐시가 두 줄을 공급한다(전체 레이아웃) ---
+seed_rate_cache 24 "$FIVE_RESET" 41 "$WEEK_RESET"
+OUT=$(run_keep "$(json_without)" 120)
+assert_match "T53 전체 레이아웃 5h 행" '5h .*24%' "$OUT"
+assert_match "T53 전체 레이아웃 7d 행" '7d .*41%' "$OUT"
+rm -f "$RATE_CACHE"
+
+# --- T54: 창이 넘어가면 소진율이 낮아도 뒤 리셋이 이긴다 ---
+#    캐시는 아직 만료되지 않은 옛 창(94%)을, stdin 은 더 뒤 리셋의 새 창(3%)을 들고 있다.
+#    소진율만 비교하면 옛 창이 이겨 화면이 새 창으로 넘어가지 못한다.
+seed_rate_cache 94 "$((NOW + 100))" 41 "$WEEK_RESET"
+OUT=$(run_keep "$(json_pct 3 41)" 80)
+assert_match    "T54 새 창이 화면을 차지" '5h 3%' "$OUT"
+assert_contains "T54 새 창이 파일에도 반영" "fivePct=3" "$(cat "$RATE_CACHE")"
+rm -f "$RATE_CACHE"
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
