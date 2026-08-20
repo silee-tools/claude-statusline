@@ -237,11 +237,12 @@ table, and the gauge thresholds.
 
 ## stuck-resume
 
-A `StopFailure` hook that resumes a turn something else cut short. Two causes
-trigger it: the account hitting its 5-hour or 7-day usage limit, and the login
-expiring mid-turn. In both cases the hook waits, then wakes the model with a
-short prompt naming the cause, so the session picks the work back up without
-anyone typing "continue".
+A `StopFailure` hook that resumes a turn something else cut short. Four causes
+trigger it: the account hitting its 5-hour or 7-day usage limit, the login
+expiring mid-turn, and the two transient API failures — the service being
+overloaded or returning a server error. In every case the hook waits, then wakes
+the model with a short prompt naming the cause, so the session picks the work
+back up without anyone typing "continue".
 
 The hook never repairs the login itself. Running `/login` is a person's job, or
 another session's; this hook only waits and then wakes the interrupted turn. If
@@ -257,8 +258,8 @@ claude   # restart
 ```
 
 No `settings.json` edit is needed. `hooks/hooks.json` is auto-discovered and
-matches only the `rate_limit` and `authentication_failed` errors, so no other
-stop reason triggers it.
+matches only the `rate_limit`, `authentication_failed`, `server_error`, and
+`overloaded` errors, so no other stop reason triggers it.
 
 Coming from `rate-limit-resume`: the plugin name is its install identifier, so
 this rename is not an upgrade path. Remove the old plugin and install the new
@@ -278,8 +279,9 @@ it any more, so delete it by hand whenever convenient.
 ### How it works
 
 Claude Code fires `StopFailure` with an `error` value naming why the turn ended:
-`rate_limit` against a usage limit, and `authentication_failed` when the login
-expired, which is the stop that shows "Login expired · Please run /login". The
+`rate_limit` against a usage limit, `authentication_failed` when the login
+expired, which is the stop that shows "Login expired · Please run /login", and
+`server_error` or `overloaded` when the API itself is briefly unavailable. The
 hook entry sets `asyncRewake`, so the command runs in the background while the
 session sits idle. `resume.sh` sleeps for `CLAUDE_RESUME_WAIT_SECONDS` and then
 exits with code 2 — the code that tells Claude Code to wake the model — and
@@ -297,34 +299,41 @@ An attempt counter under
 `${XDG_STATE_HOME:-$HOME/.local/state}/stuck-resume/` bounds that loop, keyed by
 session and cause together. Spending every retry on a usage limit therefore
 leaves that same session free to retry an expired login. Once one
-session-and-cause pair passes `CLAUDE_RESUME_MAX_ATTEMPTS`, the hook exits 0 and
-the session stays stopped. Counter files older than seven days are cleaned up on
-each run.
+session-and-cause pair passes its attempt cap, the hook exits 0 and the session
+stays stopped. Counter files older than seven days are cleaned up on each run.
 
 ### Settings
 
+The wait and the cap default by cause, because the two groups clear on different
+timescales. An overloaded API usually frees up within minutes, so those causes
+knock often and briefly; a usage limit and an expired login wait on the clock or
+on a person, so they knock rarely and for longer. Setting either variable
+overrides the default for every cause.
+
 | Variable | Default | Meaning |
 |---|---|---|
-| `CLAUDE_RESUME_WAIT_SECONDS` | `120` | seconds to wait before waking the model |
-| `CLAUDE_RESUME_MAX_ATTEMPTS` | `90` | attempts per session and cause before giving up |
+| `CLAUDE_RESUME_WAIT_SECONDS` | `30` for `server_error` and `overloaded`, `120` otherwise | seconds to wait before waking the model |
+| `CLAUDE_RESUME_MAX_ATTEMPTS` | `240` for `server_error` and `overloaded`, `90` otherwise | attempts per session and cause before giving up |
 | `CLAUDE_RESUME_STATE_DIR` | `${XDG_STATE_HOME:-$HOME/.local/state}/stuck-resume` | where attempt counters are kept |
 
 The variable names still read `CLAUDE_RESUME_` rather than the plugin name, so a
 configuration that already sets them keeps working across the rename.
 
 Keep the wait below the `timeout` in `hooks/hooks.json` (600 seconds); a longer
-wait is cut off and the session is never resumed. With the defaults, one
-session-and-cause pair retries for roughly three hours before it gives up.
+wait is cut off and the session is never resumed. With the defaults, a usage
+limit or an expired login retries for roughly three hours before it gives up,
+and a transient API failure for roughly two.
 
 ### Limits
 
 Resuming needs a live interactive session. Under `claude -p` the process exits
 before the background hook finishes, so nothing is resumed.
 
-Neither trigger has been exercised against a real usage limit or a real expired
-login. The resume mechanism was verified with a stand-in `Stop` hook, the two
-matcher values come from Claude Code's own list of `StopFailure` error values,
-and the rest is covered by injecting hook input into `resume.sh` directly.
+No trigger has been exercised against a real usage limit, a real expired login,
+or a real API outage. The resume mechanism was verified with a stand-in `Stop`
+hook, the four matcher values come from Claude Code's own list of `StopFailure`
+error values, and the rest is covered by injecting hook input into `resume.sh`
+directly.
 
 ## License
 
