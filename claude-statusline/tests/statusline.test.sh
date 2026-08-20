@@ -27,12 +27,22 @@ mkdir -p "$TMPROOT/scripts" "$TMPROOT/cache/claude-statusline"
 ln -sf "$SRC/scripts/statusline.sh" "$TMPROOT/scripts/statusline.sh"
 ln -sf "$SRC/scripts/shorten.sh" "$TMPROOT/scripts/shorten.sh"
 ln -sf "$SRC/scripts/shorten-lib.sh" "$TMPROOT/scripts/shorten-lib.sh"
-ln -sf "$SRC/scripts/json.awk" "$TMPROOT/scripts/json.awk"
-ln -sf "$SRC/scripts/fit-line1.awk" "$TMPROOT/scripts/fit-line1.awk"
-ln -sf "$SRC/scripts/term-width.sh" "$TMPROOT/scripts/term-width.sh"
-ln -sf "$SRC/scripts/render-compact.sh" "$TMPROOT/scripts/render-compact.sh"
-ln -sf "$SRC/scripts/render-full.sh" "$TMPROOT/scripts/render-full.sh"
 SL="$TMPROOT/scripts/statusline.sh"
+
+# 렌더 본체는 Go 바이너리다. statusline.sh 는 XDG_CACHE_HOME 아래 포인터가 가리키는 그
+# 바이너리로 exec 하는 shim 이므로, 스위트가 먼저 한 번 빌드해 포인터를 심는다.
+# 빌드 실패를 건너뛰면 shim 이 저하 표시를 내고 이후 단언이 통째로 실패하거나, 더 나쁘게는
+# 검사 0건이 통과로 읽힌다. 그래서 여기서 즉시 스위트를 실패시킨다.
+BINARY="$TMPROOT/statusline-binary"
+if ! command -v go >/dev/null 2>&1; then
+  echo "FATAL: go 를 찾지 못해 렌더 바이너리를 빌드할 수 없습니다" >&2
+  exit 1
+fi
+if ! ( cd "$SRC" && GOPROXY=off go build -o "$BINARY" ./cmd/statusline ) >&2; then
+  echo "FATAL: 렌더 바이너리 빌드 실패" >&2
+  exit 1
+fi
+printf '%s\n' "$BINARY" > "$TMPROOT/cache/claude-statusline/binary-path"
 
 # gh 계정 fixture: 현재 계정명 캐시 + 계정→라벨 매핑 설정 파일. 실제 계정명 대신 테스트용
 # handle(octocat)로 결정론화한다. format_gh 는 소스에 계정명을 박지 않고 이 매핑을 읽는다.
@@ -166,7 +176,7 @@ count_char(){ printf '%s' "$2" | grep -o "$1" | wc -l | tr -d ' '; }
 
 # 문자열(색 코드 제거 후)이 완전한 UTF-8 시퀀스로만 이뤄져 있는지 검증한다. 잘린 다중바이트
 # 문자(선행 바이트만 남거나 연속 바이트가 모자란 경우)가 있으면 "bad", 없으면 "ok".
-# fit-line1.awk 의 절단이 두 칸 문자를 반으로 쪼개지 않는지를 실제 렌더 결과로 확인할 때 쓴다.
+# 첫 행 절단이 두 칸 문자를 반으로 쪼개지 않는지를 실제 렌더 결과로 확인할 때 쓴다.
 utf8_intact() {
   printf '%s' "$1" | sed "s/${ESC}\[[0-9;]*m//g" | LC_ALL=C awk '
     {
@@ -193,7 +203,7 @@ utf8_intact() {
 }
 
 # 색 코드를 뺀 표시 폭. 한글 등 두 칸 문자를 두 칸으로 센다(감지 폭 단언용).
-# 구현(fit-line1.awk 의 is_wide)이 다루는 8개 범위 중 이 스위트의 픽스처가 실제로 쓰는
+# 구현(internal/width 의 wideRanges)이 다루는 8개 범위 중 이 스위트의 픽스처가 실제로 쓰는
 # 3개(한글 자모·CJK·한글 음절)만 옮겼다. 의도적인 부분 오라클이다 — 구현에서 그대로 가져와
 # 쓰지 않고 독립적으로 유지하기 위해서다. 완전한 폭 분류기로 오인하지 않는다.
 vwidth_of() {
@@ -380,11 +390,9 @@ else
 fi
 
 # --- T40: 압축 첫 행은 감지 폭을 넘지 않는다(긴 경로·브랜치를 폭 기준으로 절단) ---
-#    브랜치명에 한글을 넣어 fit-line1.awk 의 바이트 지향 계약(LC_ALL=C 호출)을 fit.test.sh 의
-#    직접 awk 호출이 아니라 statusline.sh 의 실제 호출부를 거쳐 검증한다. 이 호출부에서
-#    LC_ALL=C 가 빠지면(문자 지향 awk 로 length()/substr() 가 바뀌는 구현에서) 두 칸 문자가
-#    반으로 쪼개지거나 폭 계산이 틀어질 수 있는데, 그 회귀는 fit.test.sh(자체 LC_ALL=C 로
-#    awk 를 직접 호출)와 T40 의 옛 ASCII 브랜치 픽스처 어느 쪽도 잡지 못했다.
+#    브랜치명에 한글을 넣어 폭 계산과 절단을 internal/width 의 단위 테스트가 아니라 실제
+#    렌더 경로를 거쳐 검증한다. 두 칸 문자를 한 칸으로 세는 회귀는 ASCII 브랜치 픽스처로는
+#    드러나지 않는다.
 if [ "$HAVE_GIT" = "1" ]; then
   LONGREPO="$TMPROOT/deep/aa/bb/cc/dd/very-long-project-directory-name"
   mkdir -p "$LONGREPO"
@@ -403,17 +411,6 @@ if [ "$HAVE_GIT" = "1" ]; then
 else
   printf 'SKIP T40 (git fixture 미생성)\n'
 fi
-
-# --- T43: fit-line1.awk 가 없거나 실행에 실패해도 statusline 은 빈 출력이 아니다 ---
-#    _fit=$(... | awk -f ...) 를 set -eu 아래서 감싸지 않으면, 그 프로그램 파일을 못 여는
-#    실패가 스크립트 전체를 조기 종료시켜 stdout 이 0바이트가 된다. fit-line1.awk 심볼릭
-#    링크를 잠시 치워 그 실패를 재현하고, 출력이 비지 않고 경로가 남는지(미절단 저하) 확인한다.
-FITLINK="$TMPROOT/scripts/fit-line1.awk"
-mv "$FITLINK" "$FITLINK.bak"
-OUT=$(run "$(json_without)" 80)
-assert_equals   "T43 awk 프로그램 부재에도 출력이 비지 않음" "no" "$([ -z "$OUT" ] && echo yes || echo no)"
-assert_contains "T43 awk 프로그램 부재에도 경로는 유지됨(미절단 저하)" "/tmp" "$OUT"
-mv "$FITLINK.bak" "$FITLINK"
 
 # --- T26: Claude Code 계정 이메일이 둘째 줄에 나온다 (.claude.json 의 oauthAccount.emailAddress) ---
 #    라벨 접두 없이 이메일 그대로, coral(173) 색으로 렌더한다. cwd=/tmp 라 브랜치 없이 계정만 있는 줄2.
