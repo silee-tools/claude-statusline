@@ -287,8 +287,7 @@ session sits idle.
 
 The hook follows five steps. First, the `StopFailure` hook registers its session and cause in shared state on the same machine. Second, a new session becomes eligible for one initial probe after the starting delay has elapsed from its registration time. Third, after a failed probe, the global delay doubles from its starting value and stops at a maximum of 480 seconds. Fourth, if the probe produces no result, another waiting session takes over at the next scheduled time. Fifth, when the current probe session emits `Stop`, every waiting hook exits immediately with code 2.
 
-The hook reads neither the reset time nor the login state, since neither reaches
-it as a machine value. A new turn that fails again registers the failure and follows the next global backoff interval. The hook does not poll while waiting, so it makes no network request until a scheduled probe is due.
+The hook does not read login state, but for `rate_limit` it reads the latest structured `resetsAt` value from the transcript and then falls back to the official reset time in `last_assistant_message`; only when both are unavailable does it use the three-hour deadline. A new turn that fails again registers the failure and follows the next global backoff interval. The hook does not poll while waiting, so it makes no network request until a scheduled probe is due.
 
 The hook writes a short cause-specific prompt to **stderr** and exits with code 2 — the code that tells Claude Code to wake the model. Text on stdout is not injected.
 
