@@ -2,7 +2,6 @@ package shorten
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -36,7 +35,7 @@ func tree(t *testing.T) string {
 	return home
 }
 
-// 기대값은 scripts/shorten.sh --plain path 를 위 트리에 실제로 돌려 뽑았다.
+// 이 표는 어느 낱말이 남고 어디가 ↪N 으로 접히는지만 본다. 색은 TestPathKeepsColoredOutput 이 본다.
 func TestPathMatchesShellImplementation(t *testing.T) {
 	home := tree(t)
 	cases := []struct{ in, home, want string }{
@@ -72,8 +71,7 @@ func TestPathMatchesShellImplementation(t *testing.T) {
 	}
 }
 
-// 기대값은 scripts/shorten.sh --plain branch 를 실제로 돌려 뽑았다. 티켓 판정은
-// LC_ALL=C 기준이다 — 근거는 TestBranchMatchesShellUnderCLocale 에 있다.
+// 티켓 판정은 프로젝트 키가 전부 대문자일 때만 참이다. lower-1-x-y-z 줄이 그 규칙을 고정한다.
 func TestBranchMatchesShellImplementation(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"main", "main"},
@@ -102,7 +100,7 @@ func TestBranchMatchesShellImplementation(t *testing.T) {
 		{"-a-b-c", "-↪2-c"},
 		{"a-b-c-", "a-b-c-"},
 		{"-a-b-c-", "-↪2-c"},
-		// 소문자 프로젝트 키는 티켓이 아니다. 이 줄이 LC_ALL=C 기준을 고정한다.
+		// 소문자 프로젝트 키는 티켓이 아니므로 낱말 접기의 대상이다.
 		{"lower-1-x-y-z", "lower-1-↪1-y-z"},
 		{"test-1-foo-bar", "test-↪2-bar"},
 	}
@@ -113,62 +111,28 @@ func TestBranchMatchesShellImplementation(t *testing.T) {
 	}
 }
 
-// shellOut runs the shell implementation as the oracle. LC_ALL=C 로 부르는 이유는
-// 기본 로케일에서 case 의 [A-Z] 범위가 콜레이션을 타 b..z 까지 대문자로 취급하기
-// 때문이다. 그 상태의 셸은 lower-1-x-y-z 를 티켓으로 읽어 축약하지 않는데, 같은
-// 파일의 주석이 적은 규칙("대문자로만 이뤄지지 않으면 티켓 아님")과 어긋난다.
-func shellOut(t *testing.T, home string, args ...string) (string, bool) {
-	t.Helper()
-	script := filepath.Join("..", "..", "scripts", "shorten.sh")
-	if _, err := os.Stat(script); err != nil {
-		return "", false
-	}
-	cmd := exec.Command("sh", append([]string{script}, args...)...)
-	cmd.Env = append(os.Environ(), "HOME="+home, "LC_ALL=C")
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("sh %s %v: %v", script, args, err)
-	}
-	return strings.TrimRight(string(out), "\n"), true
-}
-
-// 표 기대값을 손으로 옮기다 생기는 오차를 막는 차동 테스트다. 셸 구현이 저장소에
-// 남아 있는 동안 이 테스트가 Go 와 셸을 매 실행 대조한다.
-func TestPathAgreesWithShellByteForByte(t *testing.T) {
+// 색까지 포함한 출력을 고정한다. 위의 plain 표는 어느 낱말이 남는지만 보고 색은 보지 않아,
+// 저장소명과 현재 폴더에 파랑을 주는 규칙이 무너져도 통과한다. 여기 적힌 값은 셸 구현이
+// 오라클로 남아 있던 마지막 시점에 그 구현과 바이트 단위로 같음을 확인하고 옮긴 것이다.
+func TestPathKeepsColoredOutput(t *testing.T) {
 	home := tree(t)
-	for _, p := range []string{
-		home,
-		filepath.Join(home, "repos/a/b/c/d/e/f/g"),
-		filepath.Join(home, "repos/proj"),
-		filepath.Join(home, "repos/proj/sub/deep"),
-		filepath.Join(home, "collide/foo/sub/foo/bar"),
-		filepath.Join(home, "nested/outer/mid/inner/x"),
-		filepath.Join(home, "repos/a/b"),
-		"/tmp", "/usr/local/share", "/", "aaa/bbb/ccc/ddd/eee",
-	} {
-		want, ok := shellOut(t, home, "--ansi", "path", p)
-		if !ok {
-			t.Skip("scripts/shorten.sh 부재 — 차동 대조 생략")
-		}
-		if got := Path(p, home); got != want {
-			t.Errorf("Path(%q)\n got %q\nwant %q", p, got, want)
-		}
+	j := func(rel string) string { return filepath.Join(home, rel) }
+	cases := []struct{ in, want string }{
+		{home, "\x1b[2m~\x1b[0m"},
+		{j("repos/a/b/c/d/e/f/g"), "\x1b[2m~\x1b[0m\x1b[2m/\x1b[0m\x1b[2m↪7\x1b[0m\x1b[2m/\x1b[0m\x1b[34mg\x1b[0m"},
+		{j("repos/proj"), "\x1b[2m~/repos/proj\x1b[0m"},
+		{j("repos/proj/sub/deep"), "\x1b[2m~\x1b[0m\x1b[2m/\x1b[0m\x1b[2m↪1\x1b[0m\x1b[2m/\x1b[0m\x1b[34mproj\x1b[0m\x1b[2m/\x1b[0m\x1b[2m↪1\x1b[0m\x1b[2m/\x1b[0m\x1b[34mdeep\x1b[0m"},
+		{j("collide/foo/sub/foo/bar"), "\x1b[2m~\x1b[0m\x1b[2m/\x1b[0m\x1b[2m↪1\x1b[0m\x1b[2m/\x1b[0m\x1b[34mfoo\x1b[0m\x1b[2m/\x1b[0m\x1b[2m↪2\x1b[0m\x1b[2m/\x1b[0m\x1b[34mbar\x1b[0m"},
+		{j("nested/outer/mid/inner/x"), "\x1b[2m~\x1b[0m\x1b[2m/\x1b[0m\x1b[2m↪1\x1b[0m\x1b[2m/\x1b[0m\x1b[34mouter\x1b[0m\x1b[2m/\x1b[0m\x1b[2m↪1\x1b[0m\x1b[2m/\x1b[0m\x1b[34minner\x1b[0m\x1b[2m/\x1b[0m\x1b[34mx\x1b[0m"},
+		{j("repos/a/b"), "\x1b[2m~\x1b[0m\x1b[2m/\x1b[0m\x1b[2m↪2\x1b[0m\x1b[2m/\x1b[0m\x1b[34mb\x1b[0m"},
+		{"/tmp", "\x1b[2m/tmp\x1b[0m"},
+		{"/usr/local/share", "\x1b[2m/\x1b[0m\x1b[2musr\x1b[0m\x1b[2m/\x1b[0m\x1b[2m↪1\x1b[0m\x1b[2m/\x1b[0m\x1b[34mshare\x1b[0m"},
+		{"/", "\x1b[2m/\x1b[0m"},
+		{"aaa/bbb/ccc/ddd/eee", "\x1b[2maaa\x1b[0m\x1b[2m/\x1b[0m\x1b[2m↪3\x1b[0m\x1b[2m/\x1b[0m\x1b[34meee\x1b[0m"},
 	}
-}
-
-func TestBranchAgreesWithShellByteForByte(t *testing.T) {
-	for _, b := range []string{
-		"main", "wip", "feature/CND-1234-some-long-branch-name-here", "release/2026-08",
-		"one-two-three-four", "one-two-three-four-five", "PROJ-9-a-b-c-d-e",
-		"a-b-c-d", "PROJ--1-x", "-a-b-c", "a-b-c-", "lower-1-x-y-z", "test-1-foo-bar",
-		"한글브랜치이름아주길게테스트용문자열모음입니다",
-	} {
-		want, ok := shellOut(t, "/nonexistent-home", "--plain", "branch", b)
-		if !ok {
-			t.Skip("scripts/shorten.sh 부재 — 차동 대조 생략")
-		}
-		if got := Branch(b); got != want {
-			t.Errorf("Branch(%q) = %q, want %q", b, got, want)
+	for _, c := range cases {
+		if got := Path(c.in, home); got != c.want {
+			t.Errorf("Path(%q)\n got %q\nwant %q", c.in, got, c.want)
 		}
 	}
 }

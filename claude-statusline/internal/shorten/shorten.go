@@ -171,9 +171,10 @@ func splitFields(s string, sep byte) []string {
 	return parts
 }
 
-// isUpper and isDigits pin the ASCII ranges the shell's [A-Z] and [0-9] mean. The
-// shell's own ranges widen under a collating locale, which makes a lowercase key
-// read as a ticket; the rule this reproduces is the one shorten-lib.sh documents.
+// isUpper and isDigits hold the ticket rule to ASCII: a project key counts as a
+// ticket only when every letter is uppercase. Widening either range would let a
+// lowercase key read as a ticket, which leaves branches like lower-1-x-y-z
+// unshortened.
 func isUpper(s string) bool {
 	if s == "" {
 		return false
