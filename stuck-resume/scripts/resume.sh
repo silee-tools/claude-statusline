@@ -12,6 +12,7 @@ GLOBAL="$STATE_DIR/global"
 lock_owned=0
 publish_owned=0
 wake_requested=0
+process_identity=
 
 now_epoch() {
   case "${CLAUDE_RESUME_TEST_NOW:-}" in
@@ -44,6 +45,22 @@ write_atomic() {
   write_tmp="$write_file.$$.tmp"
   printf '%s\n' "$write_content" > "$write_tmp"
   mv "$write_tmp" "$write_file"
+}
+
+create_process_identity() {
+  process_identity=$(mktemp "$STATE_DIR/invocation-XXXXXX")
+  process_token=${process_identity##*/}
+  case "$process_token" in
+    invocation-[0-9A-Za-z_-]*) ;;
+    *) rm -f "$process_identity"; process_identity=; return 1 ;;
+  esac
+  CLAUDE_RESUME_PROCESS_IDENTITY=$process_identity
+  export CLAUDE_RESUME_PROCESS_IDENTITY
+}
+
+cleanup_process_identity() {
+  [ -z "$process_identity" ] || rm -f "$process_identity" || true
+  process_identity=
 }
 
 lock_mtime() {
@@ -573,12 +590,14 @@ wait_for_turn() {
 }
 
 mkdir -p "$CAUSE_DIR" "$WAITER_DIR"
-trap 'trap_rc=$?; release_publish_lock; release_lock; exit "$trap_rc"' EXIT
+trap 'trap_rc=$?; release_publish_lock; release_lock; cleanup_process_identity; exit "$trap_rc"' EXIT
 
 if [ "${1:-}" = --stop ]; then
   process_role=stop
   process_token=${2:-unknown}
   case "$process_token" in ''|*[!0-9A-Za-z_-]*) exit 0 ;; esac
+  process_identity=${CLAUDE_RESUME_PROCESS_IDENTITY:-}
+  [ "$process_identity" = "$STATE_DIR/$process_token" ] || process_identity=
   session=${CLAUDE_RESUME_STOP_SESSION:-unknown}
   case "$session" in ''|*[!0-9A-Za-z_-]*) session=unknown ;; esac
   handle_stop
@@ -590,6 +609,8 @@ if [ "${1:-}" = --worker ]; then
   worker_token=${2:-unknown}
   case "$worker_token" in ''|*[!0-9A-Za-z_-]*) exit 0 ;; esac
   process_token=$worker_token
+  process_identity=${CLAUDE_RESUME_PROCESS_IDENTITY:-}
+  [ "$process_identity" = "$STATE_DIR/$process_token" ] || process_identity=
   session=${CLAUDE_RESUME_WORKER_SESSION:-unknown}
   error=${CLAUDE_RESUME_WORKER_ERROR:-other}
   transcript=${CLAUDE_RESUME_WORKER_TRANSCRIPT:-}
@@ -622,12 +643,14 @@ case "$hook_event" in
     CLAUDE_RESUME_WORKER_TRANSCRIPT=$transcript
     CLAUDE_RESUME_WORKER_LAST_MESSAGE=$last_message
     export CLAUDE_RESUME_WORKER_SESSION CLAUDE_RESUME_WORKER_ERROR CLAUDE_RESUME_WORKER_TRANSCRIPT CLAUDE_RESUME_WORKER_LAST_MESSAGE
-    exec sh "$0" --worker "$session-$$"
+    create_process_identity
+    exec sh "$0" --worker "$process_token"
     ;;
   Stop)
     CLAUDE_RESUME_STOP_SESSION=$session
     export CLAUDE_RESUME_STOP_SESSION
-    exec sh "$0" --stop "$session-$$"
+    create_process_identity
+    exec sh "$0" --stop "$process_token"
     ;;
   *) exit 0 ;;
 esac

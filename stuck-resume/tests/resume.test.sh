@@ -584,16 +584,56 @@ touch "$CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER/release.$t28_bpid"
 wait_for_file "$TMPROOT/t28-a.rc" || bad "T28 A 종료" "종료코드 파일 없음"
 wait_for_file "$TMPROOT/t28-b.rc" || bad "T28 B 종료" "종료코드 파일 없음"
 
-# T29: publication guard의 PID가 다른 프로세스에 재사용되면 기존 소유자로 보지 않는다.
+# T29: publication guard의 PID가 같은 역할의 다른 토큰 프로세스에 재사용되면 기존 소유자로 보지 않는다.
 reset_state
 mkdir -p "$STATE_V2"
-sleep 30 & t29_reused_pid=$!
+(
+  CLAUDE_RESUME_STATE_DIR="$TMPROOT/t29-other-state"
+  CLAUDE_RESUME_WORKER_SESSION=$SESSION_B
+  CLAUDE_RESUME_WORKER_ERROR=server_error
+  CLAUDE_RESUME_WORKER_TRANSCRIPT=
+  CLAUDE_RESUME_WORKER_LAST_MESSAGE=
+  CLAUDE_RESUME_TEST_REGISTER_BARRIER="$TMPROOT/t29-other-register"
+  export CLAUDE_RESUME_STATE_DIR CLAUDE_RESUME_WORKER_SESSION CLAUDE_RESUME_WORKER_ERROR CLAUDE_RESUME_WORKER_TRANSCRIPT CLAUDE_RESUME_WORKER_LAST_MESSAGE CLAUDE_RESUME_TEST_REGISTER_BARRIER
+  exec sh "$RESUME" --worker live-publisher
+) &
+t29_reused_pid=$!
 WORKER_PIDS="$WORKER_PIDS $t29_reused_pid"
+wait_for_file "$TMPROOT/t29-other-register/$SESSION_B" || bad "T29 같은 역할의 다른 토큰 프로세스 준비" "worker 등록 장벽 없음"
 printf 'pid=%s\nacquired_at=1787200000\nrole=worker\ntoken=stale-publisher\n' "$t29_reused_pid" > "$STATE_V2/lock-publish"
 start_waiter "$(failure_input "$SESSION_A" rate_limit)" "$TMPROOT/t29-a.out" "$TMPROOT/t29-a.err" "$TMPROOT/t29-a.rc"
 if wait_for_file "$TMPROOT/t29-a.rc" 20; then ok "T29 재사용된 PID의 guard 회수"; else bad "T29 재사용된 PID의 guard 회수" "새 worker가 재사용된 PID를 기존 게시자로 오인해 대기함"; fi
 assert_equals "T29 guard 회수 뒤 재개" "2" "$(sed -n '1p' "$TMPROOT/t29-a.rc" 2>/dev/null)"
 if kill -0 "$t29_reused_pid" 2>/dev/null; then ok "T29 PID가 같은 다른 프로세스 보존"; else bad "T29 PID가 같은 다른 프로세스 보존" "guard 회수가 다른 프로세스를 종료함"; fi
+
+# T30: 같은 세션의 실제 호출마다 session-PID에서 파생되지 않은 새 identity 토큰을 만든다.
+reset_state
+CLAUDE_RESUME_TEST_REGISTER_BARRIER="$TMPROOT/t30-first-register"
+export CLAUDE_RESUME_TEST_REGISTER_BARRIER
+start_waiter "$(failure_input "$SESSION_A" rate_limit)" "$TMPROOT/t30-first.out" "$TMPROOT/t30-first.err" "$TMPROOT/t30-first.rc"
+wait_for_file "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/$SESSION_A" || bad "T30 첫 호출 등록" "worker 등록 장벽 없음"
+t30_first_pid=$(field "waiters/$SESSION_A" pid)
+t30_first_token=$(field "waiters/$SESSION_A" token)
+
+CLAUDE_RESUME_TEST_REGISTER_BARRIER="$TMPROOT/t30-second-register"
+export CLAUDE_RESUME_TEST_REGISTER_BARRIER
+start_waiter "$(failure_input "$SESSION_A" rate_limit)" "$TMPROOT/t30-second.out" "$TMPROOT/t30-second.err" "$TMPROOT/t30-second.rc"
+wait_for_file "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/$SESSION_A" || bad "T30 두 번째 호출 등록" "worker 등록 장벽 없음"
+t30_second_pid=$(field "waiters/$SESSION_A" pid)
+t30_second_token=$(field "waiters/$SESSION_A" token)
+
+if [ -n "$t30_first_token" ] && [ -n "$t30_second_token" ] && [ "$t30_first_token" != "$t30_second_token" ]; then ok "T30 같은 세션의 두 호출은 서로 다른 토큰"; else bad "T30 같은 세션의 두 호출은 서로 다른 토큰" "$t30_first_token / $t30_second_token"; fi
+if [ "$t30_first_token" != "$SESSION_A-$t30_first_pid" ] && [ "$t30_second_token" != "$SESSION_A-$t30_second_pid" ]; then ok "T30 토큰은 session-PID 결정값과 다름"; else bad "T30 토큰은 session-PID 결정값과 다름" "$t30_first_token / $t30_second_token"; fi
+if [ -f "$STATE_V2/$t30_first_token" ] && [ -f "$STATE_V2/$t30_second_token" ]; then ok "T30 실행 중 identity 파일 유지"; else bad "T30 실행 중 identity 파일 유지" "identity 파일 없음"; fi
+t30_first_command=$(ps -ww -p "$t30_first_pid" -o command= 2>/dev/null || true)
+t30_second_command=$(ps -ww -p "$t30_second_pid" -o command= 2>/dev/null || true)
+case " $t30_first_command " in *" --worker $t30_first_token "*) t30_first_argv=1 ;; *) t30_first_argv=0 ;; esac
+case " $t30_second_command " in *" --worker $t30_second_token "*) t30_second_argv=1 ;; *) t30_second_argv=0 ;; esac
+assert_equals "T30 토큰은 exec 뒤 argv에 유지" "1,1" "$t30_first_argv,$t30_second_argv"
+touch "$TMPROOT/t30-first-register/release" "$TMPROOT/t30-second-register/release"
+wait_for_file "$TMPROOT/t30-first.rc" || bad "T30 첫 호출 종료" "종료코드 파일 없음"
+wait_for_file "$TMPROOT/t30-second.rc" || bad "T30 두 번째 호출 종료" "종료코드 파일 없음"
+if [ ! -e "$STATE_V2/$t30_first_token" ] && [ ! -e "$STATE_V2/$t30_second_token" ]; then ok "T30 정상 종료 뒤 identity 파일 정리"; else bad "T30 정상 종료 뒤 identity 파일 정리" "identity 파일 잔존"; fi
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 completed=1
