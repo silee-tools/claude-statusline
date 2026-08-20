@@ -128,17 +128,43 @@ func TestBranchWorksInALinkedWorktree(t *testing.T) {
 	}
 }
 
-func TestNonRepositoryYieldsEmptyBranchAndClearsCache(t *testing.T) {
+func TestNonRepositoryYieldsEmptyBranchAndLeavesTheCacheAlone(t *testing.T) {
+	// 캐시 항목은 현재 작업 디렉터리로 키가 걸려 있어 다른 디렉터리의 항목이 답으로 쓰이지
+	// 않는다. 그래서 저장소가 아닌 곳을 지날 때 지우지 않고 남기며, 그 저장소로 돌아오면
+	// 캐시가 그대로 적중해 git 을 다시 부르지 않는다.
 	cache := t.TempDir()
-	stale := filepath.Join(cache, "git-branch.env")
-	if err := os.WriteFile(stale, []byte("cwd=/nope\nhead=/nope/HEAD\ntoken=x\nbranch=ghost\n"), 0o600); err != nil {
+	other := filepath.Join(cache, "git-branch.env")
+	if err := os.WriteFile(other, []byte("cwd=/nope\nhead=/nope/HEAD\ntoken=x\nbranch=ghost\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if got := Branch(t.TempDir(), cache); got != "" {
 		t.Fatalf("저장소가 아니면 브랜치가 없다: %q", got)
 	}
-	if _, err := os.Stat(stale); !os.IsNotExist(err) {
-		t.Fatal("저장소가 아니면 캐시를 지워 다음 렌더가 다시 판정하게 둔다")
+	if _, err := os.Stat(other); err != nil {
+		t.Fatalf("다른 디렉터리의 캐시 항목은 남긴다: %v", err)
+	}
+}
+
+func TestBranchSkipsGitOutsideARepository(t *testing.T) {
+	// 저장소가 아닌 곳에서는 캐시가 적중할 일이 없어 렌더마다 git 이 새로 떴다. 상위 경로 어디에도
+	// .git 이 없다는 것은 git 자신이 걷는 조건이고 stat 몇 번으로 답이 나오므로, 프로세스를
+	// 띄우지 않고 그 자리에서 판정한다.
+	repo := newRepo(t, "wip")
+	plain := t.TempDir()
+	tally := blockGit(t)
+
+	if got := Branch(plain, t.TempDir()); got != "" {
+		t.Errorf("저장소가 아니면 브랜치가 없다: %q", got)
+	}
+	if n := tally(); n != 0 {
+		t.Errorf("저장소가 아닌데 git 을 %d회 불렀다", n)
+	}
+
+	// 대조군이다. 이 값이 0 이면 가짜 git 이 PATH 에 걸리지 않았다는 뜻이고, 그러면 위 단언은
+	// 호출이 없었음을 보인 것이 아니라 관측이 없었음을 보인 것이 된다.
+	Branch(repo, t.TempDir())
+	if n := tally(); n == 0 {
+		t.Error("저장소에서는 git 을 부른다 — 가짜 git 이 PATH 에 걸리지 않았다")
 	}
 }
 
