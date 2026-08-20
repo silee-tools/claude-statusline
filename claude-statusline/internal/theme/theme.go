@@ -54,9 +54,13 @@ func GaugeColor(pct, warn, danger int) string {
 	return ""
 }
 
-// Bar draws the 20-cell gauge. Cells past budget carry the overspend glyph, and
-// each cell closes its own color so the following segment does not inherit it.
-func Bar(pct, budget int, fill, empty, over string) string {
+// Bar draws the 20-cell gauge on two independent channels: the glyph says whether a
+// cell is spent, and the color says whether it lies beyond budget. Keeping them apart
+// is what lets the budget boundary stay visible when a caller paints both sides with
+// the same color. Cells from budget onward take over, spent or not, so the whole
+// stretch a caller is warning about reads as one block. Each cell closes its own color
+// so the following segment does not inherit it.
+func Bar(pct, budget int, base, over string) string {
 	if pct > 100 {
 		pct = 100
 	}
@@ -66,14 +70,14 @@ func Bar(pct, budget int, fill, empty, over string) string {
 	filled := pct * Cells / 100
 	var b strings.Builder
 	for i := 0; i < Cells; i++ {
-		switch {
-		case i >= filled:
-			b.WriteString(empty + "░" + Reset)
-		case budget != NoBudget && i >= budget:
-			b.WriteString(over + "▓" + Reset)
-		default:
-			b.WriteString(fill + "█" + Reset)
+		color, glyph := base, "█"
+		if i >= filled {
+			glyph = "░"
 		}
+		if budget != NoBudget && i >= budget {
+			color = over
+		}
+		b.WriteString(color + glyph + Reset)
 	}
 	return b.String()
 }

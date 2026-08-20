@@ -12,10 +12,12 @@ set -eu
 
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 ESC=$(printf '\033')
+RESET=$(printf '\033[0m')
 RED=$(printf '\033[31m')
 YELLOW=$(printf '\033[33m')
 CYAN=$(printf '\033[36m')
 DIMC=$(printf '\033[2m')
+GREY=$(printf '\033[38;5;240m')
 GREEN=$(printf '\033[32m')
 LIME=$(printf '\033[38;5;148m')
 AMBER=$(printf '\033[38;5;214m')
@@ -131,7 +133,7 @@ json_pct() {
   printf '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":40000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.1.11","rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":%s},"seven_day":{"used_percentage":%s,"resets_at":%s}}}' "$1" "$FIVE_RESET" "$2" "$WEEK_RESET"
 }
 # resets_at 없는 변형: 페이스(예산) 오버레이가 없어 순수 막대·절대 소진율 색만 검증할 때 쓴다.
-# (resets_at 이 있으면 초과분 ▓ 강조가 얹혀 정확한 막대 문자열·색 임계 단언이 흔들린다.)
+# (resets_at 이 있으면 예산 초과 구간의 색이 얹혀 정확한 막대 문자열·색 임계 단언이 흔들린다.)
 json_pct_nr() {
   printf '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":40000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.1.11","rate_limits":{"five_hour":{"used_percentage":%s},"seven_day":{"used_percentage":%s}}}' "$1" "$2"
 }
@@ -188,6 +190,7 @@ nlines()    { printf '%s\n' "$1" | wc -l | tr -d ' '; }
 first_line(){ printf '%s\n' "$1" | sed -n '1p'; }
 nth_line()  { printf '%s\n' "$2" | sed -n "${1}p"; }
 count_char(){ printf '%s' "$2" | grep -o "$1" | wc -l | tr -d ' '; }
+count_str() { printf '%s' "$2" | grep -oF "$1" | wc -l | tr -d ' '; }
 
 # 문자열(색 코드 제거 후)이 완전한 UTF-8 시퀀스로만 이뤄져 있는지 검증한다. 잘린 다중바이트
 # 문자(선행 바이트만 남거나 연속 바이트가 모자란 경우)가 있으면 "bad", 없으면 "ok".
@@ -263,11 +266,15 @@ assert_contains     "T46 전체 레이아웃은 비용 표시" "cost" "$OUT81"
 
 # --- T47: 전체 레이아웃은 막대·비용·전체 세션 ID를 보존한다 ---
 FULL=$(run "$(json_with)" 81)
-assert_equals "T47 전체 레이아웃 5h 막대는 20칸" "20" "$(count_char '[█░▓]' "$(nth_line 4 "$FULL")")"
+assert_equals "T47 전체 레이아웃 5h 막대는 20칸" "20" "$(count_char '[█░]' "$(nth_line 4 "$FULL")")"
 assert_contains "T47 전체 레이아웃 비용 금액" '$605' "$FULL"
-PACE_FULL=$(run "$(json_pct 70 10)" 81)
-assert_contains "T47 전체 레이아웃 페이스 초과는 막대 칸" "▓" "$(nth_line 4 "$PACE_FULL")"
-assert_not_contains "T47 전체 레이아웃은 압축 페이스 기호 없음" "▲" "$PACE_FULL"
+# 예산은 10칸(경과 9000s / 창 18000s)이고 소진율 70% 는 14칸이므로 11번째 칸부터 끝까지가
+# 초과 구간이다. 초과는 3칸을 넘어 빨강이고, 그 앞 열 칸은 회색으로 남는다.
+PACE_ROW=$(nth_line 4 "$(run_raw "$(json_pct 70 10)" 81)")
+assert_equals "T47 전체 레이아웃 예산 이내는 회색 10칸" "10" "$(count_str "$GREY" "$PACE_ROW")"
+assert_equals "T47 전체 레이아웃 예산 초과는 빨강 10칸" "10" "$(count_str "$RED" "$PACE_ROW")"
+assert_contains "T47 전체 레이아웃 예산 경계는 회색 다음이 빨강" "${GREY}█${RESET}${RED}█" "$PACE_ROW"
+assert_not_contains "T47 전체 레이아웃은 압축 페이스 기호 없음" "▲" "$PACE_ROW"
 if [ "$HAVE_GIT" = 1 ]; then
   FULL_SESSION=$(run "$(json_branch)" 81)
   assert_contains "T47 전체 레이아웃 푸터에 전체 세션 ID" "$KNOWN_SESSION" "$(nth_line 7 "$FULL_SESSION")"
@@ -386,7 +393,7 @@ fi
 # --- T17: 절대 소진율 색 임계 — 노랑 80%, 빨강 90% (페이스 오버레이 없는 fixture 로 격리) ---
 #    다른 색 소스(aws:⏳ 노랑, aws:expired 빨강)는 AWS_SHARED_CREDENTIALS_FILE 을 먼 미래
 #    만료 fixture 로 고정해 격리했으므로 YELLOW/RED 존재가 절대색만 가리킨다.
-#    json_pct_nr 로 reset 을 빼 초과분 ▓ 강조가 색 판정에 섞이지 않게 한다.
+#    json_pct_nr 로 reset 을 빼 예산 초과 구간의 색이 색 판정에 섞이지 않게 한다.
 YELLOW=$(printf '\033[33m')
 RAW=$(run_raw "$(json_pct_nr 80 10)" 80)
 assert_contains     "T17 80%면 노란색 경고" "$YELLOW" "$RAW"
@@ -577,8 +584,8 @@ assert_contains "T20 파이프·라벨 등 dim 유지" "$DIMC" "$RAW"
 # --- T21: 압축 레이아웃은 막대를 쓰지 않고 전체 레이아웃은 20칸 막대를 쓴다 ---
 COMPACT=$(run "$(json_with)" 80)
 FULL=$(run "$(json_with)" 81)
-assert_no_match "T21 압축 레이아웃은 막대 문자 없음" '█|░|▓' "$COMPACT"
-assert_match    "T21 전체 레이아웃은 막대 문자 있음" '█|░|▓' "$FULL"
+assert_no_match "T21 압축 레이아웃은 막대 문자 없음" '█|░' "$COMPACT"
+assert_match    "T21 전체 레이아웃은 막대 문자 있음" '█|░' "$FULL"
 
 # --- T22: 소진율 경계값(0%/100%)이 숫자로 그대로 나온다 ---
 OUT=$(run "$(json_pct_nr 0 100)" 80)
