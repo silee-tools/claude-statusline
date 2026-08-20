@@ -57,17 +57,37 @@ lock_mtime() {
   return 0
 }
 
+publish_owner_alive() {
+  owner_pid=$1
+  owner_role=$2
+  owner_token=$3
+  case "$owner_pid" in ''|*[!0-9]*) return 1 ;; esac
+  case "$owner_role" in worker|stop) ;; *) return 1 ;; esac
+  case "$owner_token" in ''|*[!0-9A-Za-z_-]*) return 1 ;; esac
+  owner_command=$(ps -ww -p "$owner_pid" -o command= 2>/dev/null) || return 1
+  case " $owner_command " in
+    *" --$owner_role $owner_token "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 acquire_publish_lock() {
   publish_candidate="$STATE_DIR/.lock-publish.$$"
   write_atomic "$publish_candidate" "pid=$$
-acquired_at=$(now_epoch)"
+acquired_at=$(now_epoch)
+role=$process_role
+token=$process_token"
   while ! ln "$publish_candidate" "$LOCK_PUBLISH" 2>/dev/null; do
     publish_pid=$(read_field "$LOCK_PUBLISH" pid)
     publish_at=$(number_or_default "$(read_field "$LOCK_PUBLISH" acquired_at)" 0)
-    if [ -z "$publish_pid" ] || ! kill -0 "$publish_pid" 2>/dev/null; then
+    publish_role=$(read_field "$LOCK_PUBLISH" role)
+    publish_token=$(read_field "$LOCK_PUBLISH" token)
+    if ! publish_owner_alive "$publish_pid" "$publish_role" "$publish_token"; then
       current_publish_pid=$(read_field "$LOCK_PUBLISH" pid)
       current_publish_at=$(number_or_default "$(read_field "$LOCK_PUBLISH" acquired_at)" 0)
-      if [ "$current_publish_pid" = "$publish_pid" ] && [ "$current_publish_at" = "$publish_at" ]; then
+      current_publish_role=$(read_field "$LOCK_PUBLISH" role)
+      current_publish_token=$(read_field "$LOCK_PUBLISH" token)
+      if [ "$current_publish_pid" = "$publish_pid" ] && [ "$current_publish_at" = "$publish_at" ] && [ "$current_publish_role" = "$publish_role" ] && [ "$current_publish_token" = "$publish_token" ]; then
         rm -f "$LOCK_PUBLISH"
       fi
       continue
@@ -79,7 +99,7 @@ acquired_at=$(now_epoch)"
 }
 
 release_publish_lock() {
-  if [ "$publish_owned" = 1 ] && [ "$(read_field "$LOCK_PUBLISH" pid)" = "$$" ]; then
+  if [ "$publish_owned" = 1 ] && [ "$(read_field "$LOCK_PUBLISH" pid)" = "$$" ] && [ "$(read_field "$LOCK_PUBLISH" role)" = "$process_role" ] && [ "$(read_field "$LOCK_PUBLISH" token)" = "$process_token" ]; then
     rm -f "$LOCK_PUBLISH"
   fi
   rm -f "$STATE_DIR/.lock-publish.$$"
@@ -555,9 +575,21 @@ wait_for_turn() {
 mkdir -p "$CAUSE_DIR" "$WAITER_DIR"
 trap 'trap_rc=$?; release_publish_lock; release_lock; exit "$trap_rc"' EXIT
 
+if [ "${1:-}" = --stop ]; then
+  process_role=stop
+  process_token=${2:-unknown}
+  case "$process_token" in ''|*[!0-9A-Za-z_-]*) exit 0 ;; esac
+  session=${CLAUDE_RESUME_STOP_SESSION:-unknown}
+  case "$session" in ''|*[!0-9A-Za-z_-]*) session=unknown ;; esac
+  handle_stop
+  exit 0
+fi
+
 if [ "${1:-}" = --worker ]; then
+  process_role=worker
   worker_token=${2:-unknown}
   case "$worker_token" in ''|*[!0-9A-Za-z_-]*) exit 0 ;; esac
+  process_token=$worker_token
   session=${CLAUDE_RESUME_WORKER_SESSION:-unknown}
   error=${CLAUDE_RESUME_WORKER_ERROR:-other}
   transcript=${CLAUDE_RESUME_WORKER_TRANSCRIPT:-}
@@ -592,6 +624,10 @@ case "$hook_event" in
     export CLAUDE_RESUME_WORKER_SESSION CLAUDE_RESUME_WORKER_ERROR CLAUDE_RESUME_WORKER_TRANSCRIPT CLAUDE_RESUME_WORKER_LAST_MESSAGE
     exec sh "$0" --worker "$session-$$"
     ;;
-  Stop) handle_stop ;;
+  Stop)
+    CLAUDE_RESUME_STOP_SESSION=$session
+    export CLAUDE_RESUME_STOP_SESSION
+    exec sh "$0" --stop "$session-$$"
+    ;;
   *) exit 0 ;;
 esac

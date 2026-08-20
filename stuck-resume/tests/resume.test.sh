@@ -584,6 +584,17 @@ touch "$CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER/release.$t28_bpid"
 wait_for_file "$TMPROOT/t28-a.rc" || bad "T28 A 종료" "종료코드 파일 없음"
 wait_for_file "$TMPROOT/t28-b.rc" || bad "T28 B 종료" "종료코드 파일 없음"
 
+# T29: publication guard의 PID가 다른 프로세스에 재사용되면 기존 소유자로 보지 않는다.
+reset_state
+mkdir -p "$STATE_V2"
+sleep 30 & t29_reused_pid=$!
+WORKER_PIDS="$WORKER_PIDS $t29_reused_pid"
+printf 'pid=%s\nacquired_at=1787200000\nrole=worker\ntoken=stale-publisher\n' "$t29_reused_pid" > "$STATE_V2/lock-publish"
+start_waiter "$(failure_input "$SESSION_A" rate_limit)" "$TMPROOT/t29-a.out" "$TMPROOT/t29-a.err" "$TMPROOT/t29-a.rc"
+if wait_for_file "$TMPROOT/t29-a.rc" 20; then ok "T29 재사용된 PID의 guard 회수"; else bad "T29 재사용된 PID의 guard 회수" "새 worker가 재사용된 PID를 기존 게시자로 오인해 대기함"; fi
+assert_equals "T29 guard 회수 뒤 재개" "2" "$(sed -n '1p' "$TMPROOT/t29-a.rc" 2>/dev/null)"
+if kill -0 "$t29_reused_pid" 2>/dev/null; then ok "T29 PID가 같은 다른 프로세스 보존"; else bad "T29 PID가 같은 다른 프로세스 보존" "guard 회수가 다른 프로세스를 종료함"; fi
+
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 completed=1
 [ "$fail" -eq 0 ]
