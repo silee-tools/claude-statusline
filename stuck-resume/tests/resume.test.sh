@@ -4,6 +4,7 @@ set -eu
 
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 RESUME="$SRC/scripts/resume.sh"
+HOOKS="$SRC/hooks/hooks.json"
 
 pass=0; fail=0
 ok() { pass=$((pass + 1)); printf 'PASS %s\n' "$1"; }
@@ -12,7 +13,20 @@ assert_equals() { if [ "$3" = "$2" ]; then ok "$1"; else bad "$1 (expected [$2])
 
 TMPROOT=$(mktemp -d "${TMPDIR:-/tmp}/resume-test.XXXXXX")
 completed=0
-trap 'rc=$?; rm -rf "$TMPROOT"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
+STARTED_PIDS=
+WORKER_PIDS=
+
+stop_started_processes() {
+  for started_pid in $WORKER_PIDS $STARTED_PIDS; do
+    if kill -0 "$started_pid" 2>/dev/null; then
+      kill -9 "$started_pid" 2>/dev/null || true
+    fi
+  done
+  STARTED_PIDS=
+  WORKER_PIDS=
+}
+
+trap 'rc=$?; stop_started_processes; rm -rf "$TMPROOT"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
 
 CLAUDE_RESUME_STATE_DIR="$TMPROOT/state"
 CLAUDE_RESUME_TEST_SKIP_SLEEP=1
@@ -27,6 +41,10 @@ failure_input() {
   printf '{"session_id":"%s","hook_event_name":"StopFailure","error":"%s"}' "$1" "$2"
 }
 
+stop_input() {
+  printf '{"session_id":"%s","hook_event_name":"Stop"}' "$1"
+}
+
 field() {
   sed -n "s/^$2=//p" "$STATE_V2/$1" 2>/dev/null | sed -n '1p'
 }
@@ -36,16 +54,49 @@ set_now() {
   export CLAUDE_RESUME_TEST_NOW
 }
 
+wait_for_file() {
+  path=$1
+  tries=0
+  while [ ! -f "$path" ] && [ "$tries" -lt 50 ]; do
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  [ -f "$path" ]
+}
+
+start_waiter() {
+  waiter_input=$1 waiter_out=$2 waiter_errfile=$3 waiter_rcfile=$4
+  (
+    waiter_rc=0
+    printf '%s' "$waiter_input" | sh "$RESUME" >"$waiter_out" 2>"$waiter_errfile" &
+    waiter_child=$!
+    printf '%s\n' "$waiter_child" > "$waiter_rcfile.pid"
+    wait "$waiter_child" || waiter_rc=$?
+    printf '%s\n' "$waiter_rc" > "$waiter_rcfile"
+  ) &
+  STARTED_PID=$!
+  STARTED_PIDS="$STARTED_PIDS $STARTED_PID"
+  if wait_for_file "$waiter_rcfile.pid"; then
+    STARTED_CHILD_PID=$(sed -n '1p' "$waiter_rcfile.pid")
+    WORKER_PIDS="$WORKER_PIDS $STARTED_CHILD_PID"
+  else
+    STARTED_CHILD_PID=
+  fi
+}
+
 run() {
   rc=0
   err=$(printf '%s' "$1" | sh "$RESUME" 2>&1 >/dev/null) || rc=$?
 }
 
 reset_state() {
+  stop_started_processes
   rm -rf "$CLAUDE_RESUME_STATE_DIR"
-  unset CLAUDE_RESUME_WAIT_SECONDS CLAUDE_RESUME_MAX_ATTEMPTS
+  unset CLAUDE_RESUME_WAIT_SECONDS CLAUDE_RESUME_MAX_ATTEMPTS CLAUDE_RESUME_TEST_REGISTER_BARRIER CLAUDE_RESUME_TEST_SIGNAL_BARRIER CLAUDE_RESUME_TEST_RECLAIM_BARRIER
   CLAUDE_RESUME_WAIT_SECONDS=0
   export CLAUDE_RESUME_WAIT_SECONDS
+  CLAUDE_RESUME_TEST_SKIP_SLEEP=1
+  export CLAUDE_RESUME_TEST_SKIP_SLEEP
   set_now 1787200000
 }
 
@@ -246,6 +297,177 @@ set_now "$first_deadline"
 run "$(failure_input "$SESSION_C" overloaded)"
 assert_equals "T16 종료 시각 뒤 중단" "0" "$rc"
 assert_equals "T16 종료 시각 뒤 빈 표준 오류" "" "$err"
+
+# T17: 네 원인의 StopFailure와 Stop은 같은 스크립트를 정해진 계약으로 호출한다.
+hooks_compact=$(tr -d '[:space:]' < "$HOOKS")
+case "$hooks_compact" in
+  *'"StopFailure":[{"matcher":"rate_limit|authentication_failed|server_error|overloaded","hooks":[{"type":"command","command":"sh${CLAUDE_PLUGIN_ROOT}/scripts/resume.sh","asyncRewake":true,"timeout":600}]}]'*) ok "T17 StopFailure 훅 계약" ;;
+  *) bad "T17 StopFailure 훅 계약" "$hooks_compact" ;;
+esac
+case "$hooks_compact" in
+  *'"Stop":[{"hooks":[{"type":"command","command":"sh${CLAUDE_PLUGIN_ROOT}/scripts/resume.sh","timeout":40}]}]'*) ok "T17 Stop 훅 계약" ;;
+  *) bad "T17 Stop 훅 계약" "$hooks_compact" ;;
+esac
+
+# T18: 활성 A의 Stop은 대기 중인 B와 C에 성공을 전파한다.
+reset_state
+CLAUDE_RESUME_WAIT_SECONDS=5
+export CLAUDE_RESUME_WAIT_SECONDS
+run "$(failure_input "$SESSION_A" rate_limit)"
+unset CLAUDE_RESUME_TEST_SKIP_SLEEP
+start_waiter "$(failure_input "$SESSION_B" authentication_failed)" "$TMPROOT/t18-b.out" "$TMPROOT/t18-b.err" "$TMPROOT/t18-b.rc"
+start_waiter "$(failure_input "$SESSION_C" server_error)" "$TMPROOT/t18-c.out" "$TMPROOT/t18-c.err" "$TMPROOT/t18-c.rc"
+wait_for_file "$STATE_V2/waiters/$SESSION_B" || bad "T18 B waiter 등록" "waiter 파일 없음"
+WORKER_PIDS="$WORKER_PIDS $(field "waiters/$SESSION_B" pid)"
+wait_for_file "$STATE_V2/waiters/$SESSION_C" || bad "T18 C waiter 등록" "waiter 파일 없음"
+WORKER_PIDS="$WORKER_PIDS $(field "waiters/$SESSION_C" pid)"
+CLAUDE_RESUME_TEST_SKIP_SLEEP=1
+export CLAUDE_RESUME_TEST_SKIP_SLEEP
+run "$(stop_input "$SESSION_A")"
+wait_for_file "$TMPROOT/t18-b.rc" || bad "T18 B 성공 신호 수신" "종료코드 파일 없음"
+wait_for_file "$TMPROOT/t18-c.rc" || bad "T18 C 성공 신호 수신" "종료코드 파일 없음"
+assert_equals "T18 B 성공 종료코드" "2" "$(sed -n '1p' "$TMPROOT/t18-b.rc" 2>/dev/null)"
+assert_equals "T18 C 성공 종료코드" "2" "$(sed -n '1p' "$TMPROOT/t18-c.rc" 2>/dev/null)"
+assert_equals "T18 B 원인별 문장" "Continue the work that was interrupted by the expired login." "$(sed -n '1p' "$TMPROOT/t18-b.err" 2>/dev/null)"
+assert_equals "T18 C 원인별 문장" "Continue the work that was interrupted by the API error." "$(sed -n '1p' "$TMPROOT/t18-c.err" 2>/dev/null)"
+assert_equals "T18 성공 세대 기록" "3" "$(field global recovered_generation)"
+if [ ! -e "$STATE_V2/waiters/$SESSION_B" ] && [ ! -e "$STATE_V2/waiters/$SESSION_C" ]; then ok "T18 소비한 waiter 파일 제거"; else bad "T18 소비한 waiter 파일 제거" "waiter 파일 잔존"; fi
+
+# T19: 소비된 활성 세대의 두 번째 Stop은 상태를 다시 바꾸지 않는다.
+t19_recovered=$(field global recovered_generation)
+t19_hash=$(cksum < "$STATE_V2/global")
+run "$(stop_input "$SESSION_A")"
+assert_equals "T19 두 번째 Stop 성공 세대 유지" "$t19_recovered" "$(field global recovered_generation)"
+assert_equals "T19 두 번째 Stop 전역 상태 유지" "$t19_hash" "$(cksum < "$STATE_V2/global")"
+
+# T20: 활성 세션과 다른 B의 Stop은 대기자와 상태를 건드리지 않는다.
+reset_state
+CLAUDE_RESUME_WAIT_SECONDS=5
+export CLAUDE_RESUME_WAIT_SECONDS
+run "$(failure_input "$SESSION_A" rate_limit)"
+unset CLAUDE_RESUME_TEST_SKIP_SLEEP
+start_waiter "$(failure_input "$SESSION_B" authentication_failed)" "$TMPROOT/t20-b.out" "$TMPROOT/t20-b.err" "$TMPROOT/t20-b.rc"
+start_waiter "$(failure_input "$SESSION_C" server_error)" "$TMPROOT/t20-c.out" "$TMPROOT/t20-c.err" "$TMPROOT/t20-c.rc"
+wait_for_file "$STATE_V2/waiters/$SESSION_B" || bad "T20 B waiter 등록" "waiter 파일 없음"
+t20_bpid=$(field "waiters/$SESSION_B" pid)
+WORKER_PIDS="$WORKER_PIDS $t20_bpid"
+wait_for_file "$STATE_V2/waiters/$SESSION_C" || bad "T20 C waiter 등록" "waiter 파일 없음"
+t20_cpid=$(field "waiters/$SESSION_C" pid)
+WORKER_PIDS="$WORKER_PIDS $t20_cpid"
+t20_hash=$(cksum < "$STATE_V2/global")
+CLAUDE_RESUME_TEST_SKIP_SLEEP=1
+export CLAUDE_RESUME_TEST_SKIP_SLEEP
+run "$(stop_input "$SESSION_B")"
+assert_equals "T20 무관한 Stop 전역 상태 유지" "$t20_hash" "$(cksum < "$STATE_V2/global")"
+if kill -0 "$t20_bpid" 2>/dev/null && kill -0 "$t20_cpid" 2>/dev/null && [ ! -f "$TMPROOT/t20-b.rc" ] && [ ! -f "$TMPROOT/t20-c.rc" ]; then ok "T20 무관한 Stop은 대기자를 깨우지 않음"; else bad "T20 무관한 Stop은 대기자를 깨우지 않음" "대기 프로세스 종료"; fi
+run "$(stop_input "$SESSION_A")"
+wait_for_file "$TMPROOT/t20-b.rc" || true
+wait_for_file "$TMPROOT/t20-c.rc" || true
+
+# T21: 직접 신호를 놓친 waiter도 성공 세대를 소비한다.
+reset_state
+CLAUDE_RESUME_WAIT_SECONDS=1
+export CLAUDE_RESUME_WAIT_SECONDS
+run "$(failure_input "$SESSION_A" rate_limit)"
+CLAUDE_RESUME_TEST_REGISTER_BARRIER="$TMPROOT/t21-register"
+export CLAUDE_RESUME_TEST_REGISTER_BARRIER
+unset CLAUDE_RESUME_TEST_SKIP_SLEEP
+start_waiter "$(failure_input "$SESSION_B" authentication_failed)" "$TMPROOT/t21-b.out" "$TMPROOT/t21-b.err" "$TMPROOT/t21-b.rc"
+wait_for_file "$STATE_V2/waiters/$SESSION_B" || bad "T21 B waiter 등록" "waiter 파일 없음"
+WORKER_PIDS="$WORKER_PIDS $(field "waiters/$SESSION_B" pid)"
+CLAUDE_RESUME_TEST_SKIP_SLEEP=1
+CLAUDE_RESUME_TEST_SIGNAL_BARRIER="$TMPROOT/t21-signal"
+export CLAUDE_RESUME_TEST_SKIP_SLEEP CLAUDE_RESUME_TEST_SIGNAL_BARRIER
+start_waiter "$(stop_input "$SESSION_A")" "$TMPROOT/t21-stop.out" "$TMPROOT/t21-stop.err" "$TMPROOT/t21-stop.rc"
+if wait_for_file "$CLAUDE_RESUME_TEST_SIGNAL_BARRIER/ready"; then ok "T21 Stop이 성공 세대를 기록하고 신호 직전 대기"; else bad "T21 Stop이 성공 세대를 기록하고 신호 직전 대기" "신호 장벽 없음"; fi
+mkdir -p "$CLAUDE_RESUME_TEST_REGISTER_BARRIER"
+touch "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/release"
+wait_for_file "$TMPROOT/t21-b.rc" || bad "T21 B가 직접 신호 없이 종료" "종료코드 파일 없음"
+assert_equals "T21 놓친 신호의 성공 종료코드" "2" "$(sed -n '1p' "$TMPROOT/t21-b.rc" 2>/dev/null)"
+mkdir -p "$CLAUDE_RESUME_TEST_SIGNAL_BARRIER"
+touch "$CLAUDE_RESUME_TEST_SIGNAL_BARRIER/release"
+wait_for_file "$TMPROOT/t21-stop.rc" || bad "T21 Stop 훅 종료" "종료코드 파일 없음"
+
+# T22: 죽은 waiter의 PID는 남은 waiter 성공 전파를 막지 않는다.
+reset_state
+CLAUDE_RESUME_WAIT_SECONDS=5
+export CLAUDE_RESUME_WAIT_SECONDS
+run "$(failure_input "$SESSION_A" rate_limit)"
+unset CLAUDE_RESUME_TEST_SKIP_SLEEP
+start_waiter "$(failure_input "$SESSION_B" authentication_failed)" "$TMPROOT/t22-b.out" "$TMPROOT/t22-b.err" "$TMPROOT/t22-b.rc"
+start_waiter "$(failure_input "$SESSION_C" server_error)" "$TMPROOT/t22-c.out" "$TMPROOT/t22-c.err" "$TMPROOT/t22-c.rc"
+wait_for_file "$STATE_V2/waiters/$SESSION_B" || bad "T22 B waiter 등록" "waiter 파일 없음"
+t22_dead_pid=$(field "waiters/$SESSION_B" pid)
+WORKER_PIDS="$WORKER_PIDS $t22_dead_pid"
+wait_for_file "$STATE_V2/waiters/$SESSION_C" || bad "T22 C waiter 등록" "waiter 파일 없음"
+WORKER_PIDS="$WORKER_PIDS $(field "waiters/$SESSION_C" pid)"
+kill -9 "$t22_dead_pid" 2>/dev/null || true
+CLAUDE_RESUME_TEST_SKIP_SLEEP=1
+export CLAUDE_RESUME_TEST_SKIP_SLEEP
+run "$(stop_input "$SESSION_A")"
+wait_for_file "$TMPROOT/t22-c.rc" || bad "T22 남은 C 성공 신호 수신" "종료코드 파일 없음"
+assert_equals "T22 Stop은 죽은 PID가 있어도 성공" "0" "$rc"
+assert_equals "T22 남은 C 성공 종료코드" "2" "$(sed -n '1p' "$TMPROOT/t22-c.rc" 2>/dev/null)"
+
+# T23: 결과 없이 인계 시각을 넘긴 A를 B가 이어받고 A의 늦은 Stop은 무시한다.
+reset_state
+CLAUDE_RESUME_WAIT_SECONDS=5
+export CLAUDE_RESUME_WAIT_SECONDS
+run "$(failure_input "$SESSION_A" rate_limit)"
+CLAUDE_RESUME_TEST_REGISTER_BARRIER="$TMPROOT/t23-c-register"
+export CLAUDE_RESUME_TEST_REGISTER_BARRIER
+start_waiter "$(failure_input "$SESSION_C" server_error)" "$TMPROOT/t23-c.out" "$TMPROOT/t23-c.err" "$TMPROOT/t23-c.rc"
+wait_for_file "$STATE_V2/waiters/$SESSION_C" || bad "T23 C waiter 등록" "waiter 파일 없음"
+t23_cpid=$(field "waiters/$SESSION_C" pid)
+WORKER_PIDS="$WORKER_PIDS $t23_cpid"
+CLAUDE_RESUME_TEST_REGISTER_BARRIER="$TMPROOT/t23-b-register"
+export CLAUDE_RESUME_TEST_REGISTER_BARRIER
+start_waiter "$(failure_input "$SESSION_B" authentication_failed)" "$TMPROOT/t23-b.out" "$TMPROOT/t23-b.err" "$TMPROOT/t23-b.rc"
+wait_for_file "$STATE_V2/waiters/$SESSION_B" || bad "T23 B waiter 등록" "waiter 파일 없음"
+WORKER_PIDS="$WORKER_PIDS $(field "waiters/$SESSION_B" pid)"
+mkdir -p "$TMPROOT/t23-b-register"
+touch "$TMPROOT/t23-b-register/release"
+wait_for_file "$TMPROOT/t23-b.rc" || bad "T23 B 인계 완료" "종료코드 파일 없음"
+assert_equals "T23 B 인계 종료코드" "2" "$(sed -n '1p' "$TMPROOT/t23-b.rc" 2>/dev/null)"
+assert_equals "T23 B가 활성 세션 인계" "$SESSION_B" "$(field global active_session)"
+t23_hash=$(cksum < "$STATE_V2/global")
+run "$(stop_input "$SESSION_A")"
+assert_equals "T23 A의 늦은 Stop 전역 상태 유지" "$t23_hash" "$(cksum < "$STATE_V2/global")"
+if kill -0 "$t23_cpid" 2>/dev/null && [ ! -f "$TMPROOT/t23-c.rc" ]; then ok "T23 A의 늦은 Stop은 C를 깨우지 않음"; else bad "T23 A의 늦은 Stop은 C를 깨우지 않음" "C 대기 종료"; fi
+run "$(stop_input "$SESSION_B")"
+mkdir -p "$TMPROOT/t23-c-register"
+touch "$TMPROOT/t23-c-register/release"
+wait_for_file "$TMPROOT/t23-c.rc" || true
+
+# T24: 죽거나 30초 지난 잠금만 회수하고 바뀐 소유자는 보존한다.
+reset_state
+sleep 30 & t24_dead_owner=$!
+WORKER_PIDS="$WORKER_PIDS $t24_dead_owner"
+mkdir -p "$STATE_V2/lock"
+printf 'pid=%s\nacquired_at=1787199970\n' "$t24_dead_owner" > "$STATE_V2/lock/owner"
+kill -9 "$t24_dead_owner" 2>/dev/null || true
+run "$(failure_input "$SESSION_A" rate_limit)"
+assert_equals "T24 죽은 잠금 소유자 회수" "2" "$rc"
+
+reset_state
+sleep 30 & t24_old_owner=$!
+sleep 30 & t24_new_owner=$!
+WORKER_PIDS="$WORKER_PIDS $t24_old_owner $t24_new_owner"
+mkdir -p "$STATE_V2/lock"
+printf 'pid=%s\nacquired_at=1787199970\n' "$t24_old_owner" > "$STATE_V2/lock/owner"
+CLAUDE_RESUME_TEST_RECLAIM_BARRIER="$TMPROOT/t24-reclaim"
+export CLAUDE_RESUME_TEST_RECLAIM_BARRIER
+start_waiter "$(failure_input "$SESSION_A" rate_limit)" "$TMPROOT/t24-a.out" "$TMPROOT/t24-a.err" "$TMPROOT/t24-a.rc"
+if wait_for_file "$CLAUDE_RESUME_TEST_RECLAIM_BARRIER/ready"; then ok "T24 만료 잠금 회수 전 소유자 재확인"; else bad "T24 만료 잠금 회수 전 소유자 재확인" "회수 장벽 없음"; fi
+printf 'pid=%s\nacquired_at=1787200000\n' "$t24_new_owner" > "$STATE_V2/lock/owner"
+mkdir -p "$CLAUDE_RESUME_TEST_RECLAIM_BARRIER"
+touch "$CLAUDE_RESUME_TEST_RECLAIM_BARRIER/release"
+sleep 1
+assert_equals "T24 바뀐 잠금 소유자 보존" "$t24_new_owner" "$(field lock/owner pid)"
+kill -9 "$t24_new_owner" 2>/dev/null || true
+wait "$t24_new_owner" 2>/dev/null || true
+wait_for_file "$TMPROOT/t24-a.rc" || bad "T24 바뀐 소유자 종료 뒤 회수" "종료코드 파일 없음"
+assert_equals "T24 안전 회수 뒤 재개" "2" "$(sed -n '1p' "$TMPROOT/t24-a.rc" 2>/dev/null)"
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 completed=1

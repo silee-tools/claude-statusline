@@ -9,6 +9,7 @@ CAUSE_DIR="$STATE_DIR/causes"
 WAITER_DIR="$STATE_DIR/waiters"
 GLOBAL="$STATE_DIR/global"
 lock_owned=0
+wake_requested=0
 
 now_epoch() {
   case "${CLAUDE_RESUME_TEST_NOW:-}" in
@@ -61,7 +62,19 @@ acquire_lock() {
       rm -rf "$LOCK_DIR"
       continue
     elif ! kill -0 "$lock_pid" 2>/dev/null || [ "$lock_now" -ge "$((lock_at + 30))" ]; then
-      rm -rf "$LOCK_DIR"
+      case "${CLAUDE_RESUME_TEST_RECLAIM_BARRIER:-}" in
+        '') ;;
+        *)
+          mkdir -p "$CLAUDE_RESUME_TEST_RECLAIM_BARRIER"
+          : > "$CLAUDE_RESUME_TEST_RECLAIM_BARRIER/ready"
+          while [ ! -f "$CLAUDE_RESUME_TEST_RECLAIM_BARRIER/release" ]; do sleep 1; done
+          ;;
+      esac
+      current_lock_pid=$(read_field "$LOCK_DIR/owner" pid)
+      current_lock_at=$(number_or_default "$(read_field "$LOCK_DIR/owner" acquired_at)" 0)
+      if [ "$current_lock_pid" = "$lock_pid" ] && [ "$current_lock_at" = "$lock_at" ]; then
+        rm -rf "$LOCK_DIR"
+      fi
       continue
     fi
     sleep 1
@@ -201,12 +214,19 @@ print_resume_message() {
 
 sleep_until() {
   sleep_target=$1
+  [ "$wake_requested" = 0 ] || return 0
   if [ "$effective_now" -lt "$sleep_target" ]; then
     sleep_seconds=$((sleep_target - effective_now))
     if [ "${CLAUDE_RESUME_TEST_SKIP_SLEEP:-}" = 1 ]; then
       effective_now=$sleep_target
     else
-      sleep "$sleep_seconds"
+      sleep "$sleep_seconds" &
+      sleep_pid=$!
+      wait "$sleep_pid" 2>/dev/null || true
+      if [ "$wake_requested" = 1 ] && kill -0 "$sleep_pid" 2>/dev/null; then
+        kill "$sleep_pid" 2>/dev/null || true
+        wait "$sleep_pid" 2>/dev/null || true
+      fi
       effective_now=$(now_epoch)
     fi
   fi
@@ -301,7 +321,7 @@ deadline=$cause_end"
   generation=$((generation + 1))
   waiter_generation=$generation
   write_atomic "$old_waiter" "pid=$$
-token=$session.$waiter_generation
+token=$worker_token
 cause=$error
 episode=$episode
 generation=$waiter_generation
@@ -321,8 +341,71 @@ hold_registered_waiter() {
   mkdir -p "$CLAUDE_RESUME_TEST_REGISTER_BARRIER"
   : > "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/$session"
   while [ ! -f "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/release" ]; do
-    sleep 1
+    [ "$wake_requested" = 0 ] || return 0
+    sleep 1 || true
   done
+}
+
+handle_stop() {
+  acquire_lock
+  load_global
+  if [ "$active_session" != "$session" ]; then
+    release_lock
+    return 0
+  fi
+
+  recovered_generation=$generation
+  active_session=-
+  active_generation=0
+  handoff_at=0
+  snapshot="$STATE_DIR/signal.$$"
+  : > "$snapshot"
+  for waiter in "$WAITER_DIR"/*; do
+    [ -f "$waiter" ] || continue
+    waiter_generation=$(number_or_default "$(read_field "$waiter" generation)" 0)
+    [ "$waiter_generation" -le "$recovered_generation" ] || continue
+    waiter_pid=$(read_field "$waiter" pid)
+    waiter_token=$(read_field "$waiter" token)
+    case "$waiter_pid" in ''|*[!0-9]*) continue ;; esac
+    case "$waiter_token" in ''|*[!0-9A-Za-z_-]*) continue ;; esac
+    printf '%s %s %s\n' "$waiter_pid" "$waiter_generation" "$waiter_token" >> "$snapshot"
+  done
+  write_global
+  release_lock
+
+  case "${CLAUDE_RESUME_TEST_SIGNAL_BARRIER:-}" in
+    '') ;;
+    *)
+      mkdir -p "$CLAUDE_RESUME_TEST_SIGNAL_BARRIER"
+      : > "$CLAUDE_RESUME_TEST_SIGNAL_BARRIER/ready"
+      while [ ! -f "$CLAUDE_RESUME_TEST_SIGNAL_BARRIER/release" ]; do sleep 1; done
+      ;;
+  esac
+
+  pid_csv=
+  while read -r waiter_pid waiter_generation waiter_token; do
+    [ -n "$waiter_pid" ] || continue
+    if [ -z "$pid_csv" ]; then pid_csv=$waiter_pid; else pid_csv="$pid_csv,$waiter_pid"; fi
+  done < "$snapshot"
+  signal_pids=
+  if [ -n "$pid_csv" ]; then
+    process_lines=$(ps -ww -p "$pid_csv" -o pid= -o command= 2>/dev/null || true)
+    while IFS= read -r process_line; do
+      process_pid=$(printf '%s\n' "$process_line" | sed -n 's/^[[:space:]]*\([0-9][0-9]*\)[[:space:]].*/\1/p')
+      [ -n "$process_pid" ] || continue
+      process_command=$(printf '%s\n' "$process_line" | sed 's/^[[:space:]]*[0-9][0-9]*[[:space:]][[:space:]]*//')
+      while read -r waiter_pid waiter_generation waiter_token; do
+        [ "$process_pid" = "$waiter_pid" ] || continue
+        case " $process_command " in
+          *" --worker $waiter_token "*) signal_pids="$signal_pids $process_pid" ;;
+        esac
+      done < "$snapshot"
+    done <<EOF
+$process_lines
+EOF
+  fi
+  [ -z "$signal_pids" ] || kill -USR1 $signal_pids 2>/dev/null || true
+  rm -f "$snapshot"
 }
 
 wait_for_turn() {
@@ -337,6 +420,7 @@ wait_for_turn() {
       return 0
     fi
     if [ "$waiter_generation" -le "$recovered_generation" ]; then
+      rm -f "$current_waiter"
       release_lock
       return 2
     fi
@@ -375,22 +459,46 @@ wait_for_turn() {
   done
 }
 
+mkdir -p "$CAUSE_DIR" "$WAITER_DIR"
+trap 'trap_rc=$?; release_lock; exit "$trap_rc"' EXIT
+
+if [ "${1:-}" = --worker ]; then
+  worker_token=${2:-unknown}
+  case "$worker_token" in ''|*[!0-9A-Za-z_-]*) exit 0 ;; esac
+  session=${CLAUDE_RESUME_WORKER_SESSION:-unknown}
+  error=${CLAUDE_RESUME_WORKER_ERROR:-other}
+  transcript=${CLAUDE_RESUME_WORKER_TRANSCRIPT:-}
+  last_message=${CLAUDE_RESUME_WORKER_LAST_MESSAGE:-}
+  trap 'wake_requested=1' USR1
+  if handle_stop_failure; then
+    exit 0
+  fi
+  wait_result=0
+  wait_for_turn || wait_result=$?
+  case "$wait_result" in
+    2) print_resume_message; exit 2 ;;
+    *) exit 0 ;;
+  esac
+fi
+
 input=$(cat)
 session=$(printf '%s' "$input" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p') || session=
 case "$session" in ''|*[!0-9A-Za-z_-]*) session=unknown ;; esac
-error=$(printf '%s' "$input" | sed -n 's/.*"error"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p') || error=
-case "$error" in rate_limit|authentication_failed|server_error|overloaded) ;; *) error=other ;; esac
-transcript=$(printf '%s' "$input" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p') || transcript=
-last_message=$(printf '%s' "$input" | sed -n 's/.*"last_assistant_message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p') || last_message=
+hook_event=$(printf '%s' "$input" | sed -n 's/.*"hook_event_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p') || hook_event=
 
-mkdir -p "$CAUSE_DIR" "$WAITER_DIR"
-trap 'trap_rc=$?; release_lock; exit "$trap_rc"' EXIT
-if handle_stop_failure; then
-  exit 0
-fi
-wait_result=0
-wait_for_turn || wait_result=$?
-case "$wait_result" in
-  2) print_resume_message; exit 2 ;;
+case "$hook_event" in
+  ''|StopFailure)
+    error=$(printf '%s' "$input" | sed -n 's/.*"error"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p') || error=
+    case "$error" in rate_limit|authentication_failed|server_error|overloaded) ;; *) error=other ;; esac
+    transcript=$(printf '%s' "$input" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p') || transcript=
+    last_message=$(printf '%s' "$input" | sed -n 's/.*"last_assistant_message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p') || last_message=
+    CLAUDE_RESUME_WORKER_SESSION=$session
+    CLAUDE_RESUME_WORKER_ERROR=$error
+    CLAUDE_RESUME_WORKER_TRANSCRIPT=$transcript
+    CLAUDE_RESUME_WORKER_LAST_MESSAGE=$last_message
+    export CLAUDE_RESUME_WORKER_SESSION CLAUDE_RESUME_WORKER_ERROR CLAUDE_RESUME_WORKER_TRANSCRIPT CLAUDE_RESUME_WORKER_LAST_MESSAGE
+    exec sh "$0" --worker "$session-$$"
+    ;;
+  Stop) handle_stop ;;
   *) exit 0 ;;
 esac
