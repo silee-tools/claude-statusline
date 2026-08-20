@@ -103,6 +103,23 @@ reach installed users needs a version bump. On every functional change:
 Keep the two versions identical. Commits follow Conventional Commits
 (`feat(...)`, `fix(...)`, `refactor(...)`, `chore(...)`, ...).
 
+## Contracts still in transition
+
+The render path is Go, but two shell files still implement rules the Go packages
+also implement. This table records what does not hold yet, what violates it, and
+what has to be true before the duplicate goes away. Keep it here rather than in a
+pull request body: a merged body never reopens, so a note left there stops being
+a place anyone looks.
+
+| Does not hold yet | What violates it today | When it holds |
+|---|---|---|
+| One implementation of path and branch shortening | `scripts/shorten.sh` and `scripts/shorten-lib.sh` alongside `internal/shorten` | Once shortening is confirmed to have no consumer on any machine, delete both scripts and the differential test in `internal/shorten/shorten_test.go` that uses them as its oracle |
+| The two implementations agree for every input | The shell's ticket detection depends on the collating locale: `case`'s `[A-Z]` range covers `b`–`z` under `en_US.UTF-8`, so it reads `lower-1-x-y-z` as a ticket and leaves it unshortened, while `LC_ALL=C` shortens it | Resolved by the row above. `internal/shorten` follows the rule `shorten-lib.sh` documents in its own comment — a key is a ticket only when it is all uppercase — and the differential test calls the shell with `LC_ALL=C` so both sides mean the same thing |
+
+`scripts/json.awk` is not part of this table. `scripts/hook-handler.sh` parses the
+hook payload and `settings.json` with it and `tests/json.test.sh` covers it, so it
+is the only implementation of what it does, not a duplicate of the Go parser.
+
 ## Configuration is data, not code
 
 The `gh@<account>` mapping is intentionally **not** in the source. It is read at
