@@ -12,7 +12,10 @@ assert_equals()   { if [ "$3" = "$2" ]; then ok "$1"; else bad "$1 (expected [$2
 assert_contains() { case "$3" in *"$2"*) ok "$1";; *) bad "$1 (expected to contain [$2])" "$3";; esac; }
 
 TMPROOT=$(mktemp -d)
-trap 'rm -rf "$TMPROOT"' EXIT
+# bash 3.2 는 EXIT 트랩 진입에서 $? 를 0 으로 만든다. completed 플래그가 없으면 set -eu 중단이
+# 종료코드 0 으로 보고된다. 정본은 AGENTS.md 의 Testing 절이다.
+completed=0
+trap 'rc=$?; rm -rf "$TMPROOT"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
 CACHE="$TMPROOT/cache"
 PTR="$CACHE/claude-statusline/binary-path"
 mkdir -p "$CACHE/claude-statusline"
@@ -126,4 +129,5 @@ assert_equals "T10 go 부재면 포인터를 만들지 않음" "no" \
   "$([ -f "$NOGO/claude-statusline/binary-path" ] && echo yes || echo no)"
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
+completed=1
 [ "$fail" -eq 0 ]
