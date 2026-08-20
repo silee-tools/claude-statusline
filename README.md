@@ -93,6 +93,10 @@ spent but on schedule from one that is burning through its budget early.
 The compact layout has no room for a bar and adds `▲` after the percentage
 instead when usage is ahead of pace.
 
+The `7d` pace budget advances continuously during local Monday-to-Friday
+calendar days and pauses on Saturday and Sunday. The reset countdown remains
+wall-clock based, and the `5h` pace budget continues to use elapsed time.
+
 The `5h` and `7d` windows are shared between sessions through
 `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/rate-limits.env`. Whichever
 session observes a window leaves it there, so every other session picks it up on

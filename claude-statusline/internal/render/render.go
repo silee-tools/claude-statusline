@@ -4,6 +4,7 @@ package render
 import (
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/silee-tools/claude-statusline/internal/theme"
 	"github.com/silee-tools/claude-statusline/internal/width"
@@ -12,6 +13,8 @@ import (
 // labelWidth right-aligns ctx, 5h, 7d and cost into one column so their bars start
 // at the same place.
 const labelWidth = 4
+
+const sevenDayWindow int64 = 7 * 24 * 60 * 60
 
 // View holds everything the layouts draw. Keeping files and the environment out of
 // the renderer is what lets the output format be tested without a filesystem.
@@ -32,7 +35,8 @@ type View struct {
 }
 
 // Gauge is one rate-limit window. Window is its length in seconds — 18000 for five
-// hours, 604800 for seven days — which turns the time left into a pace budget.
+// hours, 604800 for seven days — which turns the time left into a pace budget. The
+// seven-day budget advances only on local Monday-to-Friday calendar days.
 type Gauge struct {
 	Present  bool
 	Pct      int
@@ -176,8 +180,9 @@ func compactGauge(label string, g Gauge, now int64) string {
 }
 
 // paceOf converts the time elapsed in the window into a budget of bar cells and warns
-// when usage runs ahead of it. Both layouts share this arithmetic so the same input
-// cannot produce a different warning in one of them.
+// when usage runs ahead of it. The seven-day window measures local weekday time, while
+// every other window uses elapsed seconds. Both layouts share this arithmetic so the
+// same input cannot produce a different warning in one of them.
 func paceOf(g Gauge, now int64) (int, string) {
 	if !g.HasReset || g.Window <= 0 {
 		return theme.NoBudget, ""
@@ -186,11 +191,25 @@ func paceOf(g Gauge, now int64) (int, string) {
 	if diff < 0 {
 		diff = 0
 	}
-	elapsed := g.Window - diff
+	elapsed, window := g.Window-diff, g.Window
+	if g.Window == sevenDayWindow {
+		start, end := g.ResetsAt-g.Window, g.ResetsAt
+		if now < start {
+			now = start
+		}
+		if now > end {
+			now = end
+		}
+		elapsed = businessSecondsBetween(start, now)
+		window = businessSecondsBetween(start, end)
+	}
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	budget := int((elapsed*theme.Cells + g.Window/2) / g.Window)
+	if window <= 0 {
+		return theme.NoBudget, ""
+	}
+	budget := int((elapsed*theme.Cells + window/2) / window)
 	if budget > theme.Cells {
 		budget = theme.Cells
 	}
@@ -201,6 +220,33 @@ func paceOf(g Gauge, now int64) (int, string) {
 		return budget, theme.Yellow
 	}
 	return budget, ""
+}
+
+func businessSecondsBetween(start, end int64) int64 {
+	if end <= start {
+		return 0
+	}
+	from := time.Unix(start, 0).In(time.Local)
+	to := time.Unix(end, 0).In(time.Local)
+	day := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, time.Local)
+	var seconds int64
+	for day.Before(to) {
+		next := day.AddDate(0, 0, 1)
+		if day.Weekday() != time.Saturday && day.Weekday() != time.Sunday {
+			segmentStart, segmentEnd := from, to
+			if segmentStart.Before(day) {
+				segmentStart = day
+			}
+			if segmentEnd.After(next) {
+				segmentEnd = next
+			}
+			if segmentEnd.After(segmentStart) {
+				seconds += int64(segmentEnd.Sub(segmentStart) / time.Second)
+			}
+		}
+		day = next
+	}
+	return seconds
 }
 
 func costSegments(c CostLine) string {
