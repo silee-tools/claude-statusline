@@ -20,6 +20,13 @@ refresh_cost() {
   [ -f "$script" ] && nohup sh "$script" >/dev/null 2>&1 &
 }
 
+# 렌더 바이너리를 최초 1회 빌드한다. 배경으로 떼어 내는 이유는 hooks.json 의 SessionStart
+# 제한 시간이 5초인데 캐시가 빈 상태의 빌드가 그 값에 붙기 때문이다.
+build_binary() {
+  script="$PLUGIN_ROOT/scripts/build-binary.sh"
+  [ -f "$script" ] && nohup sh "$script" >/dev/null 2>&1 &
+}
+
 # statusLine.command 를 이 플러그인으로 가리킨다. settings.json 파손을 막기 위해
 # tmp 에 쓴 뒤 재파싱으로 목표 값을 확인하고서만 교체한다.
 auto_setup() {
@@ -47,4 +54,5 @@ auto_setup() {
 }
 
 refresh_cost
+build_binary
 auto_setup
