@@ -39,6 +39,10 @@ func Branch(cwd, cacheDir string) string {
 		}
 	}
 
+	if !insideRepository(cwd) {
+		return ""
+	}
+
 	// One git call yields both the HEAD path and the branch name, two output lines.
 	// The exit status is ignored on purpose: on an unborn branch git exits 128 while
 	// still printing the HEAD path and the literal "HEAD", and the render depends on
@@ -83,6 +87,31 @@ func Branch(cwd, cacheDir string) string {
 			"\ntoken="+token+"\nbranch="+branch+"\n"), 0o600)
 	}
 	return branch
+}
+
+// insideRepository reports whether cwd or one of its ancestors holds a .git entry,
+// which is the condition git itself walks. Answering it here costs a handful of stat
+// calls where spawning git to hear "no" costs milliseconds, and outside a repository
+// that spawn happened on every render because the cache never has anything to hit.
+// The answer needs no cache of its own: the moment a directory gains a .git, the next
+// render's walk sees it. GIT_DIR and GIT_WORK_TREE can place a repository where this
+// walk cannot see it, so their presence hands the question back to git.
+func insideRepository(cwd string) bool {
+	if os.Getenv("GIT_DIR") != "" || os.Getenv("GIT_WORK_TREE") != "" {
+		return true
+	}
+	for dir := cwd; ; {
+		// A linked worktree holds a .git file rather than a directory, so the kind
+		// is not checked — only that something by that name is there.
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
 }
 
 func cachedBranch(cache, cwd string) (string, bool) {
