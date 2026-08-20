@@ -54,22 +54,60 @@ func TestFullLayoutRightAlignsTheGaugeLabels(t *testing.T) {
 func TestFullLayoutDrawsTwentyCellBars(t *testing.T) {
 	rows := strings.Split(plain(Full(sample(), 1_999_000_000)), "\n")
 	for i := 2; i <= 4; i++ {
-		if n := strings.Count(rows[i], "█") + strings.Count(rows[i], "░") + strings.Count(rows[i], "▓"); n != 20 {
+		if n := strings.Count(rows[i], "█") + strings.Count(rows[i], "░"); n != 20 {
 			t.Errorf("행%d 막대 칸수 %d, want 20 — %q", i+1, n, rows[i])
 		}
 	}
 }
 
 func TestFullLayoutMarksPaceOvershootInTheBar(t *testing.T) {
-	// 5시간 창의 절반이 지났으면 예산은 10칸이다. 소진율 70% 는 14칸이라 네 칸이 초과다.
+	// 5시간 창의 절반이 지났으면 예산은 10칸이다. 소진율 70% 는 14칸이라 11번째 칸부터 끝까지
+	// 열 칸이 초과 구간이 되고, 그 구간만 페이스 색으로 칠해진다.
 	v := sample()
 	v.Five = Gauge{Present: true, Pct: 70, ResetsAt: 2_000_000_000, HasReset: true, Window: 18000}
-	rows := strings.Split(plain(Full(v, 2_000_000_000-9000)), "\n")
-	if n := strings.Count(rows[3], "▓"); n != 4 {
-		t.Errorf("초과 칸 %d, want 4 — %q", n, rows[3])
+	rows := strings.Split(Full(v, 2_000_000_000-9000), "\n")
+	if n := strings.Count(rows[3], theme.Red); n != 10 {
+		t.Errorf("초과 구간 칸 %d, want 10 — %q", n, rows[3])
 	}
-	if strings.Contains(rows[3], "▲") {
+	if n := strings.Count(rows[3], theme.Grey240); n != 10 {
+		t.Errorf("예산 이내 칸 %d, want 10 — %q", n, rows[3])
+	}
+	if strings.Contains(plain(rows[3]), "▲") {
 		t.Errorf("전체 레이아웃은 압축 페이스 기호를 쓰지 않는다: %q", rows[3])
+	}
+}
+
+func TestBarStaysGreyWhileUsageKeepsPace(t *testing.T) {
+	// 막대의 색은 페이스 초과 하나만 뜻한다. 그래서 소진율이 아무리 높아도 페이스를 지키는
+	// 동안에는 막대에 경고색이 없고, 소진율의 심각도는 옆의 백분율이 혼자 말한다. 이 단언이
+	// 무너지면 색 채널이 다시 두 가지를 뜻하게 되어 아래 경계 단언도 함께 의미를 잃는다.
+	v := sample()
+	v.Five = Gauge{Present: true, Pct: 92, ResetsAt: 2_000_000_000, HasReset: true, Window: 18000}
+	rows := strings.Split(Full(v, 2_000_000_000-900), "\n")
+	if n := strings.Count(rows[3], theme.Grey240); n != 20 {
+		t.Errorf("페이스 이내면 20칸이 모두 회색이다: %d — %q", n, rows[3])
+	}
+	for _, color := range []string{theme.Yellow, theme.Red} {
+		for _, cell := range []string{"█", "░"} {
+			if strings.Contains(rows[3], color+cell) {
+				t.Errorf("페이스 이내인데 막대 칸에 경고색이 붙었다: %q", rows[3])
+			}
+		}
+	}
+}
+
+func TestHighUsageKeepsTheOvershootBoundaryVisible(t *testing.T) {
+	// 소진율이 90% 를 넘으면 예전에는 막대 전체가 빨강이라 페이스 초과 경계가 사라졌다. 창의
+	// 20% 만 지난 시점의 95% 는 예산 4칸에 소진 19칸이므로, 앞의 네 칸만 회색이고 나머지
+	// 열여섯 칸이 초과 구간이다.
+	v := sample()
+	v.Five = Gauge{Present: true, Pct: 95, ResetsAt: 2_000_000_000, HasReset: true, Window: 18000}
+	rows := strings.Split(Full(v, 2_000_000_000-14400), "\n")
+	if n := strings.Count(rows[3], theme.Grey240); n != 4 {
+		t.Errorf("예산 이내 칸 %d, want 4 — %q", n, rows[3])
+	}
+	if n := strings.Count(rows[3], theme.Red+"█") + strings.Count(rows[3], theme.Red+"░"); n != 16 {
+		t.Errorf("초과 구간 칸 %d, want 16 — %q", n, rows[3])
 	}
 }
 
@@ -232,12 +270,14 @@ func TestEmptyValuesDoNotProduceBlankLines(t *testing.T) {
 func TestGaugeWithoutResetOmitsTheResetToken(t *testing.T) {
 	v := sample()
 	v.Five = Gauge{Present: true, Pct: 24, Window: 18000}
-	rows := strings.Split(plain(Full(v, 1_999_000_000)), "\n")
-	if strings.Contains(rows[3], "↺") {
+	rows := strings.Split(Full(v, 1_999_000_000), "\n")
+	if strings.Contains(plain(rows[3]), "↺") {
 		t.Fatalf("리셋 시각이 없으면 ↺ 를 그리지 않는다: %q", rows[3])
 	}
-	if strings.Contains(rows[3], "▓") {
-		t.Fatalf("리셋 시각이 없으면 예산도 없어 초과 표시를 하지 않는다: %q", rows[3])
+	for _, color := range []string{theme.Yellow, theme.Red} {
+		if strings.Contains(rows[3], color) {
+			t.Fatalf("리셋 시각이 없으면 예산도 없어 초과 표시를 하지 않는다: %q", rows[3])
+		}
 	}
 }
 
