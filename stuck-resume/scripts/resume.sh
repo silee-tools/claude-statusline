@@ -59,7 +59,15 @@ acquire_lock() {
         sleep 1
         continue
       fi
-      rm -rf "$LOCK_DIR"
+      case "${CLAUDE_RESUME_TEST_EMPTY_RECLAIM_BARRIER:-}" in
+        '') ;;
+        *)
+          mkdir -p "$CLAUDE_RESUME_TEST_EMPTY_RECLAIM_BARRIER"
+          : > "$CLAUDE_RESUME_TEST_EMPTY_RECLAIM_BARRIER/ready.$$"
+          while [ ! -f "$CLAUDE_RESUME_TEST_EMPTY_RECLAIM_BARRIER/release.$$" ]; do sleep 1; done
+          ;;
+      esac
+      rmdir "$LOCK_DIR" 2>/dev/null || true
       continue
     elif ! kill -0 "$lock_pid" 2>/dev/null || [ "$lock_now" -ge "$((lock_at + 30))" ]; then
       case "${CLAUDE_RESUME_TEST_RECLAIM_BARRIER:-}" in
@@ -82,6 +90,14 @@ acquire_lock() {
   write_atomic "$LOCK_DIR/owner" "pid=$$
 acquired_at=$(now_epoch)"
   lock_owned=1
+  case "${CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER:-}" in
+    '') ;;
+    *)
+      mkdir -p "$CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER"
+      : > "$CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER/ready.$$"
+      while [ ! -f "$CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER/release.$$" ]; do sleep 1; done
+      ;;
+  esac
 }
 
 release_lock() {
@@ -353,6 +369,14 @@ handle_stop() {
     release_lock
     return 0
   fi
+  if [ "$(now_epoch)" -ge "$handoff_at" ]; then
+    active_session=-
+    active_generation=0
+    handoff_at=0
+    write_global
+    release_lock
+    return 0
+  fi
 
   recovered_generation=$generation
   active_session=-
@@ -469,7 +493,7 @@ if [ "${1:-}" = --worker ]; then
   error=${CLAUDE_RESUME_WORKER_ERROR:-other}
   transcript=${CLAUDE_RESUME_WORKER_TRANSCRIPT:-}
   last_message=${CLAUDE_RESUME_WORKER_LAST_MESSAGE:-}
-  trap 'wake_requested=1' USR1
+  trap 'wake_requested=1; case "${CLAUDE_RESUME_TEST_SIGNAL_RECEIVED_DIR:-}" in "") ;; *) mkdir -p "$CLAUDE_RESUME_TEST_SIGNAL_RECEIVED_DIR"; : > "$CLAUDE_RESUME_TEST_SIGNAL_RECEIVED_DIR/$session" ;; esac' USR1
   if handle_stop_failure; then
     exit 0
   fi
