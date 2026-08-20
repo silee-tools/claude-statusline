@@ -72,15 +72,26 @@ Nerd Font; without one they may render as placeholder boxes.
 
 ## Gauges and cost
 
-Both layouts use the same thresholds. Context usage turns yellow at 40% and
-red at 70%; rate usage turns yellow at 80% and red at 90%.
+Context usage turns yellow at 40% and red at 70%. Rate usage turns yellow at
+80% and red at 90%, and on the `5h` and `7d` rows that color reaches the
+percentage only — never the bar.
 
-The `5h` and `7d` gauges also compare usage with the elapsed-time budget. The
-compact layout adds `▲` after the percentage when usage is ahead of pace. The
-full layout colors the filled bar cells beyond the pace budget with `▓`.
+The bar on those two rows answers a different question: whether usage is ahead
+of the elapsed-time budget. It carries two channels. A cell is `█` once spent
+and `░` while it is not, and every cell from the budget position onward takes
+the pace color whether spent or not. A window that keeps pace therefore draws
+entirely in grey, and color appears only where usage has overrun the clock.
 Small overshoots are yellow and overshoots of about 15 percentage points or
 more are red. The comparison uses 20 five-point cells, so the boundary is
 quantized rather than exact.
+
+Keeping the two channels apart is what holds the boundary readable at high
+usage. Were the bar painted with absolute severity as well, a window at 95%
+would go red end to end, and a reader could no longer tell one that is nearly
+spent but on schedule from one that is burning through its budget early.
+
+The compact layout has no room for a bar and adds `▲` after the percentage
+instead when usage is ahead of pace.
 
 The `5h` and `7d` windows are shared between sessions through
 `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/rate-limits.env`. Whichever
