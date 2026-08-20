@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func c(pct int, reset int64) Sample {
@@ -110,5 +111,83 @@ func TestLoadTreatsAWindowWithoutResetAsAbsent(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "rate-limits.env"), []byte("fivePct=24\n"), 0o600)
 	if p := Load(dir); p.Five.Present {
 		t.Fatalf("리셋 없는 캐시 항목은 부재로 읽어야 한다: %+v", p.Five)
+	}
+}
+
+func TestResolveShowsCachedValueWhenStdinHasNone(t *testing.T) {
+	dir := t.TempDir()
+	Store(dir, Pair{Five: c(24, 2000), Week: c(41, 3000)})
+	got := Resolve(dir, Pair{}, 1000)
+	if got.Five.Pct != 24 || got.Week.Pct != 41 {
+		t.Fatalf("세션이 값을 못 받았으면 캐시가 공급해야 한다: %+v", got)
+	}
+}
+
+func TestResolveHidesExpiredCachedWindow(t *testing.T) {
+	dir := t.TempDir()
+	Store(dir, Pair{Five: c(94, 1000), Week: c(41, 3000)})
+	got := Resolve(dir, Pair{}, 2000) // 5시간 창의 리셋 시각이 지났다
+	if got.Five.Present {
+		t.Fatalf("지난 창의 소진율은 더 이상 참이 아니다: %+v", got.Five)
+	}
+	if !got.Week.Present {
+		t.Fatalf("한 창이 만료돼도 다른 창은 살아야 한다: %+v", got.Week)
+	}
+}
+
+func TestResolveDoesNotLetAStaleSessionMoveTheFileBackward(t *testing.T) {
+	dir := t.TempDir()
+	Store(dir, Pair{Five: c(60, 2000)})
+	// 몇 시간 놀던 세션이 낡은 스냅샷을 들고 다시 렌더한다.
+	got := Resolve(dir, Pair{Five: c(24, 2000)}, 1000)
+	if got.Five.Pct != 60 {
+		t.Fatalf("낡은 표본이 화면을 되돌리면 안 된다: %+v", got.Five)
+	}
+	if after := Load(dir); after.Five.Pct != 60 {
+		t.Fatalf("낡은 표본이 파일을 되돌리면 안 된다: %+v", after.Five)
+	}
+}
+
+func TestResolveWritesWhenLiveSampleWins(t *testing.T) {
+	dir := t.TempDir()
+	Store(dir, Pair{Five: c(24, 2000)})
+	Resolve(dir, Pair{Five: c(31, 2000)}, 1000)
+	if after := Load(dir); after.Five.Pct != 31 {
+		t.Fatalf("새 표본이 저장되지 않았다: %+v", after.Five)
+	}
+}
+
+func TestResolveDoesNotWriteWhenNothingChanged(t *testing.T) {
+	dir := t.TempDir()
+	Store(dir, Pair{Five: c(24, 2000)})
+	path := filepath.Join(dir, "rate-limits.env")
+	before, _ := os.Stat(path)
+	time.Sleep(10 * time.Millisecond)
+	Resolve(dir, Pair{Five: c(24, 2000)}, 1000)
+	after, _ := os.Stat(path)
+	if !before.ModTime().Equal(after.ModTime()) {
+		t.Fatal("값이 그대로면 쓰지 않아야 한다 — 렌더마다 쓰면 자원만 쓴다")
+	}
+}
+
+func TestResolveDisplaysButNeverStoresASampleWithoutReset(t *testing.T) {
+	dir := t.TempDir()
+	live := Pair{Five: Sample{Present: true, Pct: 77}}
+	got := Resolve(dir, live, 1000)
+	if got.Five.Pct != 77 {
+		t.Fatalf("자기 세션이 받은 값은 그대로 그린다: %+v", got.Five)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "rate-limits.env")); !os.IsNotExist(err) {
+		t.Fatal("유효 기간을 판정할 수 없는 표본은 저장하지 않는다")
+	}
+}
+
+func TestResolveKeepsExpiredEntryInFileUntilOverwritten(t *testing.T) {
+	// 만료 판정은 그릴 때만 한다. 지우는 쓰기를 따로 두면 병합하는 쓰기와 경합만 는다.
+	dir := t.TempDir()
+	Store(dir, Pair{Five: c(94, 1000), Week: c(41, 3000)})
+	Resolve(dir, Pair{}, 2000)
+	if after := Load(dir); after.Five.Pct != 94 {
+		t.Fatalf("만료됐다고 파일에서 지우면 안 된다: %+v", after.Five)
 	}
 }

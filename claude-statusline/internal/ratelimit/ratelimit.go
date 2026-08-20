@@ -121,3 +121,30 @@ func Store(cacheDir string, p Pair) error {
 	}
 	return nil
 }
+
+// Resolve returns what to draw for both windows and leaves the merge of the session's
+// own samples and the file behind for the next session to read. It writes only when the
+// merge differs from what the file already holds, so an idle render costs one read.
+func Resolve(cacheDir string, live Pair, now int64) Pair {
+	cached := Load(cacheDir)
+	showFive, keepFive := resolveWindow(live.Five, cached.Five, now)
+	showWeek, keepWeek := resolveWindow(live.Week, cached.Week, now)
+	if merged := (Pair{Five: keepFive, Week: keepWeek}); merged != cached {
+		_ = Store(cacheDir, merged)
+	}
+	return Pair{Five: showFive, Week: showWeek}
+}
+
+func resolveWindow(live, cached Sample, now int64) (show, keep Sample) {
+	if live.Present && !live.HasReset {
+		return live, cached
+	}
+	keep = Newer(live, cached)
+	// Only a value the session did not observe itself is dropped for having expired.
+	// Widening this to the session's own sample would change what a payload alone
+	// renders, which no longer depends on the source of the value.
+	if keep != live && keep.Complete() && keep.ResetsAt <= now {
+		return Sample{}, keep
+	}
+	return keep, keep
+}
