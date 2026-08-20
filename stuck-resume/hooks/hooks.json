@@ -1,9 +1,9 @@
 {
-  "description": "Rate limit resume hooks",
+  "description": "Stuck resume hooks",
   "hooks": {
     "StopFailure": [
       {
-        "matcher": "rate_limit",
+        "matcher": "rate_limit|authentication_failed",
         "hooks": [
           {
             "type": "command",

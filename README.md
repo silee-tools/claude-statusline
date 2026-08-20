@@ -2,7 +2,7 @@
 
 This repository publishes two Claude Code plugins through one marketplace,
 `silee-tools`. The sections up to and including [Development](#development)
-document `claude-statusline`; [rate-limit-resume](#rate-limit-resume) follows
+document `claude-statusline`; [stuck-resume](#stuck-resume) follows
 them in its own section.
 
 ## claude-statusline
@@ -217,43 +217,70 @@ build is idempotent. The Go tests cover display width and cutting,
 terminal-width decisions, path and branch shortening, the account decision
 table, and the gauge thresholds.
 
-## rate-limit-resume
+## stuck-resume
 
-A `StopFailure` hook that resumes a turn a usage limit cut short. When Claude
-Code ends a turn because the account hit its 5-hour or 7-day limit, the hook
-waits out the limit and then wakes the model with a short prompt, so the
-session picks the work back up without anyone typing "continue".
+A `StopFailure` hook that resumes a turn something else cut short. Two causes
+trigger it: the account hitting its 5-hour or 7-day usage limit, and the login
+expiring mid-turn. In both cases the hook waits, then wakes the model with a
+short prompt naming the cause, so the session picks the work back up without
+anyone typing "continue".
+
+The hook never repairs the login itself. Running `/login` is a person's job, or
+another session's; this hook only waits and then wakes the interrupted turn. If
+the login is still expired when the model wakes, the new turn is rejected and
+the hook waits again.
 
 ### Install
 
 ```shell
 claude plugin marketplace add silee-tools/claude-statusline
-claude plugin install rate-limit-resume@silee-tools
+claude plugin install stuck-resume@silee-tools
 claude   # restart
 ```
 
 No `settings.json` edit is needed. `hooks/hooks.json` is auto-discovered and
-matches only the `rate_limit` error, so no other stop reason triggers it.
+matches only the `rate_limit` and `authentication_failed` errors, so no other
+stop reason triggers it.
+
+Coming from `rate-limit-resume`: the plugin name is its install identifier, so
+this rename is not an upgrade path. Remove the old plugin and install the new
+one.
+
+```shell
+claude plugin uninstall rate-limit-resume@silee-tools
+claude plugin marketplace update silee-tools
+claude plugin install stuck-resume@silee-tools
+claude   # restart
+```
+
+Uninstalling leaves the old counter directory
+`${XDG_STATE_HOME:-$HOME/.local/state}/rate-limit-resume/` behind. Nothing reads
+it any more, so delete it by hand whenever convenient.
 
 ### How it works
 
-Claude Code fires `StopFailure` with `error: "rate_limit"` when a turn ends
-against a usage limit. The hook entry sets `asyncRewake`, so the command runs
-in the background while the session sits idle. `resume.sh` sleeps for
-`CLAUDE_RESUME_WAIT_SECONDS` and then exits with code 2 — the code that tells
-Claude Code to wake the model — and whatever it wrote to **stderr** becomes the
-prompt for the new turn. Text on stdout is not injected.
+Claude Code fires `StopFailure` with an `error` value naming why the turn ended:
+`rate_limit` against a usage limit, and `authentication_failed` when the login
+expired, which is the stop that shows "Login expired · Please run /login". The
+hook entry sets `asyncRewake`, so the command runs in the background while the
+session sits idle. `resume.sh` sleeps for `CLAUDE_RESUME_WAIT_SECONDS` and then
+exits with code 2 — the code that tells Claude Code to wake the model — and
+whatever it wrote to **stderr** becomes the prompt for the new turn. Text on
+stdout is not injected. That prompt names the cause, so the model does not
+resume on the wrong assumption about what stopped it.
 
-The hook does not read the reset time, which never reaches it as a machine
-value. It polls instead: if the limit is still in force, the new turn is
-rejected, `StopFailure` fires again, and the next wait starts. A rejected
+The hook reads neither the reset time nor the login state, since neither reaches
+it as a machine value. It polls instead: if the cause still holds, the new turn
+is rejected, `StopFailure` fires again, and the next wait starts. A rejected
 attempt is refused before any tokens are billed, so polling costs nothing but
 elapsed time.
 
-A per-session attempt counter under
-`${XDG_STATE_HOME:-$HOME/.local/state}/rate-limit-resume/` bounds that loop.
-Once a session passes `CLAUDE_RESUME_MAX_ATTEMPTS`, the hook exits 0 and the
-session stays stopped. Counter files older than seven days are cleaned up on
+An attempt counter under
+`${XDG_STATE_HOME:-$HOME/.local/state}/stuck-resume/` bounds that loop, keyed by
+session and cause together. Spending every retry on a usage limit therefore
+leaves that same session free to retry an expired login. Once one
+session-and-cause pair passes `CLAUDE_RESUME_MAX_ATTEMPTS`, the hook exits 0 and
+the session stays stopped. Counter files older than seven days are cleaned up on
 each run.
 
 ### Settings
@@ -261,22 +288,25 @@ each run.
 | Variable | Default | Meaning |
 |---|---|---|
 | `CLAUDE_RESUME_WAIT_SECONDS` | `120` | seconds to wait before waking the model |
-| `CLAUDE_RESUME_MAX_ATTEMPTS` | `90` | attempts per session before giving up |
-| `CLAUDE_RESUME_STATE_DIR` | `${XDG_STATE_HOME:-$HOME/.local/state}/rate-limit-resume` | where attempt counters are kept |
+| `CLAUDE_RESUME_MAX_ATTEMPTS` | `90` | attempts per session and cause before giving up |
+| `CLAUDE_RESUME_STATE_DIR` | `${XDG_STATE_HOME:-$HOME/.local/state}/stuck-resume` | where attempt counters are kept |
+
+The variable names still read `CLAUDE_RESUME_` rather than the plugin name, so a
+configuration that already sets them keeps working across the rename.
 
 Keep the wait below the `timeout` in `hooks/hooks.json` (600 seconds); a longer
 wait is cut off and the session is never resumed. With the defaults, one
-session retries for roughly three hours before it gives up.
+session-and-cause pair retries for roughly three hours before it gives up.
 
 ### Limits
 
 Resuming needs a live interactive session. Under `claude -p` the process exits
 before the background hook finishes, so nothing is resumed.
 
-The `rate_limit` path has not been exercised against a real usage limit. The
-resume mechanism was verified with a stand-in `Stop` hook, and the
-`rate_limit` matcher value comes from Claude Code's own list of `StopFailure`
-error values.
+Neither trigger has been exercised against a real usage limit or a real expired
+login. The resume mechanism was verified with a stand-in `Stop` hook, the two
+matcher values come from Claude Code's own list of `StopFailure` error values,
+and the rest is covered by injecting hook input into `resume.sh` directly.
 
 ## License
 
