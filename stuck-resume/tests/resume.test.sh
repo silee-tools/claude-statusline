@@ -139,8 +139,8 @@ assert_equals "T7 회수 뒤 대기자가 재개" "2" "$lock_rc"
 
 # T7: 30초가 지난 소유자 없는 잠금은 회수하고 탐침을 진행한다.
 reset_state
-lock_created=$(date +%s)
 mkdir -p "$STATE_V2/lock"
+lock_created=$(stat -f %m "$STATE_V2/lock" 2>/dev/null || stat -c %Y "$STATE_V2/lock")
 set_now "$((lock_created + 30))"
 failure_input "$SESSION_A" rate_limit | sh "$RESUME" >"$TMPROOT/stale-lock.out" 2>"$TMPROOT/stale-lock.err" & stale_lock_pid=$!
 sleep 1
