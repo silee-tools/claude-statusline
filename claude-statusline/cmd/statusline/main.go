@@ -15,6 +15,7 @@ import (
 	"github.com/silee-tools/claude-statusline/internal/costcache"
 	"github.com/silee-tools/claude-statusline/internal/gitinfo"
 	"github.com/silee-tools/claude-statusline/internal/input"
+	"github.com/silee-tools/claude-statusline/internal/ratelimit"
 	"github.com/silee-tools/claude-statusline/internal/render"
 	"github.com/silee-tools/claude-statusline/internal/segments"
 	"github.com/silee-tools/claude-statusline/internal/shorten"
@@ -53,14 +54,19 @@ func main() {
 		credsFile = filepath.Join(home, ".aws", "credentials")
 	}
 
+	limits := ratelimit.Resolve(cacheDir, ratelimit.Pair{
+		Five: sample(status.FiveHour),
+		Week: sample(status.SevenDay),
+	}, now.Unix())
+
 	view := render.View{
 		Clock:   now.Format("15:04"),
 		Path:    shorten.Path(status.CWD, home),
 		Model:   theme.FormatModel(status.ModelDisplay),
 		Effort:  theme.EffortGlyph(status.Effort),
 		CtxPct:  status.ContextUsed() * 100 / status.WindowSize(),
-		Five:    gauge(status.FiveHour, 18000),
-		Week:    gauge(status.SevenDay, 604800),
+		Five:    gauge(limits.Five, 18000),
+		Week:    gauge(limits.Week, 604800),
 		Version: status.Version,
 		Session: status.SessionID,
 	}
@@ -88,12 +94,16 @@ func main() {
 	fmt.Print(render.Full(view, now.Unix()))
 }
 
-func gauge(w input.Window, window int64) render.Gauge {
+func sample(w input.Window) ratelimit.Sample {
+	return ratelimit.Sample{Present: w.Present, HasReset: w.HasReset, Pct: w.Pct, ResetsAt: w.ResetsAt}
+}
+
+func gauge(s ratelimit.Sample, window int64) render.Gauge {
 	return render.Gauge{
-		Present:  w.Present,
-		Pct:      w.Pct,
-		ResetsAt: w.ResetsAt,
-		HasReset: w.HasReset,
+		Present:  s.Present,
+		Pct:      s.Pct,
+		ResetsAt: s.ResetsAt,
+		HasReset: s.HasReset,
 		Window:   window,
 	}
 }
