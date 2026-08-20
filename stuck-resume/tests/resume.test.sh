@@ -137,12 +137,29 @@ rmdir "$STATE_V2/lock" 2>/dev/null || true
 lock_rc=0; wait "$lock_pid" || lock_rc=$?
 assert_equals "T7 회수 뒤 대기자가 재개" "2" "$lock_rc"
 
+# T7: 30초가 지난 소유자 없는 잠금은 회수하고 탐침을 진행한다.
+reset_state
+lock_created=$(date +%s)
+mkdir -p "$STATE_V2/lock"
+set_now "$((lock_created + 30))"
+failure_input "$SESSION_A" rate_limit | sh "$RESUME" >"$TMPROOT/stale-lock.out" 2>"$TMPROOT/stale-lock.err" & stale_lock_pid=$!
+sleep 1
+if kill -0 "$stale_lock_pid" 2>/dev/null; then
+  bad "T7 30초 지난 소유자 없는 잠금을 회수" "contender가 대기 중"
+  rmdir "$STATE_V2/lock" 2>/dev/null || true
+else
+  ok "T7 30초 지난 소유자 없는 잠금을 회수"
+fi
+stale_lock_rc=0; wait "$stale_lock_pid" || stale_lock_rc=$?
+assert_equals "T7 만료 잠금 뒤 대기자가 재개" "2" "$stale_lock_rc"
+
 # T8: 같은 due의 동시 등록은 C 바이트 순서가 빠른 세션 하나만 먼저 활성화한다.
 reset_state
 CLAUDE_RESUME_WAIT_SECONDS=2
 CLAUDE_RESUME_MAX_ATTEMPTS=1
 CLAUDE_RESUME_TEST_REGISTER_BARRIER="$TMPROOT/register-barrier"
 export CLAUDE_RESUME_WAIT_SECONDS CLAUDE_RESUME_MAX_ATTEMPTS CLAUDE_RESUME_TEST_REGISTER_BARRIER
+set_now 1787200000
 mkdir -p "$CLAUDE_RESUME_TEST_REGISTER_BARRIER"
 failure_input "$SESSION_B" rate_limit | sh "$RESUME" >"$TMPROOT/b.out" 2>"$TMPROOT/b.err" & bpid=$!
 failure_input "$SESSION_A" rate_limit | sh "$RESUME" >"$TMPROOT/a.out" 2>"$TMPROOT/a.err" & apid=$!
@@ -155,6 +172,8 @@ if [ -f "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/$SESSION_A" ] && [ -f "$CLAUDE_RES
 else
   bad "T8 두 대기자가 같은 고정 시각에 등록" "등록 장벽 파일 없음"
 fi
+assert_equals "T8 A due_at은 고정 시각과 시작 지연의 합" "1787200002" "$(field "waiters/$SESSION_A" due_at)"
+assert_equals "T8 B due_at은 고정 시각과 시작 지연의 합" "1787200002" "$(field "waiters/$SESSION_B" due_at)"
 touch "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/release"
 arc=0; wait "$apid" || arc=$?
 brc=0; wait "$bpid" || brc=$?

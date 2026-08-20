@@ -58,6 +58,8 @@ acquire_lock() {
         sleep 1
         continue
       fi
+      rm -rf "$LOCK_DIR"
+      continue
     elif ! kill -0 "$lock_pid" 2>/dev/null || [ "$lock_now" -ge "$((lock_at + 30))" ]; then
       rm -rf "$LOCK_DIR"
       continue
