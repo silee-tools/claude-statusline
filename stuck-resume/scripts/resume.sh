@@ -64,8 +64,7 @@ acquired_at=$(now_epoch)"
   while ! ln "$publish_candidate" "$LOCK_PUBLISH" 2>/dev/null; do
     publish_pid=$(read_field "$LOCK_PUBLISH" pid)
     publish_at=$(number_or_default "$(read_field "$LOCK_PUBLISH" acquired_at)" 0)
-    publish_now=$(now_epoch)
-    if [ -z "$publish_pid" ] || ! kill -0 "$publish_pid" 2>/dev/null || [ "$publish_now" -ge "$((publish_at + 30))" ]; then
+    if [ -z "$publish_pid" ] || ! kill -0 "$publish_pid" 2>/dev/null; then
       current_publish_pid=$(read_field "$LOCK_PUBLISH" pid)
       current_publish_at=$(number_or_default "$(read_field "$LOCK_PUBLISH" acquired_at)" 0)
       if [ "$current_publish_pid" = "$publish_pid" ] && [ "$current_publish_at" = "$publish_at" ]; then

@@ -564,6 +564,8 @@ start_waiter "$(failure_input "$SESSION_A" rate_limit)" "$TMPROOT/t28-a.out" "$T
 t28_apid=$STARTED_CHILD_PID
 wait_for_file "$CLAUDE_RESUME_TEST_LOCK_PUBLISH_BARRIER/ready.$t28_apid" 20 || bad "T28 A가 owner 게시 직전 대기" "A 게시 장벽 없음"
 assert_equals "T28 게시 중인 잠금에는 아직 owner가 없음" "" "$(field lock/owner pid)"
+t28_lock_created=$(file_mtime "$STATE_V2/lock")
+set_now "$((t28_lock_created + 30))"
 start_waiter "$(failure_input "$SESSION_B" authentication_failed)" "$TMPROOT/t28-b.out" "$TMPROOT/t28-b.err" "$TMPROOT/t28-b.rc"
 t28_bpid=$STARTED_CHILD_PID
 sleep 1
