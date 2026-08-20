@@ -17,7 +17,10 @@ check() { # desc expected actual
 }
 
 TMPROOT=$(mktemp -d)
-trap 'rm -rf "$TMPROOT"' EXIT
+# bash 3.2 는 EXIT 트랩 진입에서 $? 를 0 으로 만든다. completed 플래그가 없으면 set -eu 중단이
+# 종료코드 0 으로 보고된다. 정본은 AGENTS.md 의 Testing 절이다.
+completed=0
+trap 'rc=$?; rm -rf "$TMPROOT"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
 
 # ---------------------------------------------------------------------------
 # 케이스 1: fetch 성공 — 가짜 curl 로 fixture JSON 을 내려받게 한다.
@@ -180,4 +183,5 @@ FINAL_CHECKSUM=$(sha256sum < "$OUT3")
 check "case3: 부분 fetch 거부(캐시 보존)" "$GOOD_CHECKSUM" "$FINAL_CHECKSUM"
 
 printf 'prices.test.sh: %d passed, %d failed\n' "$pass" "$fail"
+completed=1
 [ "$fail" -eq 0 ]

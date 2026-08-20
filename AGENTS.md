@@ -71,6 +71,15 @@ fails to start fails the run rather than reporting zero failures:
 sh -c 'rc=0; for t in */tests/*.test.sh; do sh "$t" || rc=1; done; (cd claude-statusline && go test ./...) || rc=1; exit "$rc"'
 ```
 
+A suite that cleans up in an `EXIT` trap has to carry a completion flag, because
+bash 3.2 — the `/bin/sh` on macOS — resets `$?` to zero on entering that trap. A
+trap that only removes its temp directory therefore reports a `set -eu` abort as
+a clean exit, and the gate above cannot tell an aborted run from a passing one.
+Each such suite sets `completed=0` before registering the trap, sets
+`completed=1` immediately before its final `[ "$fail" -eq 0 ]`, and forces a
+non-zero status in the trap when the flag never reached one. A new suite that
+registers a cleanup trap without that flag silently opts out of the gate.
+
 `statusline.test.sh` builds the binary, points the shim at it, and asserts both
 layouts, gauges, colors, and indicators against fixture JSON. It fails outright
 when that build fails, because a skipped build would report zero checks as a
