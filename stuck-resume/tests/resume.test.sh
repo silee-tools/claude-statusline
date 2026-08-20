@@ -49,6 +49,17 @@ field() {
   sed -n "s/^$2=//p" "$STATE_V2/$1" 2>/dev/null | sed -n '1p'
 }
 
+waiter_path_for_token() {
+  waiter_token=$1
+  for waiter_path in "$STATE_V2/waiters"/*; do
+    [ -f "$waiter_path" ] || continue
+    [ "$(sed -n 's/^token=//p' "$waiter_path" | sed -n '1p')" = "$waiter_token" ] || continue
+    printf '%s\n' "$waiter_path"
+    return 0
+  done
+  return 1
+}
+
 file_mtime() {
   file_mtime_path=$1
   file_mtime_value=
@@ -619,12 +630,17 @@ CLAUDE_RESUME_TEST_REGISTER_BARRIER="$TMPROOT/t30-second-register"
 export CLAUDE_RESUME_TEST_REGISTER_BARRIER
 start_waiter "$(failure_input "$SESSION_A" rate_limit)" "$TMPROOT/t30-second.out" "$TMPROOT/t30-second.err" "$TMPROOT/t30-second.rc"
 wait_for_file "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/$SESSION_A" || bad "T30 두 번째 호출 등록" "worker 등록 장벽 없음"
-t30_second_pid=$(field "waiters/$SESSION_A" pid)
-t30_second_token=$(field "waiters/$SESSION_A" token)
+t30_first_waiter=$(waiter_path_for_token "$t30_first_token" || true)
+t30_second_waiter="$STATE_V2/waiters/$SESSION_A"
+if [ "$(field "waiters/$SESSION_A" token)" = "$t30_first_token" ]; then
+  t30_second_waiter=$(find "$STATE_V2/waiters" -type f ! -name "$SESSION_A" -print | sed -n '1p')
+fi
+t30_second_pid=$(sed -n 's/^pid=//p' "$t30_second_waiter" | sed -n '1p')
+t30_second_token=$(sed -n 's/^token=//p' "$t30_second_waiter" | sed -n '1p')
 
 if [ -n "$t30_first_token" ] && [ -n "$t30_second_token" ] && [ "$t30_first_token" != "$t30_second_token" ]; then ok "T30 같은 세션의 두 호출은 서로 다른 토큰"; else bad "T30 같은 세션의 두 호출은 서로 다른 토큰" "$t30_first_token / $t30_second_token"; fi
 if [ "$t30_first_token" != "$SESSION_A-$t30_first_pid" ] && [ "$t30_second_token" != "$SESSION_A-$t30_second_pid" ]; then ok "T30 토큰은 session-PID 결정값과 다름"; else bad "T30 토큰은 session-PID 결정값과 다름" "$t30_first_token / $t30_second_token"; fi
-if [ -f "$STATE_V2/$t30_first_token" ] && [ -f "$STATE_V2/$t30_second_token" ]; then ok "T30 실행 중 identity 파일 유지"; else bad "T30 실행 중 identity 파일 유지" "identity 파일 없음"; fi
+if [ -n "$t30_first_waiter" ] && [ -f "$t30_first_waiter" ] && [ -f "$STATE_V2/$t30_first_token" ] && [ -f "$STATE_V2/$t30_second_token" ]; then ok "T30 실행 중 identity 파일 유지"; else bad "T30 실행 중 identity 파일 유지" "identity 파일 없음"; fi
 t30_first_command=$(ps -ww -p "$t30_first_pid" -o command= 2>/dev/null || true)
 t30_second_command=$(ps -ww -p "$t30_second_pid" -o command= 2>/dev/null || true)
 case " $t30_first_command " in *" --worker $t30_first_token "*) t30_first_argv=1 ;; *) t30_first_argv=0 ;; esac
@@ -634,6 +650,39 @@ touch "$TMPROOT/t30-first-register/release" "$TMPROOT/t30-second-register/releas
 wait_for_file "$TMPROOT/t30-first.rc" || bad "T30 첫 호출 종료" "종료코드 파일 없음"
 wait_for_file "$TMPROOT/t30-second.rc" || bad "T30 두 번째 호출 종료" "종료코드 파일 없음"
 if [ ! -e "$STATE_V2/$t30_first_token" ] && [ ! -e "$STATE_V2/$t30_second_token" ]; then ok "T30 정상 종료 뒤 identity 파일 정리"; else bad "T30 정상 종료 뒤 identity 파일 정리" "identity 파일 잔존"; fi
+
+# T31: Stop 신호 전 새 StopFailure가 시작해도 기존 waiter는 성공을 소비한다.
+reset_state
+CLAUDE_RESUME_WAIT_SECONDS=30
+export CLAUDE_RESUME_WAIT_SECONDS
+run "$(failure_input "$SESSION_A" rate_limit)"
+unset CLAUDE_RESUME_TEST_SKIP_SLEEP
+start_waiter "$(failure_input "$SESSION_B" authentication_failed)" "$TMPROOT/t31-b.out" "$TMPROOT/t31-b.err" "$TMPROOT/t31-b.rc"
+wait_for_file "$STATE_V2/waiters/$SESSION_B" || bad "T31 B waiter 등록" "waiter 파일 없음"
+CLAUDE_RESUME_TEST_SKIP_SLEEP=1
+CLAUDE_RESUME_TEST_SIGNAL_BARRIER="$TMPROOT/t31-signal"
+export CLAUDE_RESUME_TEST_SKIP_SLEEP CLAUDE_RESUME_TEST_SIGNAL_BARRIER
+start_waiter "$(stop_input "$SESSION_A")" "$TMPROOT/t31-stop.out" "$TMPROOT/t31-stop.err" "$TMPROOT/t31-stop.rc"
+if wait_for_file "$CLAUDE_RESUME_TEST_SIGNAL_BARRIER/ready"; then ok "T31 Stop이 신호 직전 대기"; else bad "T31 Stop이 신호 직전 대기" "신호 장벽 없음"; fi
+start_waiter "$(failure_input "$SESSION_C" server_error)" "$TMPROOT/t31-c.out" "$TMPROOT/t31-c.err" "$TMPROOT/t31-c.rc"
+wait_for_file "$TMPROOT/t31-c.rc" 20 || bad "T31 새 StopFailure가 새 에피소드에서 재개" "C 종료코드 파일 없음"
+assert_equals "T31 새 StopFailure 재개 종료코드" "2" "$(sed -n '1p' "$TMPROOT/t31-c.rc" 2>/dev/null)"
+if [ -f "$STATE_V2/waiters/$SESSION_B" ]; then ok "T31 새 에피소드가 기존 B waiter 보존"; else bad "T31 새 에피소드가 기존 B waiter 보존" "B waiter 파일 없음"; fi
+touch "$CLAUDE_RESUME_TEST_SIGNAL_BARRIER/release"
+wait_for_file "$TMPROOT/t31-b.rc" 20 || bad "T31 B 성공 종료" "B 종료코드 파일 없음"
+assert_equals "T31 B 성공 종료코드" "2" "$(sed -n '1p' "$TMPROOT/t31-b.rc" 2>/dev/null)"
+wait_for_file "$TMPROOT/t31-stop.rc" || bad "T31 Stop 훅 종료" "종료코드 파일 없음"
+
+# T32: 활성 재시도 세대가 없는 Stop은 상태 경로를 만들지 않는다.
+reset_state
+run "$(stop_input "$SESSION_B")"
+if [ ! -e "$STATE_V2" ]; then ok "T32 global 부재 Stop은 상태를 만들지 않음"; else bad "T32 global 부재 Stop은 상태를 만들지 않음" "상태 경로가 생성됨"; fi
+mkdir -p "$STATE_V2"
+printf 'active_session=-\n' > "$STATE_V2/global"
+t32_global=$(cksum < "$STATE_V2/global")
+run "$(stop_input "$SESSION_B")"
+assert_equals "T32 inactive sentinel Stop은 global 유지" "$t32_global" "$(cksum < "$STATE_V2/global")"
+if [ ! -e "$STATE_V2/causes" ] && [ ! -e "$STATE_V2/waiters" ] && [ ! -e "$STATE_V2/lock" ] && [ ! -e "$STATE_V2/lock-publish" ]; then ok "T32 inactive sentinel Stop은 잠금과 대기 경로를 만들지 않음"; else bad "T32 inactive sentinel Stop은 잠금과 대기 경로를 만들지 않음" "불필요한 상태 경로가 생성됨"; fi
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 completed=1

@@ -48,6 +48,7 @@ write_atomic() {
 }
 
 create_process_identity() {
+  mkdir -p "$STATE_DIR"
   process_identity=$(mktemp "$STATE_DIR/invocation-XXXXXX")
   process_token=${process_identity##*/}
   case "$process_token" in
@@ -355,15 +356,19 @@ sleep_until() {
 }
 
 eligible_first_waiter() {
-  selected_session=
+  selected_waiter=
+  selected_key=
   selected_due=
   for waiter in "$WAITER_DIR"/*; do
     [ -f "$waiter" ] || continue
+    waiter_generation=$(number_or_default "$(read_field "$waiter" generation)" 0)
+    [ "$waiter_generation" -gt "$recovered_generation" ] || continue
     waiter_due=$(number_or_default "$(read_field "$waiter" due_at)" 0)
     [ "$waiter_due" -le "$effective_now" ] || continue
-    waiter_session=${waiter##*/}
-    if [ -z "$selected_session" ] || [ "$waiter_due" -lt "$selected_due" ] || { [ "$waiter_due" -eq "$selected_due" ] && [ "$(printf '%s\n%s\n' "$waiter_session" "$selected_session" | LC_ALL=C sort | sed -n '1p')" = "$waiter_session" ]; }; then
-      selected_session=$waiter_session
+    waiter_key="$(read_field "$waiter" session).${waiter##*/}"
+    if [ -z "$selected_waiter" ] || [ "$waiter_due" -lt "$selected_due" ] || { [ "$waiter_due" -eq "$selected_due" ] && [ "$(printf '%s\n%s\n' "$waiter_key" "$selected_key" | LC_ALL=C sort | sed -n '1p')" = "$waiter_key" ]; }; then
+      selected_waiter=$waiter
+      selected_key=$waiter_key
       selected_due=$waiter_due
     fi
   done
@@ -376,8 +381,6 @@ handle_stop_failure() {
 
   if [ "$episode" -eq 0 ] || { [ "$active_session" = - ] && ! has_unrecovered_waiter && [ "$recovered_generation" -ge "$generation" ]; }; then
     episode=$((episode + 1))
-    generation=0
-    recovered_generation=0
     base_delay=$(base_delay_or_default "${CLAUDE_RESUME_WAIT_SECONDS:-}")
     max_attempts=$(number_or_default "${CLAUDE_RESUME_MAX_ATTEMPTS:-}" 0)
     delay=$base_delay
@@ -387,7 +390,7 @@ handle_stop_failure() {
     active_generation=0
     handoff_at=0
     deadline=0
-    rm -rf "$CAUSE_DIR" "$WAITER_DIR"
+    rm -rf "$CAUSE_DIR"
     mkdir -p "$CAUSE_DIR" "$WAITER_DIR"
   fi
 
@@ -421,14 +424,14 @@ deadline=$cause_end"
   done
 
   if [ "$input_now" -ge "$deadline" ] || { [ "$max_attempts" -gt 0 ] && [ "$attempts" -ge "$max_attempts" ]; }; then
-    rm -f "$WAITER_DIR/$session"
     write_global
     release_lock
     return 0
   fi
 
-  old_waiter="$WAITER_DIR/$session"
-  old_initial=$(number_or_default "$(read_field "$old_waiter" initial_used)" 0)
+  registered_waiter="$WAITER_DIR/$session"
+  old_initial=$(number_or_default "$(read_field "$registered_waiter" initial_used)" 0)
+  if [ -e "$registered_waiter" ]; then registered_waiter="$WAITER_DIR/$session.$worker_token"; fi
   if [ "$was_active" = 1 ] || [ "$old_initial" -gt 0 ]; then
     due_at=$((input_now + delay))
     minimum_due=$((last_attempt + base_delay))
@@ -442,8 +445,9 @@ deadline=$cause_end"
   fi
   generation=$((generation + 1))
   waiter_generation=$generation
-  write_atomic "$old_waiter" "pid=$$
+  write_atomic "$registered_waiter" "pid=$$
 token=$worker_token
+session=$session
 cause=$error
 episode=$episode
 generation=$waiter_generation
@@ -544,7 +548,7 @@ wait_for_turn() {
   while :; do
     acquire_lock
     load_global
-    current_waiter="$WAITER_DIR/$session"
+    current_waiter=$registered_waiter
     if [ "$(read_field "$current_waiter" pid)" != "$$" ] || [ "$(number_or_default "$(read_field "$current_waiter" generation)" 0)" != "$waiter_generation" ]; then
       release_lock
       return 0
@@ -573,7 +577,7 @@ wait_for_turn() {
       write_global
     fi
     eligible_first_waiter
-    if [ "$selected_session" = "$session" ]; then
+    if [ "$selected_waiter" = "$current_waiter" ]; then
       rm -f "$current_waiter"
       active_session=$session
       active_generation=$waiter_generation
@@ -589,9 +593,6 @@ wait_for_turn() {
   done
 }
 
-mkdir -p "$CAUSE_DIR" "$WAITER_DIR"
-trap 'trap_rc=$?; release_publish_lock; release_lock; cleanup_process_identity; exit "$trap_rc"' EXIT
-
 if [ "${1:-}" = --stop ]; then
   process_role=stop
   process_token=${2:-unknown}
@@ -600,6 +601,7 @@ if [ "${1:-}" = --stop ]; then
   [ "$process_identity" = "$STATE_DIR/$process_token" ] || process_identity=
   session=${CLAUDE_RESUME_STOP_SESSION:-unknown}
   case "$session" in ''|*[!0-9A-Za-z_-]*) session=unknown ;; esac
+  trap 'trap_rc=$?; release_publish_lock; release_lock; cleanup_process_identity; exit "$trap_rc"' EXIT
   handle_stop
   exit 0
 fi
@@ -615,6 +617,8 @@ if [ "${1:-}" = --worker ]; then
   error=${CLAUDE_RESUME_WORKER_ERROR:-other}
   transcript=${CLAUDE_RESUME_WORKER_TRANSCRIPT:-}
   last_message=${CLAUDE_RESUME_WORKER_LAST_MESSAGE:-}
+  mkdir -p "$CAUSE_DIR" "$WAITER_DIR"
+  trap 'trap_rc=$?; release_publish_lock; release_lock; cleanup_process_identity; exit "$trap_rc"' EXIT
   trap 'wake_requested=1; case "${CLAUDE_RESUME_TEST_SIGNAL_RECEIVED_DIR:-}" in "") ;; *) mkdir -p "$CLAUDE_RESUME_TEST_SIGNAL_RECEIVED_DIR"; : > "$CLAUDE_RESUME_TEST_SIGNAL_RECEIVED_DIR/$session" ;; esac' USR1
   if handle_stop_failure; then
     exit 0
@@ -647,6 +651,8 @@ case "$hook_event" in
     exec sh "$0" --worker "$process_token"
     ;;
   Stop)
+    [ -f "$GLOBAL" ] || exit 0
+    [ "$(read_field "$GLOBAL" active_session)" = "$session" ] || exit 0
     CLAUDE_RESUME_STOP_SESSION=$session
     export CLAUDE_RESUME_STOP_SESSION
     create_process_identity
