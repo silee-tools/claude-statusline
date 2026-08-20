@@ -49,6 +49,18 @@ field() {
   sed -n "s/^$2=//p" "$STATE_V2/$1" 2>/dev/null | sed -n '1p'
 }
 
+file_mtime() {
+  file_mtime_path=$1
+  file_mtime_value=
+  if file_mtime_value=$(stat -f %m "$file_mtime_path" 2>/dev/null); then
+    case "$file_mtime_value" in ''|*[!0-9]*) ;; *) printf '%s\n' "$file_mtime_value"; return 0 ;; esac
+  fi
+  if file_mtime_value=$(stat -c %Y "$file_mtime_path" 2>/dev/null); then
+    case "$file_mtime_value" in ''|*[!0-9]*) ;; *) printf '%s\n' "$file_mtime_value"; return 0 ;; esac
+  fi
+  return 1
+}
+
 set_now() {
   CLAUDE_RESUME_TEST_NOW=$1
   export CLAUDE_RESUME_TEST_NOW
@@ -93,7 +105,7 @@ run() {
 reset_state() {
   stop_started_processes
   rm -rf "$CLAUDE_RESUME_STATE_DIR"
-  unset CLAUDE_RESUME_WAIT_SECONDS CLAUDE_RESUME_MAX_ATTEMPTS CLAUDE_RESUME_TEST_REGISTER_BARRIER CLAUDE_RESUME_TEST_SIGNAL_BARRIER CLAUDE_RESUME_TEST_RECLAIM_BARRIER CLAUDE_RESUME_TEST_SIGNAL_RECEIVED_DIR CLAUDE_RESUME_TEST_EMPTY_RECLAIM_BARRIER CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER
+  unset CLAUDE_RESUME_WAIT_SECONDS CLAUDE_RESUME_MAX_ATTEMPTS CLAUDE_RESUME_TEST_REGISTER_BARRIER CLAUDE_RESUME_TEST_SIGNAL_BARRIER CLAUDE_RESUME_TEST_RECLAIM_BARRIER CLAUDE_RESUME_TEST_SIGNAL_RECEIVED_DIR CLAUDE_RESUME_TEST_EMPTY_RECLAIM_BARRIER CLAUDE_RESUME_TEST_LOCK_PUBLISH_BARRIER CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER
   CLAUDE_RESUME_WAIT_SECONDS=0
   export CLAUDE_RESUME_WAIT_SECONDS
   CLAUDE_RESUME_TEST_SKIP_SLEEP=1
@@ -192,7 +204,7 @@ assert_equals "T7 회수 뒤 대기자가 재개" "2" "$lock_rc"
 # T7: 30초가 지난 소유자 없는 잠금은 회수하고 탐침을 진행한다.
 reset_state
 mkdir -p "$STATE_V2/lock"
-lock_created=$(stat -f %m "$STATE_V2/lock" 2>/dev/null || stat -c %Y "$STATE_V2/lock")
+lock_created=$(file_mtime "$STATE_V2/lock")
 set_now "$((lock_created + 30))"
 failure_input "$SESSION_A" rate_limit | sh "$RESUME" >"$TMPROOT/stale-lock.out" 2>"$TMPROOT/stale-lock.err" & stale_lock_pid=$!
 sleep 1
@@ -510,7 +522,7 @@ wait_for_file "$TMPROOT/t25-c.rc" || true
 # T26: 두 회수자가 오래된 빈 잠금을 보아도 먼저 획득한 새 잠금을 삭제하지 않는다.
 reset_state
 mkdir -p "$STATE_V2/lock"
-t26_lock_created=$(stat -f %m "$STATE_V2/lock" 2>/dev/null || stat -c %Y "$STATE_V2/lock")
+t26_lock_created=$(file_mtime "$STATE_V2/lock")
 set_now "$((t26_lock_created + 30))"
 CLAUDE_RESUME_TEST_EMPTY_RECLAIM_BARRIER="$TMPROOT/t26-empty"
 CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER="$TMPROOT/t26-acquired"
@@ -535,6 +547,40 @@ wait_for_file "$CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER/ready.$t26_bpid" 20 || 
 touch "$CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER/release.$t26_bpid"
 wait_for_file "$TMPROOT/t26-a.rc" || bad "T26 A 종료" "종료코드 파일 없음"
 wait_for_file "$TMPROOT/t26-b.rc" || bad "T26 B 종료" "종료코드 파일 없음"
+
+# T27: 파일 수정 시각 도우미는 지원 플랫폼에서 실제 epoch 초만 반환한다.
+reset_state
+t27_file="$TMPROOT/t27-mtime"
+: > "$t27_file"
+TZ=UTC0 touch -t 202001020304.05 "$t27_file"
+assert_equals "T27 파일 수정 시각은 실제 epoch 초" "1577934245" "$(file_mtime "$t27_file" 2>/dev/null || true)"
+
+# T28: 새 잠금의 owner 게시 전에는 다른 실제 프로세스가 빈 디렉터리를 회수하지 않는다.
+reset_state
+CLAUDE_RESUME_TEST_LOCK_PUBLISH_BARRIER="$TMPROOT/t28-publish"
+CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER="$TMPROOT/t28-acquired"
+export CLAUDE_RESUME_TEST_LOCK_PUBLISH_BARRIER CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER
+start_waiter "$(failure_input "$SESSION_A" rate_limit)" "$TMPROOT/t28-a.out" "$TMPROOT/t28-a.err" "$TMPROOT/t28-a.rc"
+t28_apid=$STARTED_CHILD_PID
+wait_for_file "$CLAUDE_RESUME_TEST_LOCK_PUBLISH_BARRIER/ready.$t28_apid" 20 || bad "T28 A가 owner 게시 직전 대기" "A 게시 장벽 없음"
+assert_equals "T28 게시 중인 잠금에는 아직 owner가 없음" "" "$(field lock/owner pid)"
+start_waiter "$(failure_input "$SESSION_B" authentication_failed)" "$TMPROOT/t28-b.out" "$TMPROOT/t28-b.err" "$TMPROOT/t28-b.rc"
+t28_bpid=$STARTED_CHILD_PID
+sleep 1
+if [ -d "$STATE_V2/lock" ] && [ -z "$(field lock/owner pid)" ] && kill -0 "$t28_apid" 2>/dev/null && kill -0 "$t28_bpid" 2>/dev/null; then ok "T28 B가 A의 게시 중 잠금을 보존"; else bad "T28 B가 A의 게시 중 잠금을 보존" "잠금 삭제, owner 조기 게시 또는 프로세스 종료"; fi
+if [ ! -e "$CLAUDE_RESUME_TEST_LOCK_PUBLISH_BARRIER/ready.$t28_bpid" ]; then ok "T28 B는 A의 게시 완료까지 대기"; else bad "T28 B는 A의 게시 완료까지 대기" "B가 게시 구간에 진입함"; fi
+mkdir -p "$CLAUDE_RESUME_TEST_LOCK_PUBLISH_BARRIER"
+touch "$CLAUDE_RESUME_TEST_LOCK_PUBLISH_BARRIER/release.$t28_apid"
+wait_for_file "$CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER/ready.$t28_apid" 20 || bad "T28 A가 owner 게시 완료" "A 획득 장벽 없음"
+assert_equals "T28 게시 완료 뒤 A가 잠금 소유" "$t28_apid" "$(field lock/owner pid)"
+touch "$CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER/release.$t28_apid"
+wait_for_file "$CLAUDE_RESUME_TEST_LOCK_PUBLISH_BARRIER/ready.$t28_bpid" 20 || bad "T28 A 해제 뒤 B가 게시 구간 진입" "B 게시 장벽 없음"
+assert_equals "T28 B 게시 전 잠금에는 owner가 없음" "" "$(field lock/owner pid)"
+touch "$CLAUDE_RESUME_TEST_LOCK_PUBLISH_BARRIER/release.$t28_bpid"
+wait_for_file "$CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER/ready.$t28_bpid" 20 || bad "T28 B가 owner 게시 완료" "B 획득 장벽 없음"
+touch "$CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER/release.$t28_bpid"
+wait_for_file "$TMPROOT/t28-a.rc" || bad "T28 A 종료" "종료코드 파일 없음"
+wait_for_file "$TMPROOT/t28-b.rc" || bad "T28 B 종료" "종료코드 파일 없음"
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 completed=1

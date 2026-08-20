@@ -5,10 +5,12 @@ set -eu
 STATE_ROOT="${CLAUDE_RESUME_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/stuck-resume}"
 STATE_DIR="$STATE_ROOT/v2"
 LOCK_DIR="$STATE_DIR/lock"
+LOCK_PUBLISH="$STATE_DIR/lock-publish"
 CAUSE_DIR="$STATE_DIR/causes"
 WAITER_DIR="$STATE_DIR/waiters"
 GLOBAL="$STATE_DIR/global"
 lock_owned=0
+publish_owned=0
 wake_requested=0
 
 now_epoch() {
@@ -45,15 +47,67 @@ write_atomic() {
 }
 
 lock_mtime() {
-  stat -f %m "$LOCK_DIR" 2>/dev/null || stat -c %Y "$LOCK_DIR" 2>/dev/null || true
+  lock_mtime_value=
+  if lock_mtime_value=$(stat -f %m "$LOCK_DIR" 2>/dev/null); then
+    case "$lock_mtime_value" in ''|*[!0-9]*) ;; *) printf '%s\n' "$lock_mtime_value"; return 0 ;; esac
+  fi
+  if lock_mtime_value=$(stat -c %Y "$LOCK_DIR" 2>/dev/null); then
+    case "$lock_mtime_value" in ''|*[!0-9]*) ;; *) printf '%s\n' "$lock_mtime_value"; return 0 ;; esac
+  fi
+  return 0
+}
+
+acquire_publish_lock() {
+  publish_candidate="$STATE_DIR/.lock-publish.$$"
+  write_atomic "$publish_candidate" "pid=$$
+acquired_at=$(now_epoch)"
+  while ! ln "$publish_candidate" "$LOCK_PUBLISH" 2>/dev/null; do
+    publish_pid=$(read_field "$LOCK_PUBLISH" pid)
+    publish_at=$(number_or_default "$(read_field "$LOCK_PUBLISH" acquired_at)" 0)
+    publish_now=$(now_epoch)
+    if [ -z "$publish_pid" ] || ! kill -0 "$publish_pid" 2>/dev/null || [ "$publish_now" -ge "$((publish_at + 30))" ]; then
+      current_publish_pid=$(read_field "$LOCK_PUBLISH" pid)
+      current_publish_at=$(number_or_default "$(read_field "$LOCK_PUBLISH" acquired_at)" 0)
+      if [ "$current_publish_pid" = "$publish_pid" ] && [ "$current_publish_at" = "$publish_at" ]; then
+        rm -f "$LOCK_PUBLISH"
+      fi
+      continue
+    fi
+    sleep 1
+  done
+  rm -f "$publish_candidate"
+  publish_owned=1
+}
+
+release_publish_lock() {
+  if [ "$publish_owned" = 1 ] && [ "$(read_field "$LOCK_PUBLISH" pid)" = "$$" ]; then
+    rm -f "$LOCK_PUBLISH"
+  fi
+  rm -f "$STATE_DIR/.lock-publish.$$"
+  publish_owned=0
+}
+
+publish_lock_owner() {
+  case "${CLAUDE_RESUME_TEST_LOCK_PUBLISH_BARRIER:-}" in
+    '') ;;
+    *)
+      mkdir -p "$CLAUDE_RESUME_TEST_LOCK_PUBLISH_BARRIER"
+      : > "$CLAUDE_RESUME_TEST_LOCK_PUBLISH_BARRIER/ready.$$"
+      while [ ! -f "$CLAUDE_RESUME_TEST_LOCK_PUBLISH_BARRIER/release.$$" ]; do sleep 1; done
+      ;;
+  esac
+  write_atomic "$LOCK_DIR/owner" "pid=$$
+acquired_at=$(now_epoch)"
+  lock_owned=1
+  release_publish_lock
 }
 
 acquire_lock() {
-  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+  while :; do
     lock_pid=$(read_field "$LOCK_DIR/owner" pid)
     lock_at=$(number_or_default "$(read_field "$LOCK_DIR/owner" acquired_at)" 0)
     lock_now=$(now_epoch)
-    if [ -z "$lock_pid" ]; then
+    if [ -d "$LOCK_DIR" ] && [ -z "$lock_pid" ]; then
       lock_created=$(number_or_default "$(lock_mtime)" 0)
       if [ "$lock_created" -gt 0 ] && [ "$lock_now" -lt "$((lock_created + 30))" ]; then
         sleep 1
@@ -67,9 +121,7 @@ acquire_lock() {
           while [ ! -f "$CLAUDE_RESUME_TEST_EMPTY_RECLAIM_BARRIER/release.$$" ]; do sleep 1; done
           ;;
       esac
-      rmdir "$LOCK_DIR" 2>/dev/null || true
-      continue
-    elif ! kill -0 "$lock_pid" 2>/dev/null || [ "$lock_now" -ge "$((lock_at + 30))" ]; then
+    elif [ -n "$lock_pid" ] && { ! kill -0 "$lock_pid" 2>/dev/null || [ "$lock_now" -ge "$((lock_at + 30))" ]; }; then
       case "${CLAUDE_RESUME_TEST_RECLAIM_BARRIER:-}" in
         '') ;;
         *)
@@ -78,18 +130,36 @@ acquire_lock() {
           while [ ! -f "$CLAUDE_RESUME_TEST_RECLAIM_BARRIER/release" ]; do sleep 1; done
           ;;
       esac
-      current_lock_pid=$(read_field "$LOCK_DIR/owner" pid)
-      current_lock_at=$(number_or_default "$(read_field "$LOCK_DIR/owner" acquired_at)" 0)
-      if [ "$current_lock_pid" = "$lock_pid" ] && [ "$current_lock_at" = "$lock_at" ]; then
-        rm -rf "$LOCK_DIR"
-      fi
+    elif [ -d "$LOCK_DIR" ]; then
+      sleep 1
       continue
     fi
-    sleep 1
+
+    acquire_publish_lock
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+      publish_lock_owner
+      break
+    fi
+
+    current_lock_pid=$(read_field "$LOCK_DIR/owner" pid)
+    current_lock_at=$(number_or_default "$(read_field "$LOCK_DIR/owner" acquired_at)" 0)
+    current_lock_now=$(now_epoch)
+    lock_removed=0
+    if [ -z "$current_lock_pid" ]; then
+      current_lock_created=$(number_or_default "$(lock_mtime)" 0)
+      if [ "$current_lock_created" -eq 0 ] || [ "$current_lock_now" -ge "$((current_lock_created + 30))" ]; then
+        if rmdir "$LOCK_DIR" 2>/dev/null; then lock_removed=1; fi
+      fi
+    elif [ "$current_lock_pid" = "$lock_pid" ] && [ "$current_lock_at" = "$lock_at" ] && { ! kill -0 "$current_lock_pid" 2>/dev/null || [ "$current_lock_now" -ge "$((current_lock_at + 30))" ]; }; then
+      rm -rf "$LOCK_DIR"
+      lock_removed=1
+    fi
+    if [ "$lock_removed" = 1 ] && mkdir "$LOCK_DIR" 2>/dev/null; then
+      publish_lock_owner
+      break
+    fi
+    release_publish_lock
   done
-  write_atomic "$LOCK_DIR/owner" "pid=$$
-acquired_at=$(now_epoch)"
-  lock_owned=1
   case "${CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER:-}" in
     '') ;;
     *)
@@ -484,7 +554,7 @@ wait_for_turn() {
 }
 
 mkdir -p "$CAUSE_DIR" "$WAITER_DIR"
-trap 'trap_rc=$?; release_lock; exit "$trap_rc"' EXIT
+trap 'trap_rc=$?; release_publish_lock; release_lock; exit "$trap_rc"' EXIT
 
 if [ "${1:-}" = --worker ]; then
   worker_token=${2:-unknown}
