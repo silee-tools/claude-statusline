@@ -53,7 +53,8 @@ func TestLoadKeepsWeeklyAndMonthlyVerbatim(t *testing.T) {
 }
 
 func TestDailySegmentsOmitModelsBelowOneDollar(t *testing.T) {
-	// render-full.sh 의 ge_one 과 같은 규칙 — 1달러 미만 모델은 표시하지 않는다.
+	// 1달러 미만 모델은 표시하지 않는다. $0 으로 세 칸을 채우면 실제로 쓴 모델이 어느
+	// 것인지 한눈에 보이지 않는다.
 	cases := []struct {
 		body string
 		want []string

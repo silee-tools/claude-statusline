@@ -4,11 +4,11 @@ package width
 
 import "strings"
 
-// wideRanges are the ranges scripts/fit-line1.awk treated as two columns. Widening
-// or narrowing this table changes where existing lines get cut, so it stays as it
-// was: Hangul jamo, CJK, Hangul syllables, CJK compatibility, vertical forms and
-// the two fullwidth blocks. Everything at U+10000 and above counts as two as well,
-// which is where the emoji planes live.
+// wideRanges are the ranges that occupy two columns: Hangul jamo, CJK, Hangul
+// syllables, CJK compatibility, vertical forms and the two fullwidth blocks.
+// Everything at U+10000 and above counts as two as well, which is where the emoji
+// planes live. Widening or narrowing this table moves where existing rows get cut,
+// so a range is added only with a display-width reason, never for tidiness.
 var wideRanges = [...][2]rune{
 	{0x1100, 0x115F},
 	{0x2E80, 0xA4CF},

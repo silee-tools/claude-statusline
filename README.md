@@ -36,11 +36,11 @@ Rows with no data are omitted in either layout.
 ## Width selection
 
 `CLAUDE_STATUSLINE_WIDTH` overrides automatic detection when it contains only
-digits. Otherwise the statusline follows the parent process chain to a tty and
-reads that device's current width. It caches only the tty path; the width is
-read again on every render so a terminal resize takes effect on the next
-update. `COLUMNS` is intentionally ignored because an exported value can stay
-stale after a resize.
+digits. Otherwise the statusline follows the parent process chain to a tty, up to
+four levels, and asks that device for its current window size. It caches only the
+tty path; the size is read again on every render so a terminal resize takes
+effect on the next update. `COLUMNS` is intentionally ignored because an exported
+value can stay stale after a resize.
 
 The full layout is selected when width detection fails. This fallback keeps
 all information visible when the available width is uncertain.
@@ -95,9 +95,11 @@ header, plus a warm-gauge color: `low ○` (green) · `medium ◐` (lime) ·
 
 ## Install
 
-Requires [Claude Code](https://code.claude.com), a POSIX `sh`, and `awk`. `git`
-powers the branch display. `ps` and `stty` provide automatic terminal-width
-detection. `curl` is optional: it refreshes the model pricing
+Requires [Claude Code](https://code.claude.com), a POSIX `sh`, `awk`, and
+[Go](https://go.dev) 1.26 or newer. Go builds the render binary once on this
+machine — see [First run](#first-run) below. `git` powers the branch display.
+`ps` provides automatic terminal-width detection. `curl` is optional: it
+refreshes the model pricing
 table once a day from the public
 [LiteLLM price table](https://github.com/BerriAI/litellm); without it (or if
 the fetch fails), a built-in price table is used. The full layout displays a
@@ -116,14 +118,32 @@ On restart, the plugin's `SessionStart` hook wires `statusLine` in
 `~/.claude/settings.json` automatically and refreshes the cost cache in the
 background — no manual `settings.json` edit is needed.
 
+### First run
+
+The render binary is not shipped in the repository; it is built on this machine
+so that no prebuilt object has to be trusted or kept in the git history. The
+same `SessionStart` hook builds it in the background, into
+`${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/bin/`, once per plugin
+version and platform. A cold build takes a few seconds.
+
+Until that build finishes, the statusline shows one line with the current
+directory and `statusline: binary not built yet`, and the next render after it
+finishes shows the normal layout. The same line appears when Go is missing: the
+hook writes a note to stderr and leaves session start untouched, so installing
+Go and starting a new session is all that is needed.
+
+The build uses the standard library only and runs with `GOPROXY=off`, so it
+needs no network.
+
 ### Dependencies
 
 | Tool | Required? | Used for |
 |---|---|---|
-| `sh` (POSIX) | required | running the scripts |
-| `awk` | required | parsing the statusline JSON and aggregating the background cost cache |
+| `go` 1.26+ | required | building the render binary once per plugin version |
+| `sh` (POSIX) | required | the statusline shim, the session hook, and the background jobs |
+| `awk` | required | parsing the hook JSON and aggregating the background cost cache |
 | `git` | required | the branch indicator |
-| `ps`, `stty` | optional | automatic terminal-width detection (falls back to the full layout) |
+| `ps` | optional | automatic terminal-width detection (falls back to the full layout) |
 | `curl` | optional | daily model-pricing refresh (falls back to a built-in table) |
 | `saml2aws` | optional | the `aws:` session indicator |
 
@@ -162,35 +182,40 @@ numeric.
 
 The logged-in Claude account email is read (read-only) from the
 `oauthAccount.emailAddress` field of `${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json`,
-Claude Code's own account state. Only that one field is scanned with `awk`, so
-the large config file is not fully parsed on every render. The segment is
+Claude Code's own account state. Only that one field is scanned, and the result
+is cached until the file changes, so the large config file is not parsed in full
+on every render. The segment is
 omitted when the file or the field is unavailable. Nothing is written to that
 file.
 
 ### Customizing
 
-Shared data formatting lives in `claude-statusline/scripts/statusline.sh`, and
-the two layouts are assembled in `render-compact.sh` and `render-full.sh`:
+Colors, glyphs and value formatting live in
+`claude-statusline/internal/theme/`, and the two layouts are assembled in
+`claude-statusline/internal/render/`:
 
-- **Gauge thresholds** — `set_context_gauge` (40/70) and `set_rate_gauge`
-  (80/90).
-- **Effort colors/glyphs** — `format_effort`.
-- **Branch shortening length** — `max_words` in `shorten.sh`'s `shorten_branch`
-  (default 4).
+- **Gauge thresholds** — the numbers passed to `theme.GaugeColor`: 40/70 for
+  context and 80/90 for the rate windows.
+- **Effort colors and glyphs** — `theme.EffortGlyph`.
+- **Branch shortening length** — `maxWords` in `internal/shorten` (default 4).
+- **Layout switch point** — `compactAtOrBelow` in `cmd/statusline` (default 80).
+
+A change here reaches the statusline only after the binary is rebuilt, which
+happens on the next session start once the plugin version changes.
 
 ## Development
 
 ```shell
-sh claude-statusline/tests/statusline.test.sh
-sh claude-statusline/tests/fit.test.sh
-sh claude-statusline/tests/width.test.sh
+sh -c 'rc=0; for t in */tests/*.test.sh; do sh "$t" || rc=1; done; (cd claude-statusline && go test ./...) || rc=1; exit "$rc"'
 ```
 
-Shell scripts are POSIX `sh`. `statusline.test.sh` renders `statusline.sh`
-against fixture JSON and asserts both layouts, gauges, colors, and indicators.
-`fit.test.sh` asserts `fit-line1.awk`'s width calculation and cut behavior
-directly. `width.test.sh` verifies tty discovery, width refresh, caching, and
-fallback behavior.
+The render path is Go with no external modules; the remaining scripts are POSIX
+`sh`. `statusline.test.sh` builds the binary, points the shim at it, and asserts
+both layouts, gauges, colors, and indicators against fixture JSON.
+`shim.test.sh` asserts what the shim shows with and without a binary and that the
+build is idempotent. The Go tests cover display width and cutting,
+terminal-width decisions, path and branch shortening, the account decision
+table, and the gauge thresholds.
 
 ## rate-limit-resume
 

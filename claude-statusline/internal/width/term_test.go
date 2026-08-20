@@ -9,8 +9,8 @@ import (
 )
 
 // fakePS puts a `ps` on PATH that answers from a queue file, one line per call, and
-// tallies its calls. term-width.sh 의 스위트가 쓴 것과 같은 대역이며, 조상 탐색이
-// 실제로 ps 를 몇 번 부르는지 세려면 실제 프로세스 트리 대신 이 대역이 필요하다.
+// tallies its calls. 조상 탐색이 몇 단계까지 올라가는지는 호출 횟수로만 관찰되고, 실제
+// 프로세스 트리는 실행 환경마다 달라 그 횟수를 고정하지 못한다.
 func fakePS(t *testing.T, answers ...string) (tally func() int) {
 	t.Helper()
 	dir := t.TempDir()
@@ -104,8 +104,8 @@ func TestCacheIsKeyedByParentPID(t *testing.T) {
 	}
 }
 
-// 아래 넷은 tests/width.test.sh 의 T3~T8 이 검증한 결정 로직을 그대로 옮긴 것이다.
-// 창 크기 조회 자체는 실제 장치가 있어야 성립하므로 ttyPath 만 떼어 검증한다.
+// 아래 넷은 경로 결정 로직을 검증한다. 창 크기 조회 자체는 실제 터미널 장치가 있어야
+// 성립해 호스트마다 갈리므로, 장치를 여는 부분과 경로를 정하는 부분을 나눠 후자만 단언한다.
 func TestTTYPathUsesTheParentTTY(t *testing.T) {
 	dev := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dev, "ttys003"), nil, 0o600); err != nil {

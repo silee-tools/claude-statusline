@@ -86,9 +86,9 @@ func (c Cost) DailySegments() []Segment {
 	return out
 }
 
-// atLeastOne reproduces render-full.sh's ge_one: take the text before the decimal
-// point, require it to be digits only, and compare it with one. A negative or
-// unparseable amount therefore drops out instead of rendering.
+// atLeastOne takes the text before the decimal point, requires it to be digits only,
+// and compares it with one. A negative or unparseable amount therefore drops out
+// instead of rendering as $0 or as a minus sign.
 func atLeastOne(raw string) bool {
 	intPart, _, _ := strings.Cut(raw, ".")
 	if intPart == "" {
