@@ -122,30 +122,54 @@ assert_equals "T6 C는 이전 탐침 뒤 기본 간격" "1787200090" "$(field gl
 assert_equals "T6 새 등록이 base_delay를 바꾸지 않음" "30" "$(field global base_delay)"
 assert_equals "T6 새 등록이 max_attempts를 바꾸지 않음" "7" "$(field global max_attempts)"
 
-# T7: 같은 due의 동시 등록은 C 바이트 순서가 빠른 세션 하나만 먼저 활성화한다.
+# T7: 소유자 파일을 쓰는 동안의 새 잠금은 경쟁자가 삭제하지 않는다.
+reset_state
+unset CLAUDE_RESUME_TEST_NOW
+mkdir -p "$STATE_V2/lock"
+failure_input "$SESSION_A" rate_limit | sh "$RESUME" >"$TMPROOT/lock.out" 2>"$TMPROOT/lock.err" & lock_pid=$!
+sleep 1
+if kill -0 "$lock_pid" 2>/dev/null && [ -d "$STATE_V2/lock" ]; then
+  ok "T7 소유자 없는 새 잠금을 기다림"
+else
+  bad "T7 소유자 없는 새 잠금을 기다림" "잠금을 회수하거나 worker가 끝남"
+fi
+rmdir "$STATE_V2/lock" 2>/dev/null || true
+lock_rc=0; wait "$lock_pid" || lock_rc=$?
+assert_equals "T7 회수 뒤 대기자가 재개" "2" "$lock_rc"
+
+# T8: 같은 due의 동시 등록은 C 바이트 순서가 빠른 세션 하나만 먼저 활성화한다.
 reset_state
 CLAUDE_RESUME_WAIT_SECONDS=2
 CLAUDE_RESUME_MAX_ATTEMPTS=1
-export CLAUDE_RESUME_WAIT_SECONDS CLAUDE_RESUME_MAX_ATTEMPTS
-unset CLAUDE_RESUME_TEST_NOW CLAUDE_RESUME_TEST_SKIP_SLEEP
+CLAUDE_RESUME_TEST_REGISTER_BARRIER="$TMPROOT/register-barrier"
+export CLAUDE_RESUME_WAIT_SECONDS CLAUDE_RESUME_MAX_ATTEMPTS CLAUDE_RESUME_TEST_REGISTER_BARRIER
+mkdir -p "$CLAUDE_RESUME_TEST_REGISTER_BARRIER"
 failure_input "$SESSION_B" rate_limit | sh "$RESUME" >"$TMPROOT/b.out" 2>"$TMPROOT/b.err" & bpid=$!
 failure_input "$SESSION_A" rate_limit | sh "$RESUME" >"$TMPROOT/a.out" 2>"$TMPROOT/a.err" & apid=$!
+for attempt in 1 2 3; do
+  if [ -f "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/$SESSION_A" ] && [ -f "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/$SESSION_B" ]; then break; fi
+  sleep 1
+done
+if [ -f "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/$SESSION_A" ] && [ -f "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/$SESSION_B" ]; then
+  ok "T8 두 대기자가 같은 고정 시각에 등록"
+else
+  bad "T8 두 대기자가 같은 고정 시각에 등록" "등록 장벽 파일 없음"
+fi
+touch "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/release"
 arc=0; wait "$apid" || arc=$?
 brc=0; wait "$bpid" || brc=$?
-CLAUDE_RESUME_TEST_SKIP_SLEEP=1
-export CLAUDE_RESUME_TEST_SKIP_SLEEP
-set_now 1787200000
-assert_equals "T7 바이트 순서가 빠른 A만 첫 탐침" "2,0" "$arc,$brc"
-assert_equals "T7 바이트 순서가 빠른 A가 활성화" "$SESSION_A" "$(field global active_session)"
+unset CLAUDE_RESUME_TEST_REGISTER_BARRIER
+assert_equals "T8 바이트 순서가 빠른 A만 첫 탐침" "2,0" "$arc,$brc"
+assert_equals "T8 바이트 순서가 빠른 A가 활성화" "$SESSION_A" "$(field global active_session)"
 
-# T8: 비정상 session_id와 error는 상태 루트 안의 unknown.other로 격리한다.
+# T9: 비정상 session_id와 error는 상태 루트 안의 unknown.other로 격리한다.
 reset_state
 run '{"session_id":"../../escaped","error":"../../escaped"}'
-assert_equals "T8 비정상 입력도 재개" "2" "$rc"
-assert_equals "T8 비정상 session_id 격리" "unknown" "$(field global active_session)"
-if [ -f "$STATE_V2/causes/1.other" ] && [ ! -e "$TMPROOT/escaped" ]; then ok "T8 상태 루트 밖 파일 없음"; else bad "T8 상태 루트 밖 파일 없음" "escaped path"; fi
+assert_equals "T9 비정상 입력도 재개" "2" "$rc"
+assert_equals "T9 비정상 session_id 격리" "unknown" "$(field global active_session)"
+if [ -f "$STATE_V2/causes/1.other" ] && [ ! -e "$TMPROOT/escaped" ]; then ok "T9 상태 루트 밖 파일 없음"; else bad "T9 상태 루트 밖 파일 없음" "escaped path"; fi
 
-# T9: 네 원인은 기존 재개 문장을 유지한다.
+# T10: 네 원인은 기존 재개 문장을 유지한다.
 for cause in rate_limit authentication_failed server_error overloaded; do
   reset_state
   run "$(failure_input "$SESSION_A" "$cause")"
@@ -154,55 +178,55 @@ for cause in rate_limit authentication_failed server_error overloaded; do
     authentication_failed) expected='Continue the work that was interrupted by the expired login.' ;;
     *) expected='Continue the work that was interrupted by the API error.' ;;
   esac
-  assert_equals "T9 $cause 재개 문장" "$expected" "$err"
+  assert_equals "T10 $cause 재개 문장" "$expected" "$err"
 done
 
-# T10: 구조화된 resetsAt은 rate_limit 종료 시각의 기준이다.
+# T11: 구조화된 resetsAt은 rate_limit 종료 시각의 기준이다.
 reset_state
 RESET_AT=1787230200
 printf '%s\n' '{"type":"assistant","isApiErrorMessage":true,"quotaLimits":{"status":"rejected","resetsAt":1787230200,"rateLimitType":"five_hour"}}' > "$TMPROOT/transcript.jsonl"
 RATE_INPUT=$(printf '{"session_id":"%s","hook_event_name":"StopFailure","error":"rate_limit","transcript_path":"%s"}' "$SESSION_A" "$TMPROOT/transcript.jsonl")
 run "$RATE_INPUT"
-assert_equals "T10 구조화된 resetsAt 종료 시각" "1787233800" "$(field global deadline)"
+assert_equals "T11 구조화된 resetsAt 종료 시각" "1787233800" "$(field global deadline)"
 
-# T11: 마지막 모델 메시지의 공식 resets 시각도 종료 시각의 기준이다.
+# T12: 마지막 모델 메시지의 공식 resets 시각도 종료 시각의 기준이다.
 reset_state
 set_now 1787220000
 run "$(printf '{"session_id":"%s","error":"rate_limit","last_assistant_message":"Your limit resets 3:45pm"}' "$SESSION_A")"
 deadline=$(field global deadline)
-if [ "$deadline" -gt 1787223600 ] && [ "$deadline" != 1787230800 ]; then ok "T11 메시지 resets 시각을 해석"; else bad "T11 메시지 resets 시각을 해석" "$deadline"; fi
+if [ "$deadline" -gt 1787223600 ] && [ "$deadline" != 1787230800 ]; then ok "T12 메시지 resets 시각을 해석"; else bad "T12 메시지 resets 시각을 해석" "$deadline"; fi
 
-# T12: 리셋 시각이 없으면 rate_limit은 최초 실패 뒤 10800초에 끝난다.
+# T13: 리셋 시각이 없으면 rate_limit은 최초 실패 뒤 10800초에 끝난다.
 reset_state
 set_now 1000
 run "$(failure_input "$SESSION_A" rate_limit)"
-assert_equals "T12 rate_limit 기본 종료 시각" "11800" "$(field global deadline)"
+assert_equals "T13 rate_limit 기본 종료 시각" "11800" "$(field global deadline)"
 
-# T13: 나머지 원인도 최초 실패 뒤 10800초에 끝난다.
+# T14: 나머지 원인도 최초 실패 뒤 10800초에 끝난다.
 for cause in authentication_failed server_error overloaded; do
   reset_state
   set_now 1000
   run "$(failure_input "$SESSION_A" "$cause")"
-  assert_equals "T13 $cause 종료 시각" "11800" "$(field global deadline)"
+  assert_equals "T14 $cause 종료 시각" "11800" "$(field global deadline)"
 done
 
-# T14: 원인별 종료 시각 최댓값을 전역에 쓰고 같은 원인은 연장하지 않는다.
+# T15: 원인별 종료 시각 최댓값을 전역에 쓰고 같은 원인은 연장하지 않는다.
 reset_state
 set_now 1000
 run "$RATE_INPUT"
 first_deadline=$(field global deadline)
 set_now 2000
 run "$(failure_input "$SESSION_A" rate_limit)"
-assert_equals "T14 같은 원인의 종료 시각 유지" "$first_deadline" "$(field causes/1.rate_limit deadline)"
+assert_equals "T15 같은 원인의 종료 시각 유지" "$first_deadline" "$(field causes/1.rate_limit deadline)"
 set_now 3000
 run "$(failure_input "$SESSION_B" authentication_failed)"
-assert_equals "T14 전역 종료 시각은 최댓값" "$first_deadline" "$(field global deadline)"
+assert_equals "T15 전역 종료 시각은 최댓값" "$first_deadline" "$(field global deadline)"
 
-# T15: 종료 시각과 같거나 지난 훅은 모델을 깨우지 않는다.
+# T16: 종료 시각과 같거나 지난 훅은 모델을 깨우지 않는다.
 set_now "$first_deadline"
 run "$(failure_input "$SESSION_C" overloaded)"
-assert_equals "T15 종료 시각 뒤 중단" "0" "$rc"
-assert_equals "T15 종료 시각 뒤 빈 표준 오류" "" "$err"
+assert_equals "T16 종료 시각 뒤 중단" "0" "$rc"
+assert_equals "T16 종료 시각 뒤 빈 표준 오류" "" "$err"
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 completed=1

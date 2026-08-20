@@ -43,12 +43,22 @@ write_atomic() {
   mv "$write_tmp" "$write_file"
 }
 
+lock_mtime() {
+  stat -f %m "$LOCK_DIR" 2>/dev/null || stat -c %Y "$LOCK_DIR" 2>/dev/null || true
+}
+
 acquire_lock() {
   while ! mkdir "$LOCK_DIR" 2>/dev/null; do
     lock_pid=$(read_field "$LOCK_DIR/owner" pid)
     lock_at=$(number_or_default "$(read_field "$LOCK_DIR/owner" acquired_at)" 0)
     lock_now=$(now_epoch)
-    if ! kill -0 "$lock_pid" 2>/dev/null || [ "$lock_now" -ge "$((lock_at + 30))" ]; then
+    if [ -z "$lock_pid" ]; then
+      lock_created=$(number_or_default "$(lock_mtime)" 0)
+      if [ "$lock_created" -gt 0 ] && [ "$lock_now" -lt "$((lock_created + 30))" ]; then
+        sleep 1
+        continue
+      fi
+    elif ! kill -0 "$lock_pid" 2>/dev/null || [ "$lock_now" -ge "$((lock_at + 30))" ]; then
       rm -rf "$LOCK_DIR"
       continue
     fi
@@ -298,7 +308,19 @@ due_at=$due_at
 initial_used=$initial_used"
   write_global
   release_lock
+  hold_registered_waiter
   return 1
+}
+
+hold_registered_waiter() {
+  case "${CLAUDE_RESUME_TEST_REGISTER_BARRIER:-}" in
+    '') return ;;
+  esac
+  mkdir -p "$CLAUDE_RESUME_TEST_REGISTER_BARRIER"
+  : > "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/$session"
+  while [ ! -f "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/release" ]; do
+    sleep 1
+  done
 }
 
 wait_for_turn() {
