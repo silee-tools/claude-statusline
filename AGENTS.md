@@ -86,9 +86,10 @@ when that build fails, because a skipped build would report zero checks as a
 pass. `shim.test.sh` asserts what the shim does with and without a binary and
 that `build-binary.sh` is idempotent and never blocks session start.
 `json.test.sh` and `settings.test.sh` cover the awk parser and rewriter the
-`SessionStart` hook still uses. `resume.test.sh` asserts the retry cap, exit
-codes, and the prompt `resume.sh` injects; it overrides the wait and the cap
-through environment variables so the suite stays fast.
+`SessionStart` hook still uses. `resume.test.sh` asserts the exit codes, the prompt
+`resume.sh` injects, the per-cause counters, and the per-cause attempt caps; it
+overrides the wait through an environment variable, and reaches a cap by seeding
+the counter file rather than running to it, so the suite stays fast.
 
 The Go tests carry the boundaries the shell suite only sees through whole-output
 comparison: display width and cutting, terminal-width decisions, path and branch

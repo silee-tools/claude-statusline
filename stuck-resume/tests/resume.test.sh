@@ -119,7 +119,7 @@ CLAUDE_RESUME_MAX_ATTEMPTS=72
 
 # T10: 모르는 원인은 원인을 특정하지 않는 문구를 쓰고, 죽지 않는다.
 reset_state
-run '{"session_id":"'"$SESSION"'","error":"server_error"}'
+run '{"session_id":"'"$SESSION"'","error":"billing_error"}'
 assert_equals "T10 모르는 원인도 재개" "2" "$rc"
 assert_equals "T10 원인을 특정하지 않는 문구" \
   "Continue the work that was interrupted by the API error." "$err"
@@ -137,6 +137,44 @@ run '{"session_id":"'"$SESSION"'","error":"../../escaped"}'
 assert_equals "T12 비정상 error 도 재개" "2" "$rc"
 ENTRIES=$(ls -A "$CLAUDE_RESUME_STATE_DIR" | tr '\n' ' ')
 assert_equals "T12 상태 디렉터리에는 격리된 이름만" "$SESSION.other " "$ENTRIES"
+
+# T13: 일시적인 API 실패 둘도 재개 대상이며 각자의 카운터를 쓴다. 문구는 원인을 특정하지 않는
+#      기본 문장인데, "API unavailable" 과 "API overloaded" 를 한 문장으로 덮기 때문이다.
+for cause in server_error overloaded; do
+  reset_state
+  run '{"session_id":"'"$SESSION"'","error":"'"$cause"'"}'
+  assert_equals "T13 $cause 는 종료코드 2 로 재개" "2" "$rc"
+  assert_equals "T13 $cause 는 원인을 특정하지 않는 문구" \
+    "Continue the work that was interrupted by the API error." "$err"
+  assert_equals "T13 $cause 는 자기 카운터에 기록" "1" "$(counter_value "$SESSION.$cause")"
+done
+
+# T14: 기본 상한이 원인별로 갈린다. 상한까지 실제로 돌리면 수백 번을 실행해야 하므로, 카운터
+#      파일에 직전 값을 심어 경계 두 번만 실행한다. 카운터는 그 파일의 정수 한 줄이 전부다.
+#      환경변수 상한을 걷어야 스크립트의 기본값이 드러나므로 이 구간에서만 unset 한다.
+unset CLAUDE_RESUME_MAX_ATTEMPTS
+for probe in "server_error:240" "overloaded:240" "rate_limit:90" "authentication_failed:90"; do
+  cause=${probe%%:*}; cap=${probe##*:}
+  reset_state
+  mkdir -p "$CLAUDE_RESUME_STATE_DIR"
+  printf '%s\n' "$((cap - 1))" > "$CLAUDE_RESUME_STATE_DIR/$SESSION.$cause"
+  run '{"session_id":"'"$SESSION"'","error":"'"$cause"'"}'
+  assert_equals "T14 $cause 는 $cap 회까지 재개" "2" "$rc"
+  run '{"session_id":"'"$SESSION"'","error":"'"$cause"'"}'
+  assert_equals "T14 $cause 는 $cap 회를 넘기면 멈춤" "0" "$rc"
+done
+CLAUDE_RESUME_MAX_ATTEMPTS=72
+export CLAUDE_RESUME_MAX_ATTEMPTS
+
+# T15: 훅이 네 원인 모두에 발화하도록 등록돼 있다. 스크립트가 원인을 알아도 matcher 가 그
+#      원인에 걸리지 않으면 스크립트는 호출조차 되지 않는다.
+MATCHER=$(sed -n 's/.*"matcher"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$SRC/hooks/hooks.json")
+for cause in rate_limit authentication_failed server_error overloaded; do
+  case "|$MATCHER|" in
+    *"|$cause|"*) ok "T15 matcher 에 $cause 가 있다" ;;
+    *) bad "T15 matcher 에 $cause 가 있다" "$MATCHER" ;;
+  esac
+done
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 completed=1
