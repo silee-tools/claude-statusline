@@ -30,8 +30,6 @@ completed=0
 trap 'rc=$?; rm -rf "$TMPROOT"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
 mkdir -p "$TMPROOT/scripts" "$TMPROOT/cache/claude-statusline"
 ln -sf "$SRC/scripts/statusline.sh" "$TMPROOT/scripts/statusline.sh"
-ln -sf "$SRC/scripts/shorten.sh" "$TMPROOT/scripts/shorten.sh"
-ln -sf "$SRC/scripts/shorten-lib.sh" "$TMPROOT/scripts/shorten-lib.sh"
 SL="$TMPROOT/scripts/statusline.sh"
 
 # 렌더 본체는 Go 바이너리다. statusline.sh 는 XDG_CACHE_HOME 아래 포인터가 가리키는 그
@@ -608,44 +606,6 @@ assert_contains     "T23 75% ctx 빨강(70%+)" "$RED" "$ctx75"
 # --- T24: ctx 소진율 숫자에 임계 색이 붙는다 ---
 ctx45r=$(run_raw "$(json_ctx 90000)" 80 | grep 'ctx')
 assert_contains "T24 45% ctx 숫자 노랑" "${YELLOW}45%" "$ctx45r"
-
-# --- T6: HOME 경계는 문자열 접두사가 아니라 경로 구성요소로 판정한다 ---
-OUT=$(HOME=/opt/a sh "$TMPROOT/scripts/shorten.sh" --plain path /opt/a)
-assert_equals "T6 HOME 자체 축약" "~" "$OUT"
-
-OUT=$(HOME=/opt/a sh "$TMPROOT/scripts/shorten.sh" --plain path /opt/a/project)
-assert_equals "T6 HOME 하위 경로 축약" "~/project" "$OUT"
-
-OUT=$(HOME=/opt/a sh "$TMPROOT/scripts/shorten.sh" --plain path /opt/abc/project)
-assert_equals "T6 유사 접두사 경로 제외" "/opt/↪1/project" "$OUT"
-
-OUT=$(HOME=/opt/a/ sh "$TMPROOT/scripts/shorten.sh" --plain path /opt/a/project)
-assert_equals "T6 후행 슬래시 HOME 정규화" "~/project" "$OUT"
-
-OUT=$(HOME=/ sh "$TMPROOT/scripts/shorten.sh" --plain path /)
-assert_equals "T6 루트 HOME 자체 절대경로 유지" "/" "$OUT"
-
-OUT=$(HOME=/ sh "$TMPROOT/scripts/shorten.sh" --plain path /child)
-assert_equals "T6 루트 HOME 하위 절대경로 유지" "/child" "$OUT"
-
-OUT=$(HOME=//// sh "$TMPROOT/scripts/shorten.sh" --plain path /child)
-assert_equals "T6 정규화된 루트 HOME 절대경로 유지" "/child" "$OUT"
-
-# --- T30: git 저장소 판정은 basename 이 아니라 전체 경로로 한다(동명 비저장소 오탐 방지) ---
-#    실제 저장소 foo(.git 있음) 아래에 .git 없는 동명 디렉터리 foo 를 두고, 안쪽 foo 가
-#    저장소로 오인돼 파랗게 표시되지 않는지 검증한다. worktree 컨테이너가 저장소명과 겹치는
-#    실제 상황의 회귀 가드다.
-COLLIDE="$TMPROOT/collide"
-mkdir -p "$COLLIDE/foo/sub/foo/bar"
-mkdir -p "$COLLIDE/foo/.git"   # 바깥 foo 만 저장소
-OUT=$(HOME="$TMPROOT" sh "$TMPROOT/scripts/shorten.sh" --plain path "$COLLIDE/foo/sub/foo/bar")
-assert_equals "T30 동명 비저장소 오탐 없음(전체 경로 매칭)" "~/↪1/foo/↪2/bar" "$OUT"
-
-# --- T32: 슬래시 없는 세그먼트에서 상위탐색이 무한 루프에 빠지지 않는다 ---
-#   dirname 을 ${var%/*} 로 바꾸면 슬래시 없는 문자열이 안 줄어 무한 루프가 될 수 있다.
-#   상대경로(선행 슬래시 없음)로 호출해 정상 종료와 출력 존재를 확인한다.
-OUT=$(HOME=/nonexistent-home sh "$TMPROOT/scripts/shorten.sh" --plain path "aaa/bbb/ccc/ddd/eee")
-assert_contains "T32 슬래시 없는 선행 세그먼트 정상 종료" "eee" "$OUT"
 
 # --- T31: 페이스 초과를 ▲ 로 표시한다 ---
 #    FIVE_RESET=now+9000, 5h(18000s) 윈도우 → 경과 9000s → 예산 10칸. fill 이 예산을 넘으면

@@ -93,9 +93,9 @@ through environment variables so the suite stays fast.
 The Go tests carry the boundaries the shell suite only sees through whole-output
 comparison: display width and cutting, terminal-width decisions, path and branch
 shortening, the gh cache decision table, gauge thresholds and reset formatting.
-Where a shell implementation of the same rule still lives in the repo,
-`internal/shorten` compares against it byte for byte on every run, so the
-expectations cannot drift from `scripts/shorten.sh`.
+`internal/shorten` pins both the plain shortening and the colored output, because
+a table that reads only the surviving words still passes when the rule that paints
+the repository and current segments blue is broken.
 
 Follow Red -> Green: add a failing test before a behavior change, then make it
 pass. Report the pass/fail counts when you change behavior.
@@ -116,22 +116,11 @@ reach installed users needs a version bump. On every functional change:
 Keep the two versions identical. Commits follow Conventional Commits
 (`feat(...)`, `fix(...)`, `refactor(...)`, `chore(...)`, ...).
 
-## Contracts still in transition
+## The awk parser is not a duplicate
 
-The render path is Go, but two shell files still implement rules the Go packages
-also implement. This table records what does not hold yet, what violates it, and
-what has to be true before the duplicate goes away. Keep it here rather than in a
-pull request body: a merged body never reopens, so a note left there stops being
-a place anyone looks.
-
-| Does not hold yet | What violates it today | When it holds |
-|---|---|---|
-| One implementation of path and branch shortening | `scripts/shorten.sh` and `scripts/shorten-lib.sh` alongside `internal/shorten` | Once shortening is confirmed to have no consumer on any machine, delete both scripts and the differential test in `internal/shorten/shorten_test.go` that uses them as its oracle |
-| The two implementations agree for every input | The shell's ticket detection depends on the collating locale: `case`'s `[A-Z]` range covers `b`–`z` under `en_US.UTF-8`, so it reads `lower-1-x-y-z` as a ticket and leaves it unshortened, while `LC_ALL=C` shortens it | Resolved by the row above. `internal/shorten` follows the rule `shorten-lib.sh` documents in its own comment — a key is a ticket only when it is all uppercase — and the differential test calls the shell with `LC_ALL=C` so both sides mean the same thing |
-
-`scripts/json.awk` is not part of this table. `scripts/hook-handler.sh` parses the
-hook payload and `settings.json` with it and `tests/json.test.sh` covers it, so it
-is the only implementation of what it does, not a duplicate of the Go parser.
+`scripts/hook-handler.sh` parses the hook payload and `settings.json` with
+`scripts/json.awk`, and `tests/json.test.sh` covers it. It is the only
+implementation of what it does, not a second copy of the Go parser, so it stays.
 
 ## Configuration is data, not code
 
