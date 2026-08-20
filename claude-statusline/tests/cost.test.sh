@@ -2,7 +2,11 @@
 set -eu
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 AGG="$SRC/scripts/aggregate-cost.awk"
-WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+WORK=$(mktemp -d)
+# bash 3.2 는 EXIT 트랩 진입에서 $? 를 0 으로 만든다. completed 플래그가 없으면 set -eu 중단이
+# 종료코드 0 으로 보고된다. 정본은 AGENTS.md 의 Testing 절이다.
+completed=0
+trap 'rc=$?; rm -rf "$WORK"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
 
 cat > "$WORK/prices.tsv" <<'TSV'
 claude-opus-4-8	0.000005	0.000025	0.00000625	0.0000005
@@ -38,5 +42,6 @@ out2=$(awk -v DAY=2026-07-21T00:00:00Z -v WEEK=2026-07-14T00:00:00Z -v MONTH=202
   -v PRICES="$WORK/prices.tsv" -f "$AGG" < "$WORK/boundary.jsonl")
 echo "$out2"
 # 기대: dailySonnet=1.00 (row A만 포함, row B는 daily 에서 제외)
+completed=1
 echo "$out2" | grep -q '^dailySonnet=1.00' \
   && echo "cost.test(boundary) PASS" || { echo "cost.test(boundary) FAIL"; exit 1; }

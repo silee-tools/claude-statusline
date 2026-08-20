@@ -22,7 +22,10 @@ AMBER=$(printf '\033[38;5;214m')
 MAGENTA=$(printf '\033[35m')
 
 TMPROOT=$(mktemp -d)
-trap 'rm -rf "$TMPROOT"' EXIT
+# bash 3.2 는 EXIT 트랩 진입에서 $? 를 0 으로 만든다. completed 플래그가 없으면 set -eu 중단이
+# 종료코드 0 으로 보고된다. 정본은 AGENTS.md 의 Testing 절이다.
+completed=0
+trap 'rc=$?; rm -rf "$TMPROOT"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
 mkdir -p "$TMPROOT/scripts" "$TMPROOT/cache/claude-statusline"
 ln -sf "$SRC/scripts/statusline.sh" "$TMPROOT/scripts/statusline.sh"
 ln -sf "$SRC/scripts/shorten.sh" "$TMPROOT/scripts/shorten.sh"
@@ -834,4 +837,5 @@ assert_contains "T54 새 창이 파일에도 반영" "fivePct=3" "$(cat "$RATE_C
 rm -f "$RATE_CACHE"
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
+completed=1
 [ "$fail" -eq 0 ]
