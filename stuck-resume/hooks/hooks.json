@@ -3,7 +3,7 @@
   "hooks": {
     "StopFailure": [
       {
-        "matcher": "rate_limit|authentication_failed",
+        "matcher": "rate_limit|authentication_failed|server_error|overloaded",
         "hooks": [
           {
             "type": "command",
