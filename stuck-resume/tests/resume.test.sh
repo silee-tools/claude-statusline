@@ -12,7 +12,10 @@ bad() { fail=$((fail + 1)); printf 'FAIL %s\n     got: %s\n' "$1" "$2"; }
 assert_equals() { if [ "$3" = "$2" ]; then ok "$1"; else bad "$1 (expected [$2])" "$3"; fi; }
 
 TMPROOT=$(mktemp -d "${TMPDIR:-/tmp}/resume-test.XXXXXX")
-trap 'rm -rf "$TMPROOT"' EXIT
+# bash 3.2 는 EXIT 트랩 진입에서 $? 를 0 으로 만든다. completed 플래그가 없으면 set -eu 중단이
+# 종료코드 0 으로 보고된다. 정본은 AGENTS.md 의 Testing 절이다.
+completed=0
+trap 'rc=$?; rm -rf "$TMPROOT"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
 
 CLAUDE_RESUME_STATE_DIR="$TMPROOT/state"
 CLAUDE_RESUME_WAIT_SECONDS=0
@@ -136,4 +139,5 @@ ENTRIES=$(ls -A "$CLAUDE_RESUME_STATE_DIR" | tr '\n' ' ')
 assert_equals "T12 상태 디렉터리에는 격리된 이름만" "$SESSION.other " "$ENTRIES"
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
+completed=1
 [ "$fail" -eq 0 ]
