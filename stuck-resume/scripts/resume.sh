@@ -321,6 +321,10 @@ cause_deadline() {
 has_unrecovered_waiter() {
   for waiter in "$WAITER_DIR"/*; do
     [ -f "$waiter" ] || continue
+    if ! publish_owner_alive "$(read_field "$waiter" pid)" worker "$(read_field "$waiter" token)"; then
+      rm -f "$waiter"
+      continue
+    fi
     waiter_generation=$(number_or_default "$(read_field "$waiter" generation)" 0)
     [ "$waiter_generation" -le "$recovered_generation" ] || return 0
   done
@@ -361,6 +365,10 @@ eligible_first_waiter() {
   selected_due=
   for waiter in "$WAITER_DIR"/*; do
     [ -f "$waiter" ] || continue
+    if ! publish_owner_alive "$(read_field "$waiter" pid)" worker "$(read_field "$waiter" token)"; then
+      rm -f "$waiter"
+      continue
+    fi
     waiter_generation=$(number_or_default "$(read_field "$waiter" generation)" 0)
     [ "$waiter_generation" -gt "$recovered_generation" ] || continue
     waiter_due=$(number_or_default "$(read_field "$waiter" due_at)" 0)
@@ -593,6 +601,16 @@ wait_for_turn() {
   done
 }
 
+stop_matches_active_session() {
+  stop_active_session=
+  while IFS= read -r stop_global_line; do
+    case "$stop_global_line" in
+      active_session=*) stop_active_session=${stop_global_line#active_session=}; break ;;
+    esac
+  done < "$GLOBAL"
+  [ "$stop_active_session" = "$session" ]
+}
+
 if [ "${1:-}" = --stop ]; then
   process_role=stop
   process_token=${2:-unknown}
@@ -652,7 +670,7 @@ case "$hook_event" in
     ;;
   Stop)
     [ -f "$GLOBAL" ] || exit 0
-    [ "$(read_field "$GLOBAL" active_session)" = "$session" ] || exit 0
+    stop_matches_active_session || exit 0
     CLAUDE_RESUME_STOP_SESSION=$session
     export CLAUDE_RESUME_STOP_SESSION
     create_process_identity

@@ -77,6 +77,12 @@ set_now() {
   export CLAUDE_RESUME_TEST_NOW
 }
 
+set_global_field() {
+  global_field=$1 global_value=$2
+  sed "s/^$global_field=.*/$global_field=$global_value/" "$STATE_V2/global" > "$STATE_V2/global.$$.tmp"
+  mv "$STATE_V2/global.$$.tmp" "$STATE_V2/global"
+}
+
 wait_for_file() {
   path=$1
   limit=${2:-50}
@@ -683,6 +689,32 @@ t32_global=$(cksum < "$STATE_V2/global")
 run "$(stop_input "$SESSION_B")"
 assert_equals "T32 inactive sentinel Stop은 global 유지" "$t32_global" "$(cksum < "$STATE_V2/global")"
 if [ ! -e "$STATE_V2/causes" ] && [ ! -e "$STATE_V2/waiters" ] && [ ! -e "$STATE_V2/lock" ] && [ ! -e "$STATE_V2/lock-publish" ]; then ok "T32 inactive sentinel Stop은 잠금과 대기 경로를 만들지 않음"; else bad "T32 inactive sentinel Stop은 잠금과 대기 경로를 만들지 않음" "불필요한 상태 경로가 생성됨"; fi
+
+# T33: 죽은 미복구 waiter를 건너뛰고 살아 있는 C가 인계한다.
+reset_state
+CLAUDE_RESUME_WAIT_SECONDS=30
+export CLAUDE_RESUME_WAIT_SECONDS
+run "$(failure_input "$SESSION_A" rate_limit)"
+CLAUDE_RESUME_TEST_REGISTER_BARRIER="$TMPROOT/t33-b-register"
+export CLAUDE_RESUME_TEST_REGISTER_BARRIER
+unset CLAUDE_RESUME_TEST_SKIP_SLEEP
+start_waiter "$(failure_input "$SESSION_B" authentication_failed)" "$TMPROOT/t33-b.out" "$TMPROOT/t33-b.err" "$TMPROOT/t33-b.rc"
+wait_for_file "$STATE_V2/waiters/$SESSION_B" || bad "T33 B waiter 등록" "waiter 파일 없음"
+t33_bpid=$(field "waiters/$SESSION_B" pid)
+kill -9 "$t33_bpid" 2>/dev/null || true
+set_global_field active_session -
+set_global_field active_generation 0
+set_global_field handoff_at 0
+CLAUDE_RESUME_TEST_SKIP_SLEEP=1
+CLAUDE_RESUME_TEST_REGISTER_BARRIER="$TMPROOT/t33-c-register"
+export CLAUDE_RESUME_TEST_SKIP_SLEEP CLAUDE_RESUME_TEST_REGISTER_BARRIER
+start_waiter "$(failure_input "$SESSION_C" server_error)" "$TMPROOT/t33-c.out" "$TMPROOT/t33-c.err" "$TMPROOT/t33-c.rc"
+wait_for_file "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/$SESSION_C" || bad "T33 C waiter 등록" "C 등록 장벽 파일 없음"
+if [ ! -e "$STATE_V2/waiters/$SESSION_B" ]; then ok "T33 C 등록 전 죽은 B waiter 정리"; else bad "T33 C 등록 전 죽은 B waiter 정리" "B waiter 파일 잔존"; fi
+touch "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/release"
+wait_for_file "$TMPROOT/t33-c.rc" 20 || bad "T33 C가 죽은 B 대신 인계" "C 종료코드 파일 없음"
+assert_equals "T33 C 인계 종료코드" "2" "$(sed -n '1p' "$TMPROOT/t33-c.rc" 2>/dev/null)"
+if [ ! -e "$STATE_V2/waiters/$SESSION_B" ]; then ok "T33 죽은 B waiter 정리"; else bad "T33 죽은 B waiter 정리" "B waiter 파일 잔존"; fi
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 completed=1
