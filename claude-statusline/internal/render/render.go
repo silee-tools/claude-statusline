@@ -58,7 +58,7 @@ func Full(v View, now int64) string {
 	}
 
 	ctx := theme.Label(ralign("ctx")) + " " +
-		theme.Bar(v.CtxPct, theme.NoBudget, contextColor(v.CtxPct), contextColor(v.CtxPct), "") +
+		theme.Bar(v.CtxPct, theme.NoBudget, contextColor(v.CtxPct), "") +
 		" " + contextColor(v.CtxPct) + strconv.Itoa(v.CtxPct) + "%" + theme.Reset
 	ctx += modelAndEffort(v)
 
@@ -134,14 +134,23 @@ func modelAndEffort(v View) string {
 	return out
 }
 
-// fullGauge draws one rate row: label, bar, percentage and the reset token.
+// fullGauge draws one rate row: label, bar, percentage and the reset token. Inside the
+// bar a color means one thing only — usage has run ahead of pace — so the percentage
+// beside it is the sole carrier of absolute severity. Painting the bar with that
+// severity too would repeat the number and, once both reached red, hide the very
+// boundary the bar exists to show. A window with no overshoot hands the same grey to
+// both stretches, which leaves the whole bar grey until pace is actually broken.
 func fullGauge(label string, g Gauge, now int64) string {
 	if !g.Present {
 		return ""
 	}
 	color := theme.GaugeColor(g.Pct, 80, 90)
 	budget, pace := paceOf(g, now)
-	out := theme.Label(label) + " " + theme.Bar(g.Pct, budget, color, color, pace) +
+	beyond := pace
+	if beyond == "" {
+		beyond = theme.Grey240
+	}
+	out := theme.Label(label) + " " + theme.Bar(g.Pct, budget, theme.Grey240, beyond) +
 		" " + color + strconv.Itoa(g.Pct) + "%" + theme.Reset
 	if g.HasReset {
 		out += " " + theme.Dim + theme.FormatReset(g.ResetsAt, now) + theme.Reset

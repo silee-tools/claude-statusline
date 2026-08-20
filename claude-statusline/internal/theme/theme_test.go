@@ -33,39 +33,50 @@ func TestGaugeColorThresholds(t *testing.T) {
 
 func TestBarIsTwentyCells(t *testing.T) {
 	for _, pct := range []int{-5, 0, 24, 100, 150} {
-		if n := countCells(Bar(pct, 0, "", "", "")); n != 20 {
+		if n := countCells(Bar(pct, 0, "", "")); n != 20 {
 			t.Errorf("pct=%d 막대 칸수 %d, want 20", pct, n)
 		}
 	}
 }
 
-func TestBarMarksCellsBeyondBudget(t *testing.T) {
-	// 소진율 70% 는 14칸, 예산이 10칸이면 11~14번째 칸이 초과 표시가 된다.
-	got := Bar(70, 10, "", "", "")
-	if want := 4; countRune(got, '▓') != want {
-		t.Errorf("초과 칸 %d, want %d — %q", countRune(got, '▓'), want, got)
+func TestBarColorsEveryCellBeyondBudget(t *testing.T) {
+	// 소진율 70% 는 14칸이고 예산은 10칸이다. 11번째 칸부터 끝까지가 초과 구간이며, 그 안에서
+	// 소진한 네 칸은 █ 이고 남은 여섯 칸은 ░ 다. 모양이 소진 여부를, 색이 예산 초과 여부를
+	// 말하므로 두 축이 서로를 가리지 않는다.
+	got := Bar(70, 10, Grey240, Red)
+	if n := countRune(got, '█'); n != 14 {
+		t.Errorf("소진 칸 %d, want 14 — %q", n, got)
 	}
-	if countRune(got, '█') != 10 {
-		t.Errorf("예산 안 칸이 10이 아니다: %q", got)
+	if n := countRune(got, '░'); n != 6 {
+		t.Errorf("남은 칸 %d, want 6 — %q", n, got)
+	}
+	if n := strings.Count(got, Grey240); n != 10 {
+		t.Errorf("예산 이내 칸 %d, want 10 — %q", n, got)
+	}
+	if n := strings.Count(got, Red); n != 10 {
+		t.Errorf("예산 초과 칸 %d, want 10 — %q", n, got)
+	}
+	if !strings.Contains(got, Grey240+"█"+Reset+Red+"█"+Reset) {
+		t.Errorf("예산 경계에서 회색 소진 칸 다음에 초과색 소진 칸이 온다: %q", got)
 	}
 }
 
-func TestBarWithoutBudgetNeverMarksOverflow(t *testing.T) {
-	// 리셋 시각이 없으면 예산이 없다. 셸은 그때 빈 문자열을 넘겨 초과 표시를 끄는데,
-	// 예산 0(창이 막 시작해 경과가 0)은 그것과 달라 채운 칸 전부가 초과가 된다.
-	// NoBudget 을 0 과 같게 두면 이 두 상태가 한 출력으로 뭉개진다.
-	if n := countRune(Bar(70, NoBudget, "", "", ""), '▓'); n != 0 {
-		t.Errorf("예산 부재에 초과 칸 %d, want 0", n)
+func TestBarWithoutBudgetColorsNoCellAsOvershoot(t *testing.T) {
+	// 리셋 시각이 없으면 예산이 없어 초과 구간 자체가 생기지 않는다. 예산 0(창이 막 시작해
+	// 경과가 0)은 그것과 달라 막대 전체가 초과 구간이다. NoBudget 을 0 과 같게 두면 이 두
+	// 상태가 한 출력으로 뭉개진다.
+	if n := strings.Count(Bar(70, NoBudget, Grey240, Red), Red); n != 0 {
+		t.Errorf("예산 부재에 초과색 칸 %d, want 0", n)
 	}
-	if n := countRune(Bar(70, 0, "", "", ""), '▓'); n != 14 {
-		t.Errorf("예산 0 이면 채운 칸 전부가 초과여야 한다: %d, want 14", n)
+	if n := strings.Count(Bar(70, 0, Grey240, Red), Red); n != 20 {
+		t.Errorf("예산 0 이면 막대 전체가 초과 구간이다: %d, want 20", n)
 	}
 }
 
 func TestBarKeepsCellColorsSelfContained(t *testing.T) {
 	// 셸은 칸마다 색을 켜고 바로 끈다. 한 번만 켜고 끝에서 끄는 형태로 바꾸면 이어지는
 	// 세그먼트가 막대 색을 물려받아 라벨과 숫자의 색이 조용히 달라진다.
-	got := Bar(10, NoBudget, Red, Dim, "")
+	got := Bar(10, NoBudget, Red, "")
 	if n := strings.Count(got, Reset); n != 20 {
 		t.Errorf("칸마다 리셋이 붙어야 한다: %d, want 20 — %q", n, got)
 	}
