@@ -214,6 +214,40 @@ func TestCompactMarksPaceWithATriangle(t *testing.T) {
 	}
 }
 
+func TestPaceMarkerShowsOverpaceDurationAfterReset(t *testing.T) {
+	reset := time.Date(2026, time.August, 31, 0, 0, 0, 0, time.Local)
+	now := time.Date(2026, time.August, 26, 8, 0, 0, 0, time.Local)
+	v := sample()
+	v.Five = Gauge{}
+	v.Week = Gauge{Present: true, Pct: 70, ResetsAt: reset.Unix(), HasReset: true, Window: sevenDayWindow}
+	want := "↺4d16h (🔥1d4h)"
+
+	for name, out := range map[string]string{
+		"full":    Full(v, now.Unix()),
+		"compact": Compact(v, now.Unix()),
+	} {
+		if !strings.Contains(plain(out), want) {
+			t.Errorf("%s 레이아웃의 오버페이스 시간 = %q, want %q", name, plain(out), want)
+		}
+	}
+}
+
+func TestPaceMarkerOmitsOverpaceWhenUsageKeepsPace(t *testing.T) {
+	now := int64(2_000_000_000)
+	v := sample()
+	v.Week = Gauge{}
+	v.Five = Gauge{Present: true, Pct: 30, ResetsAt: now + 2*60*60 + 18*60, HasReset: true, Window: 18000}
+
+	for name, out := range map[string]string{
+		"full":    Full(v, now),
+		"compact": Compact(v, now),
+	} {
+		if strings.Contains(plain(out), "(🔥") {
+			t.Errorf("%s 레이아웃이 정상 페이스에 오버페이스 괄호를 표시한다: %q", name, plain(out))
+		}
+	}
+}
+
 func TestCompactFirstRowFitsTheDetectedWidth(t *testing.T) {
 	// 브랜치가 있으면 예산이 폭-8, 없으면 폭-6 이다. 시각 5칸과 공백, 브랜치 아이콘이
 	// 그 차이다. 이 예산을 렌더러가 다시 계산하면 조립부와 조용히 어긋난다.
