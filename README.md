@@ -93,6 +93,10 @@ spent but on schedule from one that is burning through its budget early.
 The compact layout has no room for a bar and adds `▲` after the percentage
 instead when usage is ahead of pace.
 
+The `7d` pace budget advances continuously during local Monday-to-Friday
+calendar days and pauses on Saturday and Sunday. The reset countdown remains
+wall-clock based, and the `5h` pace budget continues to use elapsed time.
+
 The `5h` and `7d` windows are shared between sessions through
 `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/rate-limits.env`. Whichever
 session observes a window leaves it there, so every other session picks it up on
@@ -283,46 +287,32 @@ Claude Code fires `StopFailure` with an `error` value naming why the turn ended:
 expired, which is the stop that shows "Login expired · Please run /login", and
 `server_error` or `overloaded` when the API itself is briefly unavailable. The
 hook entry sets `asyncRewake`, so the command runs in the background while the
-session sits idle. `resume.sh` sleeps for `CLAUDE_RESUME_WAIT_SECONDS` and then
-exits with code 2 — the code that tells Claude Code to wake the model — and
-whatever it wrote to **stderr** becomes the prompt for the new turn. Text on
-stdout is not injected. That prompt names the cause, so the model does not
-resume on the wrong assumption about what stopped it.
+session sits idle.
 
-The hook reads neither the reset time nor the login state, since neither reaches
-it as a machine value. It polls instead: if the cause still holds, the new turn
-is rejected, `StopFailure` fires again, and the next wait starts. A rejected
-attempt is refused before any tokens are billed, so polling costs nothing but
-elapsed time.
+The hook follows five steps. First, the `StopFailure` hook registers its session and cause in shared state on the same machine. Second, a new session becomes eligible for one initial probe after the starting delay has elapsed from its registration time. Third, after a failed probe, the global delay doubles from its starting value and stops at a maximum of 480 seconds. Fourth, if the probe produces no result, another waiting session takes over at the next scheduled time. Fifth, when the current probe session emits `Stop`, every waiting hook exits immediately with code 2.
 
-An attempt counter under
-`${XDG_STATE_HOME:-$HOME/.local/state}/stuck-resume/` bounds that loop, keyed by
-session and cause together. Spending every retry on a usage limit therefore
-leaves that same session free to retry an expired login. Once one
-session-and-cause pair passes its attempt cap, the hook exits 0 and the session
-stays stopped. Counter files older than seven days are cleaned up on each run.
+The hook does not read login state, but for `rate_limit` it reads the latest structured `resetsAt` value from the transcript and then falls back to the official reset time in `last_assistant_message`; only when both are unavailable does it use the three-hour deadline. A new turn that fails again registers the failure and follows the next global backoff interval. The hook does not poll while waiting, so it makes no network request until a scheduled probe is due.
+
+The hook writes a short cause-specific prompt to **stderr** and exits with code 2 — the code that tells Claude Code to wake the model. Text on stdout is not injected.
 
 ### Settings
 
-The wait and the cap default by cause, because the two groups clear on different
-timescales. An overloaded API usually frees up within minutes, so those causes
-knock often and briefly; a usage limit and an expired login wait on the clock or
-on a person, so they knock rarely and for longer. Setting either variable
-overrides the default for every cause.
+These settings apply to all local sessions participating in one global retry episode. The first hook to register an episode fixes the starting delay and probe cap for that episode; later sessions do not replace them.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CLAUDE_RESUME_WAIT_SECONDS` | `30` for `server_error` and `overloaded`, `120` otherwise | seconds to wait before waking the model |
-| `CLAUDE_RESUME_MAX_ATTEMPTS` | `240` for `server_error` and `overloaded`, `90` otherwise | attempts per session and cause before giving up |
-| `CLAUDE_RESUME_STATE_DIR` | `${XDG_STATE_HOME:-$HOME/.local/state}/stuck-resume` | where attempt counters are kept |
+| `CLAUDE_RESUME_WAIT_SECONDS` | `30` | first retry delay, minimum spacing before recovery, and exponential-backoff base from 1 through 480 seconds; the maximum delay is 480 seconds |
+| `CLAUDE_RESUME_MAX_ATTEMPTS` | `0` | maximum serialized probes before recovery in one global episode; `0` leaves the error deadline as the only cap, and a successful broadcast is never limited |
+| `CLAUDE_RESUME_STATE_DIR` | `${XDG_STATE_HOME:-$HOME/.local/state}/stuck-resume` | shared state for all local sessions |
 
 The variable names still read `CLAUDE_RESUME_` rather than the plugin name, so a
 configuration that already sets them keeps working across the rename.
 
-Keep the wait below the `timeout` in `hooks/hooks.json` (600 seconds); a longer
-wait is cut off and the session is never resumed. With the defaults, a usage
-limit or an expired login retries for roughly three hours before it gives up,
-and a transient API failure for roughly two.
+The `server_error`, `overloaded`, and `authentication_failed` causes retry until three hours after their first failure in the episode. For `rate_limit`, the deadline is one hour after the reset time when a structured reset time or a reset time in the error message is available; when neither is available, the deadline is three hours after the first failure. When several causes are active, the latest cause deadline is used, and repeating an existing cause does not extend its deadline. A probe at or after the global deadline exits 0 without waking the session.
+
+The plugin does not inspect or change Claude Code's `autoContinueAtUsageLimit` setting, so Claude Code's own automatic resume and this plugin's resume may overlap.
+
+Keep the configured starting delay below the `timeout` in `hooks/hooks.json` (600 seconds); a longer delay can be cut off before the hook reaches its next state transition.
 
 ### Limits
 
