@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/silee-tools/claude-statusline/internal/theme"
 	"github.com/silee-tools/claude-statusline/internal/width"
@@ -278,6 +279,42 @@ func TestGaugeWithoutResetOmitsTheResetToken(t *testing.T) {
 		if strings.Contains(rows[3], color) {
 			t.Fatalf("리셋 시각이 없으면 예산도 없어 초과 표시를 하지 않는다: %q", rows[3])
 		}
+	}
+}
+
+func TestSevenDayPaceCountsWeekdaysContinuously(t *testing.T) {
+	reset := time.Date(2026, time.August, 25, 0, 0, 0, 0, time.Local)
+	fridayNoon := time.Date(2026, time.August, 21, 12, 0, 0, 0, time.Local)
+	g := Gauge{HasReset: true, Pct: 70, ResetsAt: reset.Unix(), Window: 604800}
+
+	budget, pace := paceOf(g, fridayNoon.Unix())
+	if budget != 14 {
+		t.Fatalf("금요일 정오의 업무일 페이스 예산 = %d, want 14", budget)
+	}
+	if pace != "" {
+		t.Fatalf("금요일 정오에 페이스를 지키면 경고가 없다: %q", pace)
+	}
+}
+
+func TestSevenDayPaceStopsAcrossWeekend(t *testing.T) {
+	reset := time.Date(2026, time.August, 25, 0, 0, 0, 0, time.Local)
+	g := Gauge{HasReset: true, ResetsAt: reset.Unix(), Window: 604800}
+
+	for _, tc := range []struct {
+		name string
+		now  time.Time
+		want int
+	}{
+		{name: "금요일 정오", now: time.Date(2026, time.August, 21, 12, 0, 0, 0, time.Local), want: 14},
+		{name: "토요일 정오", now: time.Date(2026, time.August, 22, 12, 0, 0, 0, time.Local), want: 16},
+		{name: "월요일 정오", now: time.Date(2026, time.August, 24, 12, 0, 0, 0, time.Local), want: 18},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			budget, _ := paceOf(g, tc.now.Unix())
+			if budget != tc.want {
+				t.Fatalf("업무일 페이스 예산 = %d, want %d", budget, tc.want)
+			}
+		})
 	}
 }
 
