@@ -103,6 +103,23 @@ func TestFormatReset(t *testing.T) {
 	}
 }
 
+func TestFormatDurationOmitsZeroUnits(t *testing.T) {
+	for _, tc := range []struct {
+		seconds int64
+		want    string
+	}{
+		{0, "0m"},
+		{4 * 60, "4m"},
+		{60 * 60, "1h"},
+		{60*60 + 23*60, "1h23m"},
+		{24*60*60 + 4*60*60, "1d4h"},
+	} {
+		if got := FormatDuration(tc.seconds); got != tc.want {
+			t.Errorf("FormatDuration(%d) = %q, want %q", tc.seconds, got, tc.want)
+		}
+	}
+}
+
 func TestFormatModel(t *testing.T) {
 	// 기대값은 셸 format_model 을 실제로 돌려 뽑았다.
 	cases := map[string]string{

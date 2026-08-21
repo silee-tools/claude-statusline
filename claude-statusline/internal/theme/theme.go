@@ -97,6 +97,26 @@ func FormatReset(target, now int64) string {
 	return fmt.Sprintf("↺%dm", diff/60)
 }
 
+func FormatDuration(seconds int64) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+	minutes := seconds / 60
+	out := ""
+	if days := minutes / (24 * 60); days > 0 {
+		out += fmt.Sprintf("%dd", days)
+		minutes %= 24 * 60
+	}
+	if hours := minutes / 60; hours > 0 {
+		out += fmt.Sprintf("%dh", hours)
+		minutes %= 60
+	}
+	if minutes > 0 || out == "" {
+		out += fmt.Sprintf("%dm", minutes)
+	}
+	return out
+}
+
 // EffortGlyph maps a reasoning effort level to the circle glyph Claude Code shows in
 // its session header plus a warm gauge color. Shape and color express the step
 // together. These glyphs must not collide with the pace marker ▲ or any other render

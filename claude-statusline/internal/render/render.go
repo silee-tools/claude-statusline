@@ -158,6 +158,9 @@ func fullGauge(label string, g Gauge, now int64) string {
 		" " + color + strconv.Itoa(g.Pct) + "%" + theme.Reset
 	if g.HasReset {
 		out += " " + theme.Dim + theme.FormatReset(g.ResetsAt, now) + theme.Reset
+		if marker := overpaceMarker(g, now, pace); marker != "" {
+			out += " " + marker
+		}
 	}
 	return out
 }
@@ -175,6 +178,9 @@ func compactGauge(label string, g Gauge, now int64) string {
 	}
 	if g.HasReset {
 		out += " " + theme.Dim + theme.FormatReset(g.ResetsAt, now) + theme.Reset
+		if marker := overpaceMarker(g, now, pace); marker != "" {
+			out += " " + marker
+		}
 	}
 	return out
 }
@@ -184,8 +190,26 @@ func compactGauge(label string, g Gauge, now int64) string {
 // every other window uses elapsed seconds. Both layouts share this arithmetic so the
 // same input cannot produce a different warning in one of them.
 func paceOf(g Gauge, now int64) (int, string) {
-	if !g.HasReset || g.Window <= 0 {
+	elapsed, window, ok := paceTimes(g, now)
+	if !ok {
 		return theme.NoBudget, ""
+	}
+	budget := int((elapsed*theme.Cells + window/2) / window)
+	if budget > theme.Cells {
+		budget = theme.Cells
+	}
+	switch over := g.Pct*theme.Cells/100 - budget; {
+	case over >= 3:
+		return budget, theme.Red
+	case over > 0:
+		return budget, theme.Yellow
+	}
+	return budget, ""
+}
+
+func paceTimes(g Gauge, now int64) (int64, int64, bool) {
+	if !g.HasReset || g.Window <= 0 {
+		return 0, 0, false
 	}
 	diff := g.ResetsAt - now
 	if diff < 0 {
@@ -207,19 +231,24 @@ func paceOf(g Gauge, now int64) (int, string) {
 		elapsed = 0
 	}
 	if window <= 0 {
-		return theme.NoBudget, ""
+		return 0, 0, false
 	}
-	budget := int((elapsed*theme.Cells + window/2) / window)
-	if budget > theme.Cells {
-		budget = theme.Cells
+	return elapsed, window, true
+}
+
+func overpaceMarker(g Gauge, now int64, pace string) string {
+	if pace == "" {
+		return ""
 	}
-	switch over := g.Pct*theme.Cells/100 - budget; {
-	case over >= 3:
-		return budget, theme.Red
-	case over > 0:
-		return budget, theme.Yellow
+	elapsed, window, ok := paceTimes(g, now)
+	if !ok {
+		return ""
 	}
-	return budget, ""
+	over := int64(g.Pct)*window/100 - elapsed
+	if over <= 0 {
+		return ""
+	}
+	return "(🔥" + theme.FormatDuration(over) + ")"
 }
 
 func businessSecondsBetween(start, end int64) int64 {
