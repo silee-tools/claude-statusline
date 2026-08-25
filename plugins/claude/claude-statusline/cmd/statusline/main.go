@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/silee-tools/claude-statusline/internal/agentstatus"
 	"github.com/silee-tools/claude-statusline/internal/costcache"
 	"github.com/silee-tools/claude-statusline/internal/gitinfo"
 	"github.com/silee-tools/claude-statusline/internal/input"
@@ -32,6 +33,12 @@ func main() {
 	// second boundary fall between two of them, which moves a pace budget by a cell
 	// between the bar and the percentage beside it.
 	now := time.Now()
+	home, _ := os.UserHomeDir()
+	stateDir := agentStateDir(home)
+	if len(os.Args) == 2 && os.Args[1] == "hook" {
+		_ = agentstatus.RecordHook(stateDir, os.Stdin, now.Unix())
+		return
+	}
 
 	status, err := input.Parse(os.Stdin)
 	if err != nil {
@@ -41,7 +48,6 @@ func main() {
 		return
 	}
 
-	home, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(xdg("XDG_CACHE_HOME", filepath.Join(home, ".cache")), "claude-statusline")
 	dataDir := xdg("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
 	configDir := xdg("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
@@ -58,6 +64,24 @@ func main() {
 		Five: sample(status.FiveHour),
 		Week: sample(status.SevenDay),
 	}, now.Unix())
+	var usage []agentstatus.Window
+	if limits.Five.Complete() {
+		usage = append(usage, agentstatus.Window{
+			ID: "five-hour", Label: "5 hour", UsedPercent: limits.Five.Pct,
+			ResetsAt: limits.Five.ResetsAt, WindowMinutes: 300,
+		})
+	}
+	if limits.Week.Complete() {
+		usage = append(usage, agentstatus.Window{
+			ID: "seven-day", Label: "7 day", UsedPercent: limits.Week.Pct,
+			ResetsAt: limits.Week.ResetsAt, WindowMinutes: 10080,
+		})
+	}
+	_ = agentstatus.RecordRender(stateDir, agentstatus.Metadata{
+		SessionID: status.SessionID,
+		Workspace: status.CWD,
+		Model:     status.ModelDisplay,
+	}, usage, now.Unix())
 
 	view := render.View{
 		Clock:   now.Format("15:04"),
@@ -128,6 +152,14 @@ func xdg(name, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func agentStateDir(home string) string {
+	if root := os.Getenv("AGENT_STATUS_STATE_DIR"); root != "" {
+		return root
+	}
+	return filepath.Join(xdg("XDG_STATE_HOME", filepath.Join(home, ".local", "state")),
+		"claude-statusline", "agent-status")
 }
 
 func cwdOrDot() string {

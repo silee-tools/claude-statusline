@@ -79,7 +79,12 @@ set_now() {
 
 set_global_field() {
   global_field=$1 global_value=$2
-  sed "s/^$global_field=.*/$global_field=$global_value/" "$STATE_V2/global" > "$STATE_V2/global.$$.tmp"
+  if grep -q "^$global_field=" "$STATE_V2/global"; then
+    sed "s/^$global_field=.*/$global_field=$global_value/" "$STATE_V2/global" > "$STATE_V2/global.$$.tmp"
+  else
+    cp "$STATE_V2/global" "$STATE_V2/global.$$.tmp"
+    printf '%s=%s\n' "$global_field" "$global_value" >> "$STATE_V2/global.$$.tmp"
+  fi
   mv "$STATE_V2/global.$$.tmp" "$STATE_V2/global"
 }
 
@@ -526,7 +531,7 @@ t25_recovered=$(field global recovered_generation)
 set_now "$(field global handoff_at)"
 run "$(stop_input "$SESSION_A")"
 assert_equals "T25 만료된 A의 Stop은 성공 세대를 바꾸지 않음" "$t25_recovered" "$(field global recovered_generation)"
-assert_equals "T25 만료된 A의 활성 상태 해제" "-,0,0" "$(field global active_session),$(field global active_generation),$(field global handoff_at)"
+assert_equals "T25 만료된 A의 활성 상태 해제" "-,0,-,0" "$(field global active_session),$(field global active_generation),$(field global active_cause),$(field global handoff_at)"
 if [ ! -e "$CLAUDE_RESUME_TEST_SIGNAL_RECEIVED_DIR/$SESSION_B" ] && [ ! -e "$CLAUDE_RESUME_TEST_SIGNAL_RECEIVED_DIR/$SESSION_C" ]; then ok "T25 만료된 A의 Stop은 USR1을 보내지 않음"; else bad "T25 만료된 A의 Stop은 USR1을 보내지 않음" "신호 표식 존재"; fi
 if kill -0 "$t25_bpid" 2>/dev/null && kill -0 "$t25_cpid" 2>/dev/null && [ ! -f "$TMPROOT/t25-b.rc" ] && [ ! -f "$TMPROOT/t25-c.rc" ]; then ok "T25 다음 waiter가 점유하기 전에는 성공 신호 없음"; else bad "T25 다음 waiter가 점유하기 전에는 성공 신호 없음" "waiter가 종료됨"; fi
 touch "$TMPROOT/t25-b-register/release"
@@ -560,7 +565,7 @@ assert_equals "T26 두 번째 회수자가 A의 잠금을 보존" "$t26_apid" "$
 if [ ! -e "$CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER/ready.$t26_bpid" ] && kill -0 "$t26_bpid" 2>/dev/null; then ok "T26 B는 A의 잠금이 풀릴 때까지 대기"; else bad "T26 B는 A의 잠금이 풀릴 때까지 대기" "B가 새 잠금을 삭제하거나 종료함"; fi
 mkdir -p "$CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER"
 touch "$CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER/release.$t26_apid"
-wait_for_file "$CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER/ready.$t26_bpid" 20 || bad "T26 A 해제 뒤 B가 잠금 획득" "B 획득 장벽 없음"
+wait_for_file "$CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER/ready.$t26_bpid" || bad "T26 A 해제 뒤 B가 잠금 획득" "B 획득 장벽 없음"
 touch "$CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER/release.$t26_bpid"
 wait_for_file "$TMPROOT/t26-a.rc" || bad "T26 A 종료" "종료코드 파일 없음"
 wait_for_file "$TMPROOT/t26-b.rc" || bad "T26 B 종료" "종료코드 파일 없음"
@@ -730,6 +735,30 @@ assert_equals "T34 새 에피소드 번호" "6" "$(field global episode)"
 assert_equals "T34 오래된 원인 파일 정리" "" "$(ls "$STATE_V2/causes" | grep -v '^6\.' || true)"
 assert_equals "T34 새 원인 파일 최초 발견 시각" "1787627460" "$(field causes/6.rate_limit first_seen)"
 assert_equals "T34 탐침 상태 초기화" "1787627490,1,30" "$(field global last_attempt),$(field global attempts),$(field global delay)"
+
+# T35: active_cause는 활성 세션과 함께 설정되고 재발·Stop·새 에피소드에서 해제된다.
+reset_state
+run "$(failure_input "$SESSION_A" rate_limit)"
+assert_equals "T35 활성 원인 설정" "rate_limit" "$(field global active_cause)"
+CLAUDE_RESUME_TEST_REGISTER_BARRIER="$TMPROOT/t35-recurrence-register"
+export CLAUDE_RESUME_TEST_REGISTER_BARRIER
+start_waiter "$(failure_input "$SESSION_A" authentication_failed)" "$TMPROOT/t35-recurrence.out" "$TMPROOT/t35-recurrence.err" "$TMPROOT/t35-recurrence.rc"
+wait_for_file "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/$SESSION_A" || bad "T35 재발 waiter 등록" "등록 장벽 파일 없음"
+assert_equals "T35 재발 중 활성 원인 해제" "-,0,-,0" "$(field global active_session),$(field global active_generation),$(field global active_cause),$(field global handoff_at)"
+touch "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/release"
+wait_for_file "$TMPROOT/t35-recurrence.rc" || bad "T35 재발 waiter 종료" "종료코드 파일 없음"
+assert_equals "T35 새 활성 원인 설정" "$SESSION_A,authentication_failed" "$(field global active_session),$(field global active_cause)"
+run "$(stop_input "$SESSION_A")"
+assert_equals "T35 Stop 뒤 활성 원인 해제" "-,-" "$(field global active_session),$(field global active_cause)"
+
+set_global_field active_cause overloaded
+CLAUDE_RESUME_TEST_REGISTER_BARRIER="$TMPROOT/t35-new-episode-register"
+export CLAUDE_RESUME_TEST_REGISTER_BARRIER
+start_waiter "$(failure_input "$SESSION_C" server_error)" "$TMPROOT/t35-new-episode.out" "$TMPROOT/t35-new-episode.err" "$TMPROOT/t35-new-episode.rc"
+wait_for_file "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/$SESSION_C" || bad "T35 새 에피소드 waiter 등록" "등록 장벽 파일 없음"
+assert_equals "T35 새 에피소드의 stale 활성 원인 해제" "-" "$(field global active_cause)"
+touch "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/release"
+wait_for_file "$TMPROOT/t35-new-episode.rc" || bad "T35 새 에피소드 waiter 종료" "종료코드 파일 없음"
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 completed=1

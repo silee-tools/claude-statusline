@@ -10,6 +10,7 @@ ok()  { pass=$((pass + 1)); printf 'PASS %s\n' "$1"; }
 bad() { fail=$((fail + 1)); printf 'FAIL %s\n     got: %s\n' "$1" "$2"; }
 assert_equals()   { if [ "$3" = "$2" ]; then ok "$1"; else bad "$1 (expected [$2])" "$3"; fi; }
 assert_contains() { case "$3" in *"$2"*) ok "$1";; *) bad "$1 (expected to contain [$2])" "$3";; esac; }
+assert_not_contains() { case "$3" in *"$2"*) bad "$1 (expected not to contain [$2])" "$3";; *) ok "$1";; esac; }
 
 TMPROOT=$(mktemp -d)
 # bash 3.2 는 EXIT 트랩 진입에서 $? 를 0 으로 만든다. completed 플래그가 없으면 set -eu 중단이
@@ -108,6 +109,42 @@ if command -v go >/dev/null 2>&1; then
   # --- T9: 빌드한 바이너리를 shim 이 실제로 실행해 렌더한다 ---
   OUT=$(printf '%s' "$JSON" | iso "$BC" env CLAUDE_STATUSLINE_WIDTH=81 sh "$SRC/scripts/statusline.sh")
   assert_contains "T9 shim 이 실제 바이너리로 렌더" "v9.9.9" "$OUT"
+
+  # --- T9a: hook handler가 준비된 같은 바이너리로 activity를 기록한다 ---
+  STATE="$TMPROOT/agent-status"
+  SECRET="SENTINEL_PROMPT_AND_TOOL_ARGUMENT"
+  HOOK_JSON="{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"placeholder-session\",\"cwd\":\"/tmp/example-project\",\"prompt\":\"$SECRET\",\"response\":\"$SECRET\",\"tool_input\":{\"value\":\"$SECRET\"}}"
+  OUT=$(printf '%s' "$HOOK_JSON" | iso "$BC" env CLAUDE_PLUGIN_ROOT="$SRC" \
+    AGENT_STATUS_STATE_DIR="$STATE" sh "$SRC/scripts/hook-handler.sh"); RC=$?
+  assert_equals "T9a hook handler 종료코드 0" "0" "$RC"
+  assert_equals "T9a hook handler는 화면 출력을 만들지 않음" "" "$OUT"
+  set -- "$STATE/sessions/claude/"*.json
+  SNAPSHOT="$1"
+  assert_equals "T9a session snapshot 생성" "yes" "$([ -f "$SNAPSHOT" ] && echo yes || echo no)"
+  SNAPSHOT_BODY=$(cat "$SNAPSHOT")
+  assert_contains "T9a UserPromptSubmit은 working" '"activity":"working"' "$SNAPSHOT_BODY"
+  assert_not_contains "T9a prompt 원문은 기록하지 않음" "$SECRET" "$SNAPSHOT_BODY"
+
+  # --- T9b: render는 activity를 보존하며 resolved usage를 같은 snapshot에 기록한다 ---
+  RENDER_JSON='{"session_id":"placeholder-session","workspace":{"current_dir":"/tmp/render-project"},"model":{"display_name":"example-model"},"context_window":{"current_usage":{"input_tokens":1},"context_window_size":200000},"version":"2.1.11","rate_limits":{"five_hour":{"used_percentage":24,"resets_at":1890000000},"seven_day":{"used_percentage":41,"resets_at":1890600000}}}'
+  RENDER_JSON="${RENDER_JSON%?},\"prompt\":\"$SECRET\",\"response\":\"$SECRET\",\"tool_arguments\":{\"value\":\"$SECRET\"}}"
+  OUT=$(printf '%s' "$RENDER_JSON" | iso "$BC" env AGENT_STATUS_STATE_DIR="$STATE" \
+    CLAUDE_STATUSLINE_WIDTH=81 sh "$SRC/scripts/statusline.sh"); RC=$?
+  assert_equals "T9b render 종료코드 0" "0" "$RC"
+  assert_contains "T9b 기존 statusline 출력 유지" "v2.1.11" "$OUT"
+  SNAPSHOT_BODY=$(cat "$SNAPSHOT")
+  assert_contains "T9b render가 activity 보존" '"activity":"working"' "$SNAPSHOT_BODY"
+  assert_contains "T9b five-hour usage 기록" '"id":"five-hour","label":"5 hour","usedPercent":24' "$SNAPSHOT_BODY"
+  assert_contains "T9b seven-day usage 기록" '"id":"seven-day","label":"7 day","usedPercent":41' "$SNAPSHOT_BODY"
+  assert_not_contains "T9b render 원문은 기록하지 않음" "$SECRET" "$SNAPSHOT_BODY"
+
+  # --- T9c: 상태 저장 실패가 render를 실패시키거나 출력을 바꾸지 않는다 ---
+  BAD_STATE="$TMPROOT/not-a-directory"
+  : > "$BAD_STATE"
+  OUT=$(printf '%s' "$RENDER_JSON" | iso "$BC" env AGENT_STATUS_STATE_DIR="$BAD_STATE" \
+    CLAUDE_STATUSLINE_WIDTH=81 sh "$SRC/scripts/statusline.sh"); RC=$?
+  assert_equals "T9c 상태 저장 실패에도 render 종료코드 0" "0" "$RC"
+  assert_contains "T9c 상태 저장 실패에도 화면 출력 유지" "v2.1.11" "$OUT"
 else
   printf 'SKIP T6~T9 (go 미설치)\n'
 fi
@@ -127,6 +164,14 @@ set -e
 assert_equals "T10 go 부재에도 종료코드 0" "0" "$RC"
 assert_equals "T10 go 부재면 포인터를 만들지 않음" "no" \
   "$([ -f "$NOGO/claude-statusline/binary-path" ] && echo yes || echo no)"
+
+# --- T11: 지원하는 모든 Claude event가 같은 handler에 등록돼 있다 ---
+HOOKS=$(awk -f "$SRC/scripts/json.awk" "$SRC/hooks/hooks.json")
+TAB=$(printf '\t')
+for event in SessionStart UserPromptSubmit PermissionRequest Notification Stop SessionEnd; do
+  assert_contains "T11 $event hook 등록" \
+    "..hooks.$event.hooks.command${TAB}sh \${CLAUDE_PLUGIN_ROOT}/scripts/hook-handler.sh" "$HOOKS"
+done
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 completed=1
