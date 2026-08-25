@@ -10,9 +10,9 @@
   "plugins": [
     {
       "name": "claude-statusline",
-      "source": "./claude-statusline",
+      "source": "./plugins/claude/claude-statusline",
       "description": "터미널 폭에 따라 3행과 7행으로 전환하는 statusline HUD",
-      "version": "5.1.1",
+      "version": "5.1.2",
       "author": {
         "name": "silee9019"
       },
@@ -26,9 +26,9 @@
     },
     {
       "name": "stuck-resume",
-      "source": "./stuck-resume",
+      "source": "./plugins/claude/stuck-resume",
       "description": "턴을 끊은 원인이 풀린 뒤 자동으로 이어서 재개한다",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "author": {
         "name": "silee9019"
       },

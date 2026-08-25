@@ -213,8 +213,8 @@ file.
 ### Customizing
 
 Colors, glyphs and value formatting live in
-`claude-statusline/internal/theme/`, and the two layouts are assembled in
-`claude-statusline/internal/render/`:
+`plugins/claude/claude-statusline/internal/theme/`, and the two layouts are
+assembled in `plugins/claude/claude-statusline/internal/render/`:
 
 - **Gauge thresholds** — the numbers passed to `theme.GaugeColor`: 40/70 for
   context and 80/90 for the rate windows.
@@ -228,7 +228,7 @@ happens on the next session start once the plugin version changes.
 ## Development
 
 ```shell
-sh -c 'rc=0; for t in */tests/*.test.sh; do sh "$t" || rc=1; done; (cd claude-statusline && go test ./...) || rc=1; exit "$rc"'
+sh -c 'rc=0; for t in plugins/claude/*/tests/*.test.sh; do sh "$t" || rc=1; done; (cd plugins/claude/claude-statusline && go test ./...) || rc=1; exit "$rc"'
 ```
 
 The render path is Go with no external modules; the remaining scripts are POSIX
