@@ -387,7 +387,9 @@ handle_stop_failure() {
   acquire_lock
   load_global
 
-  if [ "$episode" -eq 0 ] || { [ "$active_session" = - ] && ! has_unrecovered_waiter && [ "$recovered_generation" -ge "$generation" ]; }; then
+  episode_expired=0
+  if [ "$deadline" -gt 0 ] && [ "$input_now" -ge "$deadline" ]; then episode_expired=1; fi
+  if [ "$episode" -eq 0 ] || { [ "$active_session" = - ] && ! has_unrecovered_waiter && { [ "$recovered_generation" -ge "$generation" ] || [ "$episode_expired" = 1 ]; }; }; then
     episode=$((episode + 1))
     base_delay=$(base_delay_or_default "${CLAUDE_RESUME_WAIT_SECONDS:-}")
     max_attempts=$(number_or_default "${CLAUDE_RESUME_MAX_ATTEMPTS:-}" 0)

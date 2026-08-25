@@ -716,6 +716,21 @@ wait_for_file "$TMPROOT/t33-c.rc" 20 || bad "T33 C가 죽은 B 대신 인계" "C
 assert_equals "T33 C 인계 종료코드" "2" "$(sed -n '1p' "$TMPROOT/t33-c.rc" 2>/dev/null)"
 if [ ! -e "$STATE_V2/waiters/$SESSION_B" ]; then ok "T33 죽은 B waiter 정리"; else bad "T33 죽은 B waiter 정리" "B waiter 파일 잔존"; fi
 
+# T34: 데드라인이 지난 에피소드와 미복구 세대 차이가 남아 있어도 새 실패는 새 에피소드로 다시 깨어난다.
+reset_state
+set_now 1787565014
+mkdir -p "$STATE_V2/causes" "$STATE_V2/waiters"
+printf 'episode=5\ngeneration=73\nrecovered_generation=44\ndelay=480\nlast_attempt=1787568055\nattempts=26\nbase_delay=30\nmax_attempts=0\nactive_session=-\nactive_generation=0\nhandoff_at=0\ndeadline=1787571600\n' > "$STATE_V2/global"
+printf 'first_seen=1787565014\ndeadline=1787571600\n' > "$STATE_V2/causes/5.rate_limit"
+set_now 1787627460
+run "$(failure_input "$SESSION_A" rate_limit)"
+assert_equals "T34 만료 에피소드 뒤 재개 종료코드" "2" "$rc"
+assert_equals "T34 만료 에피소드 뒤 재개 문장" "Continue the work that was interrupted by the usage limit." "$err"
+assert_equals "T34 새 에피소드 번호" "6" "$(field global episode)"
+assert_equals "T34 오래된 원인 파일 정리" "" "$(ls "$STATE_V2/causes" | grep -v '^6\.' || true)"
+assert_equals "T34 새 원인 파일 최초 발견 시각" "1787627460" "$(field causes/6.rate_limit first_seen)"
+assert_equals "T34 탐침 상태 초기화" "1787627490,1,30" "$(field global last_attempt),$(field global attempts),$(field global delay)"
+
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 completed=1
 [ "$fail" -eq 0 ]
