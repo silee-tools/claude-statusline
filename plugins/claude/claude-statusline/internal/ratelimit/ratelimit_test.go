@@ -11,50 +11,6 @@ func c(pct int, reset int64) Sample {
 	return Sample{Present: true, HasReset: true, Pct: pct, ResetsAt: reset}
 }
 
-func TestNewerPrefersLaterResetEvenWhenPctIsLower(t *testing.T) {
-	// 창이 바뀌면 소진율은 떨어지고 리셋 시각은 앞으로 간다. 리셋 시각이 이겨야 한다.
-	old, fresh := c(94, 1000), c(3, 2000)
-	if got := Newer(old, fresh); got != fresh {
-		t.Fatalf("새 창이 이겨야 한다: %+v", got)
-	}
-	if got := Newer(fresh, old); got != fresh {
-		t.Fatalf("인자 순서가 결과를 바꾸면 안 된다: %+v", got)
-	}
-}
-
-func TestNewerPrefersHigherPctWithinSameWindow(t *testing.T) {
-	// 한 창 안에서 소진율은 줄지 않는다. 낮은 값은 낡은 표본이다.
-	stale, fresh := c(24, 1000), c(31, 1000)
-	if got := Newer(stale, fresh); got != fresh {
-		t.Fatalf("같은 창에서는 높은 소진율이 이겨야 한다: %+v", got)
-	}
-}
-
-func TestNewerIsIdempotentAndCommutative(t *testing.T) {
-	a, b := c(24, 1000), c(31, 1000)
-	if Newer(a, a) != a {
-		t.Fatal("같은 값을 병합하면 그대로여야 한다")
-	}
-	if Newer(a, b) != Newer(b, a) {
-		t.Fatal("병합은 순서에 무관해야 한다 — 동시 쓰기가 이 성질로 수렴한다")
-	}
-}
-
-func TestIncompleteSampleAlwaysLoses(t *testing.T) {
-	complete := c(24, 1000)
-	noReset := Sample{Present: true, Pct: 99}
-	absent := Sample{}
-	if got := Newer(noReset, complete); got != complete {
-		t.Fatalf("유효 기간을 모르는 표본이 이기면 안 된다: %+v", got)
-	}
-	if got := Newer(absent, complete); got != complete {
-		t.Fatalf("없는 표본이 이기면 안 된다: %+v", got)
-	}
-	if got := Newer(absent, noReset); got.Complete() {
-		t.Fatalf("둘 다 불완전하면 완전한 값이 나올 수 없다: %+v", got)
-	}
-}
-
 func TestLoadMissingFileYieldsAbsentSamples(t *testing.T) {
 	p := Load(t.TempDir())
 	if p.Five.Present || p.Week.Present {
@@ -135,19 +91,6 @@ func TestResolveHidesExpiredCachedWindow(t *testing.T) {
 	}
 }
 
-func TestResolveDoesNotLetAStaleSessionMoveTheFileBackward(t *testing.T) {
-	dir := t.TempDir()
-	Store(dir, Pair{Five: c(60, 2000)})
-	// 몇 시간 놀던 세션이 낡은 스냅샷을 들고 다시 렌더한다.
-	got := Resolve(dir, Pair{Five: c(24, 2000)}, 1000)
-	if got.Five.Pct != 60 {
-		t.Fatalf("낡은 표본이 화면을 되돌리면 안 된다: %+v", got.Five)
-	}
-	if after := Load(dir); after.Five.Pct != 60 {
-		t.Fatalf("낡은 표본이 파일을 되돌리면 안 된다: %+v", after.Five)
-	}
-}
-
 func TestResolveWritesWhenLiveSampleWins(t *testing.T) {
 	dir := t.TempDir()
 	Store(dir, Pair{Five: c(24, 2000)})
@@ -189,5 +132,33 @@ func TestResolveKeepsExpiredEntryInFileUntilOverwritten(t *testing.T) {
 	Resolve(dir, Pair{}, 2000)
 	if after := Load(dir); after.Five.Pct != 94 {
 		t.Fatalf("만료됐다고 파일에서 지우면 안 된다: %+v", after.Five)
+	}
+}
+
+func TestResolveShowsLiveSampleEvenWhenCacheHoldsALaterReset(t *testing.T) {
+	// 실제로 관측한 상태다. 5시간 창은 굴러가는 창이라 리셋 시각이 앞선 창으로 되돌아갈
+	// 수 있고, 그때 캐시의 더 먼 리셋이 지금 페이로드를 계속 이겨 화면이 얼어붙었다.
+	dir := t.TempDir()
+	Store(dir, Pair{Five: c(1, 3000), Week: c(56, 9000)})
+	got := Resolve(dir, Pair{Five: c(81, 2000), Week: c(78, 8000)}, 1000)
+	if got.Five.Pct != 81 || got.Week.Pct != 78 {
+		t.Fatalf("페이로드가 화면을 차지해야 한다: %+v", got)
+	}
+	if after := Load(dir); after.Five.Pct != 81 || after.Week.Pct != 78 {
+		t.Fatalf("페이로드가 파일에도 남아야 한다: %+v", after)
+	}
+}
+
+func TestResolveFollowsLiveSampleDownwardWithinOneWindow(t *testing.T) {
+	// 리셋이 같아도 페이로드가 낮으면 낮은 값이 지금의 상태다. 계정이 바뀌었든 서버가
+	// 다시 계산했든, 화면이 따라야 할 값은 이 세션이 방금 받은 값 하나뿐이다.
+	dir := t.TempDir()
+	Store(dir, Pair{Five: c(60, 2000)})
+	got := Resolve(dir, Pair{Five: c(24, 2000)}, 1000)
+	if got.Five.Pct != 24 {
+		t.Fatalf("페이로드를 따라 내려가야 한다: %+v", got.Five)
+	}
+	if after := Load(dir); after.Five.Pct != 24 {
+		t.Fatalf("파일도 페이로드를 따라야 한다: %+v", after.Five)
 	}
 }
