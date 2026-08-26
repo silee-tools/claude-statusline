@@ -18,7 +18,10 @@ TMPROOT=$(mktemp -d)
 completed=0
 trap 'rc=$?; rm -rf "$TMPROOT"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
 CACHE="$TMPROOT/cache"
-PTR="$CACHE/claude-statusline/binary-path"
+# 포인터는 플러그인 루트 디렉터리 이름으로 갈린다. 스위트는 저장소에서 직접 돌므로 그
+# 이름이 곧 키다 — 설치본이라면 여기에 버전이 온다.
+KEY=${SRC##*/}
+PTR="$CACHE/claude-statusline/binary-path-$KEY"
 mkdir -p "$CACHE/claude-statusline"
 
 JSON='{"workspace":{"current_dir":"/tmp"},"version":"9.9.9"}'
@@ -75,6 +78,19 @@ assert_equals   "T5 빈 PATH 에서도 종료코드 0" "0" "$RC"
 assert_contains "T5 빈 PATH 에서도 저하 표시" "statusline" "$OUT"
 assert_equals   "T5 빈 PATH 에서 stderr 가 비어 있음(외부 명령 미호출)" "" "$(cat "$TMPROOT/err")"
 
+# --- T12: shim 은 자기 플러그인 루트 이름을 키로 한 포인터를 읽는다 ---
+#     shim 은 settings.json 에 한 버전 경로로 고정되지만 SessionStart 훅은 버전마다 따로
+#     돈다. 포인터가 하나면 각 버전의 훅이 그 한 줄을 서로 덮어써, 고정된 shim 이 다른
+#     버전의 바이너리를 실행하거나 지워진 경로를 실행한다.
+KEYROOT="$TMPROOT/keyed/5.9.9"
+mkdir -p "$KEYROOT/scripts"
+cp "$SRC/scripts/statusline.sh" "$KEYROOT/scripts/statusline.sh"
+printf '%s\n' "$STUB" > "$CACHE/claude-statusline/binary-path-5.9.9"
+printf '%s\n' "$TMPROOT/nope" > "$CACHE/claude-statusline/binary-path"
+OUT=$(printf '%s' "$JSON" | iso "$CACHE" sh "$KEYROOT/scripts/statusline.sh")
+assert_contains "T12 자기 키의 포인터로 렌더" "rendered-by-binary" "$OUT"
+rm -f "$CACHE/claude-statusline/binary-path-5.9.9" "$CACHE/claude-statusline/binary-path"
+
 # --- 이하 build-binary.sh ---
 BUILD="$SRC/scripts/build-binary.sh"
 PLUGIN_VERSION=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$SRC/.claude-plugin/plugin.json" | head -1)
@@ -85,7 +101,7 @@ if command -v go >/dev/null 2>&1; then
   # --- T6: 빌드 성공 뒤 포인터에 절대경로 한 줄을 남긴다 ---
   build "$BC"; RC=$?
   assert_equals "T6 빌드 종료코드 0" "0" "$RC"
-  BINPATH=$(cat "$BC/claude-statusline/binary-path" 2>/dev/null || printf '')
+  BINPATH=$(cat "$BC/claude-statusline/binary-path-$KEY" 2>/dev/null || printf '')
   assert_equals   "T6 포인터가 한 줄" "1" "$(printf '%s\n' "$BINPATH" | wc -l | tr -d ' ')"
   assert_contains "T6 포인터가 절대경로" "/" "$BINPATH"
   assert_equals   "T6 포인터가 실행 가능한 파일을 가리킴" "yes" "$([ -x "$BINPATH" ] && echo yes || echo no)"
@@ -97,14 +113,29 @@ if command -v go >/dev/null 2>&1; then
   AFTER=$(stat -f '%m' "$BINPATH" 2>/dev/null || stat -c '%Y' "$BINPATH")
   assert_equals "T7 재실행은 바이너리를 다시 만들지 않음" "$BEFORE" "$AFTER"
 
-  # --- T8: bin 디렉터리의 옛 버전 바이너리를 지운다 ---
+  # --- T8: 설치돼 있지 않은 버전의 바이너리만 지운다 ---
+  #     지워진 바이너리의 주인 세션은 다음 렌더에서 저하 표시로 떨어진다. 그래서 정리는
+  #     플러그인 루트의 형제로 남아 있지 않은 버전에만 미친다.
   BINDIR=$(dirname "$BINPATH")
   STALE="$BINDIR/statusline-0.0.0-old-arch"
+  LIVE="$BINDIR/statusline-9.9.9-old-arch"
   : > "$STALE"
-  rm -f "$BINPATH" "$BC/claude-statusline/binary-path"
+  : > "$LIVE"
+  mkdir -p "$(dirname "$SRC")/9.9.9"
+  rm -f "$BINPATH" "$BC/claude-statusline/binary-path-$KEY"
   build "$BC" >/dev/null 2>&1
-  assert_equals "T8 옛 버전 바이너리 제거" "no" "$([ -e "$STALE" ] && echo yes || echo no)"
+  rmdir "$(dirname "$SRC")/9.9.9"
+  assert_equals "T8 설치돼 있지 않은 버전은 제거" "no" "$([ -e "$STALE" ] && echo yes || echo no)"
+  assert_equals "T8 설치돼 있는 버전은 보존" "yes" "$([ -e "$LIVE" ] && echo yes || echo no)"
   assert_equals "T8 새 바이너리는 남음" "yes" "$([ -x "$BINPATH" ] && echo yes || echo no)"
+  rm -f "$LIVE"
+
+  # --- T8a: 다른 키의 포인터를 건드리지 않는다 ---
+  OTHER="$BC/claude-statusline/binary-path-4.0.0"
+  printf '%s\n' "/nonexistent/other-binary" > "$OTHER"
+  build "$BC" >/dev/null 2>&1
+  assert_equals "T8a 다른 버전의 포인터는 그대로" "/nonexistent/other-binary" "$(cat "$OTHER")"
+  rm -f "$OTHER"
 
   # --- T9: 빌드한 바이너리를 shim 이 실제로 실행해 렌더한다 ---
   OUT=$(printf '%s' "$JSON" | iso "$BC" env CLAUDE_STATUSLINE_WIDTH=81 sh "$SRC/scripts/statusline.sh")
@@ -125,7 +156,7 @@ if command -v go >/dev/null 2>&1; then
   assert_contains "T9a UserPromptSubmit은 working" '"activity":"working"' "$SNAPSHOT_BODY"
   assert_not_contains "T9a prompt 원문은 기록하지 않음" "$SECRET" "$SNAPSHOT_BODY"
 
-  # --- T9b: render는 activity를 보존하며 resolved usage를 같은 snapshot에 기록한다 ---
+# --- T9b: render는 activity를 보존하며 resolved usage를 같은 snapshot에 기록한다 ---
   RENDER_JSON='{"session_id":"placeholder-session","workspace":{"current_dir":"/tmp/render-project"},"model":{"display_name":"example-model"},"context_window":{"current_usage":{"input_tokens":1},"context_window_size":200000},"version":"2.1.11","rate_limits":{"five_hour":{"used_percentage":24,"resets_at":1890000000},"seven_day":{"used_percentage":41,"resets_at":1890600000}}}'
   RENDER_JSON="${RENDER_JSON%?},\"prompt\":\"$SECRET\",\"response\":\"$SECRET\",\"tool_arguments\":{\"value\":\"$SECRET\"}}"
   OUT=$(printf '%s' "$RENDER_JSON" | iso "$BC" env AGENT_STATUS_STATE_DIR="$STATE" \
@@ -163,7 +194,7 @@ RC=$?
 set -e
 assert_equals "T10 go 부재에도 종료코드 0" "0" "$RC"
 assert_equals "T10 go 부재면 포인터를 만들지 않음" "no" \
-  "$([ -f "$NOGO/claude-statusline/binary-path" ] && echo yes || echo no)"
+  "$([ -f "$NOGO/claude-statusline/binary-path-$KEY" ] && echo yes || echo no)"
 
 # --- T11: 지원하는 모든 Claude event가 같은 handler에 등록돼 있다 ---
 HOOKS=$(awk -f "$SRC/scripts/json.awk" "$SRC/hooks/hooks.json")

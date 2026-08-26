@@ -7,7 +7,14 @@ set -eu
 # 수정 시 검토 관점: 이 shim 은 자식 프로세스를 하나도 만들지 않는다. 경로를 매 렌더 계산하려고
 # uname 을 부르거나 빌드 스크립트를 부르면 그만큼 프로세스가 늘어 이식으로 줄인 시간을 도로
 # 쓴다. 그래서 바이너리 위치는 셸 파라미터 확장으로만 얻는 포인터 파일 한 줄에서 읽는다.
-PTR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/binary-path"
+# 포인터를 플러그인 버전으로 가르는 이유: shim 은 settings.json 에 한 버전 경로로 고정되지만
+# 바이너리를 빌드하는 SessionStart 훅은 설치된 버전마다 따로 돈다. 포인터가 하나뿐이면 각
+# 버전의 훅이 그 한 줄을 서로 덮어써, 고정된 shim 이 다른 버전의 바이너리를 실행한다.
+# 키는 플러그인 루트 디렉터리 이름이다 — 설치본이면 버전, 저장소에서 직접 쓰면
+# claude-statusline 이 된다. build-binary.sh 와 hook-handler.sh 는 같은 키를
+# CLAUDE_PLUGIN_ROOT 에서 얻으므로 세 곳이 같은 디렉터리를 가리킨다.
+ROOT=${0%/scripts/*}
+PTR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/binary-path-${ROOT##*/}"
 BIN=""
 if [ -f "$PTR" ]; then
   IFS= read -r BIN < "$PTR" || BIN=""

@@ -32,9 +32,17 @@ not come up where the network is absent or a proxy blocks it. Verify with
 The binary is not committed. `scripts/build-binary.sh` builds it once per plugin
 version into
 `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/bin/statusline-<version>-<GOOS>-<GOARCH>`
-and writes that absolute path to `binary-path` beside it, which is the one line
-the shim reads. The `SessionStart` hook detaches that build into the background
-because the hook's timeout is 5 seconds and a cold build lands on it.
+and writes that absolute path to `binary-path-<key>` beside it, which is the one
+line the shim reads. The key is the plugin root's directory name — the version in
+an installed copy, `claude-statusline` when the scripts run from this repository —
+and the shim derives it from its own `$0` while the two hook scripts derive it from
+`CLAUDE_PLUGIN_ROOT`. Splitting the pointer is what keeps two installed versions
+apart: the shim is pinned in `settings.json` to one version's path while every
+installed version runs its own `SessionStart`, so a single pointer had each version's
+hook overwriting the line the pinned shim reads. For the same reason the build's
+cleanup keeps a binary whose version still has a sibling directory under the plugin
+root and removes only the rest. The `SessionStart` hook detaches that build into the
+background because the hook's timeout is 5 seconds and a cold build lands on it.
 
 Two properties keep the port worth its while, so hold them when editing:
 

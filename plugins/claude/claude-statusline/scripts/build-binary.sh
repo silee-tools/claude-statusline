@@ -19,7 +19,7 @@ set -eu
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline"
 BIN_DIR="$CACHE_DIR/bin"
-PTR="$CACHE_DIR/binary-path"
+PTR="$CACHE_DIR/binary-path-${PLUGIN_ROOT##*/}"
 
 version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' \
   "$PLUGIN_ROOT/.claude-plugin/plugin.json" 2>/dev/null | head -1 || printf '')
@@ -59,10 +59,17 @@ printf '%s\n' "$target" > "$ptmp"
 mv "$ptmp" "$PTR"
 
 # 옛 버전과 다른 플랫폼의 바이너리를 정리한다. 지우지 않으면 플러그인을 올릴 때마다 캐시가
-# 자란다.
+# 자란다. 다만 아직 설치돼 있는 버전의 것은 남긴다 — 그 버전으로 열려 있는 세션이 다음
+# 렌더에서 저하 표시로 떨어지고, 그 세션이 다시 빌드할 때까지 statusline 이 비기 때문이다.
+# 설치 여부는 플러그인 루트의 형제 디렉터리로 판정한다. 버전은 파일명 뒤의 GOOS 와 GOARCH
+# 두 필드를 떼어 얻으므로 1.0.0-rc1 처럼 하이픈이 든 버전도 그대로 읽힌다.
+siblings=${PLUGIN_ROOT%/*}
 for f in "$BIN_DIR"/*; do
   [ -e "$f" ] || continue
   [ "$f" = "$target" ] && continue
+  name=${f##*/}
+  rest=${name#statusline-}
+  [ -d "$siblings/${rest%-*-*}" ] && continue
   rm -f "$f"
 done
 exit 0
