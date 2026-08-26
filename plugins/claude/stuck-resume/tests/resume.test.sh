@@ -127,7 +127,7 @@ run() {
 reset_state() {
   stop_started_processes
   rm -rf "$CLAUDE_RESUME_STATE_DIR"
-  unset CLAUDE_RESUME_WAIT_SECONDS CLAUDE_RESUME_MAX_ATTEMPTS CLAUDE_RESUME_TEST_REGISTER_BARRIER CLAUDE_RESUME_TEST_SIGNAL_BARRIER CLAUDE_RESUME_TEST_RECLAIM_BARRIER CLAUDE_RESUME_TEST_SIGNAL_RECEIVED_DIR CLAUDE_RESUME_TEST_EMPTY_RECLAIM_BARRIER CLAUDE_RESUME_TEST_LOCK_PUBLISH_BARRIER CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER
+  unset CLAUDE_RESUME_WAIT_SECONDS CLAUDE_RESUME_MAX_ATTEMPTS CLAUDE_RESUME_HOOK_BUDGET CLAUDE_RESUME_TEST_REGISTER_BARRIER CLAUDE_RESUME_TEST_SIGNAL_BARRIER CLAUDE_RESUME_TEST_RECLAIM_BARRIER CLAUDE_RESUME_TEST_SIGNAL_RECEIVED_DIR CLAUDE_RESUME_TEST_EMPTY_RECLAIM_BARRIER CLAUDE_RESUME_TEST_LOCK_PUBLISH_BARRIER CLAUDE_RESUME_TEST_LOCK_ACQUIRED_BARRIER
   CLAUDE_RESUME_WAIT_SECONDS=0
   export CLAUDE_RESUME_WAIT_SECONDS
   CLAUDE_RESUME_TEST_SKIP_SLEEP=1
@@ -336,7 +336,7 @@ assert_equals "T16 종료 시각 뒤 빈 표준 오류" "" "$err"
 # T17: 네 원인의 StopFailure와 Stop은 같은 스크립트를 정해진 계약으로 호출한다.
 hooks_compact=$(tr -d '[:space:]' < "$HOOKS")
 case "$hooks_compact" in
-  *'"StopFailure":[{"matcher":"rate_limit|authentication_failed|server_error|overloaded","hooks":[{"type":"command","command":"sh${CLAUDE_PLUGIN_ROOT}/scripts/resume.sh","asyncRewake":true,"timeout":600}]}]'*) ok "T17 StopFailure 훅 계약" ;;
+  *'"StopFailure":[{"matcher":"rate_limit|authentication_failed|server_error|overloaded","hooks":[{"type":"command","command":"sh${CLAUDE_PLUGIN_ROOT}/scripts/resume.sh","asyncRewake":true,"timeout":3600}]}]'*) ok "T17 StopFailure 훅 계약" ;;
   *) bad "T17 StopFailure 훅 계약" "$hooks_compact" ;;
 esac
 case "$hooks_compact" in
@@ -759,6 +759,66 @@ wait_for_file "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/$SESSION_C" || bad "T35 새 
 assert_equals "T35 새 에피소드의 stale 활성 원인 해제" "-" "$(field global active_cause)"
 touch "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/release"
 wait_for_file "$TMPROOT/t35-new-episode.rc" || bad "T35 새 에피소드 waiter 종료" "종료코드 파일 없음"
+
+# T36: 순번을 받지 못한 워커는 훅 예산이 끝나는 시각에 강제로 재개한다.
+# 훅 timeout 에 죽으면 종료코드가 143 으로 확정되어 재개도 재등록도 일어나지 않으므로,
+# 예산 안에서 스스로 깨어나 다음 StopFailure 가 새 예산의 워커를 등록하게 해야 한다.
+reset_state
+CLAUDE_RESUME_WAIT_SECONDS=480
+CLAUDE_RESUME_HOOK_BUDGET=540
+export CLAUDE_RESUME_WAIT_SECONDS CLAUDE_RESUME_HOOK_BUDGET
+set_now 1787200000
+run "$(failure_input "$SESSION_A" rate_limit)"
+assert_equals "T36 A가 첫 순번을 점유" "$SESSION_A,1787200480,1787200960" "$(field global active_session),$(field global last_attempt),$(field global handoff_at)"
+set_now 1787200000
+run "$(failure_input "$SESSION_B" rate_limit)"
+assert_equals "T36 B due_at은 A 인계 시각" "1787200960" "$(field "waiters/$SESSION_B" due_at)"
+assert_equals "T36 순번 전 예산 만료 시각에 강제 탐침" "1787200540" "$(field global last_attempt)"
+assert_equals "T36 강제 탐침도 재개 종료코드" "2" "$rc"
+assert_equals "T36 강제 탐침도 원인별 재개 문장" "Continue the work that was interrupted by the usage limit." "$err"
+assert_equals "T36 강제 탐침은 활성 세션을 빼앗지 않음" "$SESSION_A" "$(field global active_session)"
+assert_equals "T36 강제 탐침도 직렬 탐침 수를 소모" "2" "$(field global attempts)"
+assert_equals "T36 재등록이 백오프를 계승하도록 waiter 유지" "1" "$(field "waiters/$SESSION_B" initial_used)"
+
+# T37: 최대 백오프 이하이거나 비정수인 예산은 기본값으로 정규화해 백오프를 무너뜨리지 않는다.
+for invalid_budget in 100 480 invalid; do
+  reset_state
+  CLAUDE_RESUME_WAIT_SECONDS=480
+  CLAUDE_RESUME_HOOK_BUDGET=$invalid_budget
+  export CLAUDE_RESUME_WAIT_SECONDS CLAUDE_RESUME_HOOK_BUDGET
+  set_now 1787200000
+  run "$(failure_input "$SESSION_A" rate_limit)"
+  set_now 1787200000
+  run "$(failure_input "$SESSION_B" rate_limit)"
+  assert_equals "T37 $invalid_budget 예산은 기본값이라 정상 순번까지 대기" "1787200960" "$(field global last_attempt)"
+  assert_equals "T37 $invalid_budget 예산은 기본값이라 B가 순번 점유" "$SESSION_B" "$(field global active_session)"
+done
+
+# T38: 강제 탐침 뒤의 재등록은 시작 지연이 아니라 현재 백오프를 계승한다.
+# 계승하지 않으면 강제 탐침으로 깨어난 모든 세션이 시작 지연 간격으로 다시 몰린다.
+reset_state
+CLAUDE_RESUME_WAIT_SECONDS=30
+CLAUDE_RESUME_HOOK_BUDGET=540
+export CLAUDE_RESUME_WAIT_SECONDS CLAUDE_RESUME_HOOK_BUDGET
+set_now 1787200000
+run "$(failure_input "$SESSION_A" rate_limit)"
+for _ in 1 2 3 4; do
+  set_now 1787200000
+  run "$(failure_input "$SESSION_A" rate_limit)"
+done
+assert_equals "T38 A가 최대 백오프로 순번 점유" "480,$SESSION_A,1787200960" "$(field global delay),$(field global active_session),$(field global handoff_at)"
+set_now 1787200000
+run "$(failure_input "$SESSION_B" rate_limit)"
+assert_equals "T38 B는 순번 전 예산 만료 시각에 강제 탐침" "1787200540" "$(field global last_attempt)"
+CLAUDE_RESUME_TEST_REGISTER_BARRIER="$TMPROOT/t38-register"
+export CLAUDE_RESUME_TEST_REGISTER_BARRIER
+set_now 1787200540
+start_waiter "$(failure_input "$SESSION_B" rate_limit)" "$TMPROOT/t38-b.out" "$TMPROOT/t38-b.err" "$TMPROOT/t38-b.rc"
+wait_for_file "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/$SESSION_B" || bad "T38 B 재등록" "등록 장벽 파일 없음"
+t38_waiter=$(find "$STATE_V2/waiters" -type f ! -name "$SESSION_B" -print | sed -n '1p')
+assert_equals "T38 재등록 due_at은 시작 지연 30이 아니라 백오프 480을 계승" "1787201020" "$(sed -n 's/^due_at=//p' "$t38_waiter" 2>/dev/null | sed -n '1p')"
+touch "$CLAUDE_RESUME_TEST_REGISTER_BARRIER/release"
+wait_for_file "$TMPROOT/t38-b.rc" || bad "T38 B 재등록 워커 종료" "종료코드 파일 없음"
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 completed=1

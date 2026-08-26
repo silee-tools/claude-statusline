@@ -35,6 +35,15 @@ base_delay_or_default() {
   esac
 }
 
+# 훅이 죽기 전에 워커가 스스로 깨어날 시각까지의 초. hooks.json 의 timeout 보다 짧아야
+# 하고, 최대 백오프 480 초보다 길어야 그 백오프가 순번 경쟁에 도달한다.
+hook_budget_or_default() {
+  case "$1" in
+    ''|*[!0-9]*) printf '3540\n' ;;
+    *) if [ "$1" -gt 480 ]; then printf '%s\n' "$1"; else printf '3540\n'; fi ;;
+  esac
+}
+
 read_field() {
   sed -n "s/^$2=//p" "$1" 2>/dev/null | sed -n '1p'
 }
@@ -45,6 +54,19 @@ write_atomic() {
   write_tmp="$write_file.$$.tmp"
   printf '%s\n' "$write_content" > "$write_tmp"
   mv "$write_tmp" "$write_file"
+}
+
+# 등록과 강제 탐침이 같은 레코드를 쓰고 initial_used 만 다르다.
+write_waiter() {
+  write_atomic "$registered_waiter" "pid=$$
+token=$worker_token
+session=$session
+cause=$error
+episode=$episode
+generation=$waiter_generation
+registered_at=$input_now
+due_at=$due_at
+initial_used=$initial_used"
 }
 
 create_process_identity() {
@@ -344,6 +366,7 @@ print_resume_message() {
 
 sleep_until() {
   sleep_target=$1
+  [ "$sleep_target" -le "$budget_expires_at" ] || sleep_target=$budget_expires_at
   [ "$wake_requested" = 0 ] || return 0
   if [ "$effective_now" -lt "$sleep_target" ]; then
     sleep_seconds=$((sleep_target - effective_now))
@@ -360,6 +383,18 @@ sleep_until() {
       effective_now=$(now_epoch)
     fi
   fi
+}
+
+# 훅 timeout 은 종료코드를 143 으로 확정하므로 그때 죽으면 재개도 재등록도 없다.
+# 순번을 받지 못한 채 예산이 끝나면 활성 슬롯을 건드리지 않고 깨워, 그 턴이 다시
+# 실패했을 때 새 StopFailure 가 예산이 갱신된 워커를 등록하게 한다.
+force_probe() {
+  initial_used=1
+  write_waiter
+  last_attempt=$effective_now
+  attempts=$((attempts + 1))
+  write_global
+  release_lock
 }
 
 eligible_first_waiter() {
@@ -460,15 +495,7 @@ deadline=$cause_end"
   fi
   generation=$((generation + 1))
   waiter_generation=$generation
-  write_atomic "$registered_waiter" "pid=$$
-token=$worker_token
-session=$session
-cause=$error
-episode=$episode
-generation=$waiter_generation
-registered_at=$input_now
-due_at=$due_at
-initial_used=$initial_used"
+  write_waiter
   write_global
   release_lock
   hold_registered_waiter
@@ -561,6 +588,7 @@ EOF
 
 wait_for_turn() {
   effective_now=$input_now
+  budget_expires_at=$((input_now + hook_budget))
   sleep_until "$due_at"
   while :; do
     acquire_lock
@@ -583,6 +611,10 @@ wait_for_turn() {
     fi
     if [ "$active_session" != - ]; then
       if [ "$effective_now" -lt "$handoff_at" ]; then
+        if [ "$effective_now" -ge "$budget_expires_at" ]; then
+          force_probe
+          return 2
+        fi
         next_wake=$handoff_at
         release_lock
         sleep_until "$next_wake"
@@ -605,6 +637,10 @@ wait_for_turn() {
       attempts=$((attempts + 1))
       write_global
       release_lock
+      return 2
+    fi
+    if [ "$effective_now" -ge "$budget_expires_at" ]; then
+      force_probe
       return 2
     fi
     release_lock
@@ -644,6 +680,7 @@ if [ "${1:-}" = --worker ]; then
   [ "$process_identity" = "$STATE_DIR/$process_token" ] || process_identity=
   session=${CLAUDE_RESUME_WORKER_SESSION:-unknown}
   error=${CLAUDE_RESUME_WORKER_ERROR:-other}
+  hook_budget=$(hook_budget_or_default "${CLAUDE_RESUME_HOOK_BUDGET:-}")
   transcript=${CLAUDE_RESUME_WORKER_TRANSCRIPT:-}
   last_message=${CLAUDE_RESUME_WORKER_LAST_MESSAGE:-}
   mkdir -p "$CAUSE_DIR" "$WAITER_DIR"
