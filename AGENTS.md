@@ -9,15 +9,17 @@ three-row layout and a full seven-row layout. `stuck-resume` is a
 resumes the interrupted turn. End-user documentation lives in
 [README.md](README.md); this file covers how to change the code safely.
 
-Each plugin owns a directory named after it, holding `.claude-plugin/plugin.json`,
-`hooks/hooks.json`, `scripts/`, and `tests/`. `hooks.json` is auto-discovered;
+Each plugin owns a directory under `plugins/claude` named after it, holding
+`.claude-plugin/plugin.json`, `hooks/hooks.json`, `scripts/`, and `tests/`.
+`hooks.json` is auto-discovered;
 do not also declare a `hooks` field in `plugin.json` (double-registration errors
 out).
 
 ## The render path is Go
 
-`claude-statusline` renders in one process: `cmd/statusline` reads the payload on
-stdin and writes the rows, and `internal/` holds the packages it composes.
+`plugins/claude/claude-statusline` renders in one process: `cmd/statusline` reads
+the payload on stdin and writes the rows, and `internal/` holds the packages it
+composes.
 `scripts/statusline.sh` stays as a shim that `exec`s that binary, so the command
 already recorded in `settings.json` keeps working.
 
@@ -68,7 +70,7 @@ Run every suite from the repo root; the exit code is the gate, so a suite that
 fails to start fails the run rather than reporting zero failures:
 
 ```shell
-sh -c 'rc=0; for t in */tests/*.test.sh; do sh "$t" || rc=1; done; (cd claude-statusline && go test ./...) || rc=1; exit "$rc"'
+sh -c 'rc=0; for t in plugins/claude/*/tests/*.test.sh; do sh "$t" || rc=1; done; (cd plugins/claude/claude-statusline && go test ./...) || rc=1; exit "$rc"'
 ```
 
 A suite that cleans up in an `EXIT` trap has to carry a completion flag, because
@@ -110,7 +112,7 @@ placeholder logins (e.g. `octocat`) and RFC 2606 reserved domains
 Each plugin is loaded from a **version-pinned cache**, so any change that should
 reach installed users needs a version bump. On every functional change:
 
-1. Bump `<plugin>/.claude-plugin/plugin.json` `version` (SemVer).
+1. Bump `plugins/claude/<plugin>/.claude-plugin/plugin.json` `version` (SemVer).
 2. Set that plugin's entry `version` in `.claude-plugin/marketplace.json`
    to the same value.
 

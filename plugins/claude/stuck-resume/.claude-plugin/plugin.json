@@ -1,0 +1,15 @@
+{
+  "name": "stuck-resume",
+  "description": "턴을 끊은 원인이 풀린 뒤 자동으로 이어서 재개한다",
+  "version": "0.4.2",
+  "author": {
+    "name": "silee9019"
+  },
+  "keywords": [
+    "rate-limit",
+    "auth",
+    "stuck",
+    "resume",
+    "hook"
+  ]
+}

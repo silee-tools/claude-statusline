@@ -1,0 +1,360 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* SessionDeskApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* SessionDeskApp.swift */; };
+		A10000000000000000000002 /* SessionDeskWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* SessionDeskWidget.swift */; };
+		A10000000000000000000003 /* AgentCore in Frameworks */ = {isa = PBXBuildFile; productRef = D10000000000000000000001 /* AgentCore */; };
+		A10000000000000000000004 /* AgentCore in Frameworks */ = {isa = PBXBuildFile; productRef = D10000000000000000000002 /* AgentCore */; };
+		A10000000000000000000005 /* SessionDeskWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007 /* SessionDeskWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		E10000000000000000000002 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = H10000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = G10000000000000000000002;
+			remoteInfo = SessionDeskWidget;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		F10000000000000000000004 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				A10000000000000000000005 /* SessionDeskWidget.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		B10000000000000000000001 /* SessionDeskApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDeskApp.swift; sourceTree = "<group>"; };
+		B10000000000000000000002 /* SessionDeskWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDeskWidget.swift; sourceTree = "<group>"; };
+		B10000000000000000000003 /* SessionDesk-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "SessionDesk-Info.plist"; sourceTree = "<group>"; };
+		B10000000000000000000004 /* SessionDeskWidget-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "SessionDeskWidget-Info.plist"; sourceTree = "<group>"; };
+		B10000000000000000000005 /* SessionDesk.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SessionDesk.entitlements; sourceTree = "<group>"; };
+		B10000000000000000000006 /* SessionDeskWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SessionDeskWidget.entitlements; sourceTree = "<group>"; };
+		B10000000000000000000007 /* SessionDeskWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = SessionDeskWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		B10000000000000000000008 /* SessionDesk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SessionDesk.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		F10000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000003 /* AgentCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F10000000000000000000006 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000004 /* AgentCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		C10000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				C10000000000000000000002 /* SessionDeskApp */,
+				C10000000000000000000003 /* SessionDeskWidget */,
+				C10000000000000000000004 /* Configuration */,
+				C10000000000000000000005 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		C10000000000000000000002 /* SessionDeskApp */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000001 /* SessionDeskApp.swift */,
+			);
+			path = SessionDeskApp;
+			sourceTree = "<group>";
+		};
+		C10000000000000000000003 /* SessionDeskWidget */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000002 /* SessionDeskWidget.swift */,
+			);
+			path = SessionDeskWidget;
+			sourceTree = "<group>";
+		};
+		C10000000000000000000004 /* Configuration */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000003 /* SessionDesk-Info.plist */,
+				B10000000000000000000004 /* SessionDeskWidget-Info.plist */,
+				B10000000000000000000005 /* SessionDesk.entitlements */,
+				B10000000000000000000006 /* SessionDeskWidget.entitlements */,
+			);
+			path = Configuration;
+			sourceTree = "<group>";
+		};
+		C10000000000000000000005 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000008 /* SessionDesk.app */,
+				B10000000000000000000007 /* SessionDeskWidget.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		G10000000000000000000001 /* SessionDesk */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = J10000000000000000000003 /* Build configuration list for PBXNativeTarget "SessionDesk" */;
+			buildPhases = (
+				F10000000000000000000001 /* Sources */,
+				F10000000000000000000002 /* Frameworks */,
+				F10000000000000000000003 /* Resources */,
+				F10000000000000000000004 /* Embed App Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E10000000000000000000001 /* PBXTargetDependency */,
+			);
+			name = SessionDesk;
+			packageProductDependencies = (
+				D10000000000000000000001 /* AgentCore */,
+			);
+			productName = SessionDesk;
+			productReference = B10000000000000000000008 /* SessionDesk.app */;
+			productType = "com.apple.product-type.application";
+		};
+		G10000000000000000000002 /* SessionDeskWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = K10000000000000000000003 /* Build configuration list for PBXNativeTarget "SessionDeskWidget" */;
+			buildPhases = (
+				F10000000000000000000005 /* Sources */,
+				F10000000000000000000006 /* Frameworks */,
+				F10000000000000000000007 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SessionDeskWidget;
+			packageProductDependencies = (
+				D10000000000000000000002 /* AgentCore */,
+			);
+			productName = SessionDeskWidget;
+			productReference = B10000000000000000000007 /* SessionDeskWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		H10000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2660;
+				LastUpgradeCheck = 2660;
+				TargetAttributes = {
+					G10000000000000000000001 = { CreatedOnToolsVersion = 26.0; };
+					G10000000000000000000002 = { CreatedOnToolsVersion = 26.0; };
+				};
+			};
+			buildConfigurationList = I10000000000000000000003 /* Build configuration list for PBXProject "SessionDesk" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (en, Base, );
+			mainGroup = C10000000000000000000001;
+			packageReferences = (
+				D10000000000000000000000 /* XCLocalSwiftPackageReference "AgentCore" */,
+			);
+			productRefGroup = C10000000000000000000005 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				G10000000000000000000001 /* SessionDesk */,
+				G10000000000000000000002 /* SessionDeskWidget */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F10000000000000000000003 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		F10000000000000000000007 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		F10000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (A10000000000000000000001 /* SessionDeskApp.swift in Sources */, );
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F10000000000000000000005 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (A10000000000000000000002 /* SessionDeskWidget.swift in Sources */, );
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		E10000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = G10000000000000000000002 /* SessionDeskWidget */;
+			targetProxy = E10000000000000000000002 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		I10000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		I10000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		J10000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Configuration/SessionDesk.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Configuration/SessionDesk-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../Frameworks", );
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = tools.silee.SessionDesk;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		J10000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Configuration/SessionDesk.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Configuration/SessionDesk-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../Frameworks", );
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = tools.silee.SessionDesk;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
+		K10000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = Configuration/SessionDeskWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Configuration/SessionDeskWidget-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../../../../Frameworks", );
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = tools.silee.SessionDesk.Widget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+		K10000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = Configuration/SessionDeskWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Configuration/SessionDeskWidget-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/../../../../Frameworks", );
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = tools.silee.SessionDesk.Widget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		I10000000000000000000003 /* Build configuration list for PBXProject "SessionDesk" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (I10000000000000000000001 /* Debug */, I10000000000000000000002 /* Release */, );
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		J10000000000000000000003 /* Build configuration list for PBXNativeTarget "SessionDesk" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (J10000000000000000000001 /* Debug */, J10000000000000000000002 /* Release */, );
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		K10000000000000000000003 /* Build configuration list for PBXNativeTarget "SessionDeskWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (K10000000000000000000001 /* Debug */, K10000000000000000000002 /* Release */, );
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		D10000000000000000000000 /* XCLocalSwiftPackageReference "AgentCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../AgentCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		D10000000000000000000001 /* AgentCore */ = {isa = XCSwiftPackageProductDependency; package = D10000000000000000000000 /* XCLocalSwiftPackageReference "AgentCore" */; productName = AgentCore; };
+		D10000000000000000000002 /* AgentCore */ = {isa = XCSwiftPackageProductDependency; package = D10000000000000000000000 /* XCLocalSwiftPackageReference "AgentCore" */; productName = AgentCore; };
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = H10000000000000000000001 /* Project object */;
+}
