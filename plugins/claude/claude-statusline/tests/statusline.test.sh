@@ -45,7 +45,10 @@ if ! ( cd "$SRC" && GOPROXY=off go build -o "$BINARY" ./cmd/statusline ) >&2; th
   echo "FATAL: 렌더 바이너리 빌드 실패" >&2
   exit 1
 fi
-printf '%s\n' "$BINARY" > "$TMPROOT/cache/claude-statusline/binary-path"
+# 포인터는 플러그인 루트 디렉터리 이름으로 갈린다. 스위트는 격리된 임시 루트의 shim 을
+# 부르므로 그 루트 이름이 키다 — shim 이 자기 $0 에서 얻는 값과 같은 규칙으로 만든다.
+SL_ROOT=${SL%/scripts/*}
+printf '%s\n' "$BINARY" > "$TMPROOT/cache/claude-statusline/binary-path-${SL_ROOT##*/}"
 
 # gh 계정 fixture: 현재 계정명 캐시 + 계정→라벨 매핑 설정 파일. 실제 계정명 대신 테스트용
 # handle(octocat)로 결정론화한다. format_gh 는 소스에 계정명을 박지 않고 이 매핑을 읽는다.
@@ -152,7 +155,7 @@ json_eff() {
 }
 
 # 세션 공유 5h·7d 캐시. 렌더가 이 파일에 쓰므로 케이스마다 지워 앞 케이스의 값이 뒤로 새지
-# 않게 한다. 캐시 디렉터리 전체를 지우면 같은 곳에 사는 binary-path 포인터까지 날아가 shim 이
+# 않게 한다. 캐시 디렉터리 전체를 지우면 같은 곳에 사는 binary-path-<키> 포인터까지 날아가 shim 이
 # 저하 표시를 내므로 이 파일 하나만 지운다.
 RATE_CACHE="$TMPROOT/cache/claude-statusline/rate-limits.env"
 seed_rate_cache() { printf 'fivePct=%s\nfiveReset=%s\nweekPct=%s\nweekReset=%s\n' "$1" "$2" "$3" "$4" > "$RATE_CACHE"; }
