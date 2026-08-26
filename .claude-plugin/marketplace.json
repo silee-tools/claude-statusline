@@ -12,7 +12,7 @@
       "name": "claude-statusline",
       "source": "./plugins/claude/claude-statusline",
       "description": "터미널 폭에 따라 3행과 7행으로 전환하는 statusline HUD",
-      "version": "5.1.3",
+      "version": "5.1.4",
       "author": {
         "name": "silee9019"
       },
