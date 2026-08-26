@@ -14,7 +14,8 @@ event=$(printf '%s' "$input" | awk -f "$JSON_CMD" \
   | awk -F"$TAB" '$1=="..hook_event_name"{print $2; exit}')
 
 record_activity() {
-  ptr="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/binary-path"
+  # 포인터 키의 정본은 statusline.sh 의 주석이다. 여기서도 같은 디렉터리 이름을 쓴다.
+  ptr="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/binary-path-${PLUGIN_ROOT##*/}"
   binary=""
   if [ -f "$ptr" ]; then
     IFS= read -r binary < "$ptr" || binary=""
