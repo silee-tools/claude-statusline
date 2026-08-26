@@ -9,7 +9,7 @@
             "type": "command",
             "command": "sh ${CLAUDE_PLUGIN_ROOT}/scripts/resume.sh",
             "asyncRewake": true,
-            "timeout": 600
+            "timeout": 3600
           }
         ]
       }
