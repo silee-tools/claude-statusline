@@ -225,6 +225,7 @@ base_delay=$base_delay
 max_attempts=$max_attempts
 active_session=$active_session
 active_generation=$active_generation
+active_cause=$active_cause
 handoff_at=$handoff_at
 deadline=$deadline"
 }
@@ -241,6 +242,8 @@ load_global() {
   active_session=$(read_field "$GLOBAL" active_session)
   [ -n "$active_session" ] || active_session=-
   active_generation=$(number_or_default "$(read_field "$GLOBAL" active_generation)" 0)
+  active_cause=$(read_field "$GLOBAL" active_cause)
+  [ -n "$active_cause" ] || active_cause=-
   handoff_at=$(number_or_default "$(read_field "$GLOBAL" handoff_at)" 0)
   deadline=$(number_or_default "$(read_field "$GLOBAL" deadline)" 0)
 }
@@ -398,6 +401,7 @@ handle_stop_failure() {
     attempts=0
     active_session=-
     active_generation=0
+    active_cause=-
     handoff_at=0
     deadline=0
     rm -rf "$CAUSE_DIR"
@@ -409,6 +413,7 @@ handle_stop_failure() {
     was_active=1
     active_session=-
     active_generation=0
+    active_cause=-
     handoff_at=0
     delay=$((delay * 2))
     [ "$delay" -le 480 ] || delay=480
@@ -492,6 +497,7 @@ handle_stop() {
   if [ "$(now_epoch)" -ge "$handoff_at" ]; then
     active_session=-
     active_generation=0
+    active_cause=-
     handoff_at=0
     write_global
     release_lock
@@ -501,6 +507,7 @@ handle_stop() {
   recovered_generation=$generation
   active_session=-
   active_generation=0
+  active_cause=-
   handoff_at=0
   snapshot="$STATE_DIR/signal.$$"
   : > "$snapshot"
@@ -583,6 +590,7 @@ wait_for_turn() {
       fi
       active_session=-
       active_generation=0
+      active_cause=-
       handoff_at=0
       write_global
     fi
@@ -591,6 +599,7 @@ wait_for_turn() {
       rm -f "$current_waiter"
       active_session=$session
       active_generation=$waiter_generation
+      active_cause=$error
       handoff_at=$((effective_now + delay))
       last_attempt=$effective_now
       attempts=$((attempts + 1))

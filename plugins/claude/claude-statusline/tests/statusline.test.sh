@@ -762,7 +762,7 @@ fi
 #    버전 범프(AGENTS.md 의 필수 절차)마다 이 테스트가 붉어진다 — 그래서 특정 값을 이름
 #    붙이지 않고 SemVer 세 자리 형태인지만 모양으로 가드한다.
 PV=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$SRC/.claude-plugin/plugin.json" | head -1)
-MV=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$(dirname "$SRC")/.claude-plugin/marketplace.json" | sed -n 2p)
+MV=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$SRC/../../../.claude-plugin/marketplace.json" | sed -n 2p)
 assert_equals "T42 plugin.json 과 marketplace.json 버전 일치" "$PV" "$MV"
 assert_match  "T42 버전이 SemVer 세 자리 형태" '^[0-9]+\.[0-9]+\.[0-9]+$' "$PV"
 

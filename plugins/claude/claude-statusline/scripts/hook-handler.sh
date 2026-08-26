@@ -13,6 +13,18 @@ command -v awk >/dev/null 2>&1 || exit 0
 event=$(printf '%s' "$input" | awk -f "$JSON_CMD" \
   | awk -F"$TAB" '$1=="..hook_event_name"{print $2; exit}')
 
+record_activity() {
+  ptr="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/binary-path"
+  binary=""
+  if [ -f "$ptr" ]; then
+    IFS= read -r binary < "$ptr" || binary=""
+  fi
+  if [ -n "$binary" ] && [ -x "$binary" ]; then
+    printf '%s' "$input" | "$binary" hook >/dev/null 2>&1 || :
+  fi
+}
+
+record_activity
 [ "$event" != "SessionStart" ] && exit 0
 
 refresh_cost() {
