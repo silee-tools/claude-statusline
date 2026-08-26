@@ -1,10 +1,13 @@
 // Package ratelimit shares the five-hour and seven-day usage windows between sessions
 // through one file in the cache directory.
 //
-// Which of two observations is newer is decided by the values themselves, not by when
-// they were read: a later reset wins, and within one window the higher percentage wins.
-// Every writer stores the winner of what it read and what it holds, so concurrent
-// writers converge and the file never moves backward.
+// The payload wins over the file whenever it carries a window. It is the only value that
+// describes the account as it is right now, and a stored sample says nothing about how
+// old it is: a five-hour window rolls, so its reset moves backward when the current one
+// started earlier than the stored one, and a percentage drops when the account state
+// does. Ranking two samples by those numbers therefore lets a stale one outlive the live
+// one, which froze the display at a value hours old. The file only supplies a window the
+// payload left out, which is a render before any response header has reached the session.
 package ratelimit
 
 import (
@@ -29,26 +32,6 @@ type Pair struct{ Five, Week Sample }
 
 // Complete reports whether the sample can be judged for expiry.
 func (s Sample) Complete() bool { return s.Present && s.HasReset }
-
-// Newer returns the sample describing the more recent state of a fixed window. A later
-// reset wins; on a tie the higher percentage wins. An incomplete sample always loses.
-func Newer(a, b Sample) Sample {
-	switch {
-	case !a.Complete():
-		return b
-	case !b.Complete():
-		return a
-	case a.ResetsAt != b.ResetsAt:
-		if a.ResetsAt > b.ResetsAt {
-			return a
-		}
-		return b
-	case a.Pct >= b.Pct:
-		return a
-	default:
-		return b
-	}
-}
 
 const fileName = "rate-limits.env"
 
@@ -122,9 +105,9 @@ func Store(cacheDir string, p Pair) error {
 	return nil
 }
 
-// Resolve returns what to draw for both windows and leaves the merge of the session's
-// own samples and the file behind for the next session to read. It writes only when the
-// merge differs from what the file already holds, so an idle render costs one read.
+// Resolve returns what to draw for both windows and leaves what this session observed
+// behind for the next session to read. It writes only when that differs from what the
+// file already holds, so a render that observes nothing new costs one read.
 func Resolve(cacheDir string, live Pair, now int64) Pair {
 	cached := Load(cacheDir)
 	showFive, keepFive := resolveWindow(live.Five, cached.Five, now)
@@ -136,15 +119,17 @@ func Resolve(cacheDir string, live Pair, now int64) Pair {
 }
 
 func resolveWindow(live, cached Sample, now int64) (show, keep Sample) {
-	if live.Present && !live.HasReset {
-		return live, cached
+	if live.Present {
+		if !live.Complete() {
+			// A percentage without its reset renders, but storing it would leave behind a
+			// value nothing can age out.
+			return live, cached
+		}
+		return live, live
 	}
-	keep = Newer(live, cached)
 	// Only a value the session did not observe itself is dropped for having expired.
-	// Widening this to the session's own sample would change what a payload alone
-	// renders, which no longer depends on the source of the value.
-	if keep != live && keep.Complete() && keep.ResetsAt <= now {
-		return Sample{}, keep
+	if cached.Complete() && cached.ResetsAt <= now {
+		return Sample{}, cached
 	}
-	return keep, keep
+	return cached, cached
 }

@@ -780,11 +780,13 @@ run_keep "$(json_pct 55 60)" 80 >/dev/null
 assert_contains "T51 새 소진율이 저장됨" "fivePct=55" "$(cat "$RATE_CACHE")"
 rm -f "$RATE_CACHE"
 
-# --- T52: 낡은 stdin 값은 파일도 화면도 되돌리지 못한다 ---
+# --- T52: stdin 값은 캐시보다 낮아도 화면과 파일을 차지한다 ---
+#    페이로드는 이 세션이 방금 받은 지금의 계정 상태이고, 캐시에는 그 값이 언제 관측된
+#    것인지가 없다. 낮다는 이유로 캐시를 남기면 낡은 값이 창이 끝날 때까지 화면을 붙든다.
 seed_rate_cache 60 "$FIVE_RESET" 90 "$WEEK_RESET"
 OUT=$(run_keep "$(json_pct 24 41)" 80)
-assert_contains "T52 파일은 그대로" "fivePct=60" "$(cat "$RATE_CACHE")"
-assert_match    "T52 화면도 되돌아가지 않음" '5h 60%' "$OUT"
+assert_contains "T52 페이로드가 파일에 반영됨" "fivePct=24" "$(cat "$RATE_CACHE")"
+assert_match    "T52 화면도 페이로드를 따른다" '5h 24%' "$OUT"
 rm -f "$RATE_CACHE"
 
 # --- T53: 세션 최초 렌더에서도 캐시가 두 줄을 공급한다(전체 레이아웃) ---
@@ -794,9 +796,9 @@ assert_match "T53 전체 레이아웃 5h 행" '5h .*24%' "$OUT"
 assert_match "T53 전체 레이아웃 7d 행" '7d .*41%' "$OUT"
 rm -f "$RATE_CACHE"
 
-# --- T54: 창이 넘어가면 소진율이 낮아도 뒤 리셋이 이긴다 ---
-#    캐시는 아직 만료되지 않은 옛 창(94%)을, stdin 은 더 뒤 리셋의 새 창(3%)을 들고 있다.
-#    소진율만 비교하면 옛 창이 이겨 화면이 새 창으로 넘어가지 못한다.
+# --- T54: 창이 넘어가면 캐시가 아직 만료 전이어도 새 창이 화면을 차지한다 ---
+#    캐시는 아직 만료되지 않은 옛 창(94%)을, stdin 은 새 창(3%)을 들고 있다. 캐시가 만료
+#    되기를 기다리면 이미 끝난 창의 소진율이 몇 시간 더 남는다.
 seed_rate_cache 94 "$((NOW + 100))" 41 "$WEEK_RESET"
 OUT=$(run_keep "$(json_pct 3 41)" 80)
 assert_match    "T54 새 창이 화면을 차지" '5h 3%' "$OUT"

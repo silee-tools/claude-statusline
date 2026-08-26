@@ -99,10 +99,12 @@ wall-clock based, and the `5h` pace budget continues to use elapsed time.
 
 The `5h` and `7d` windows are shared between sessions through
 `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/rate-limits.env`. Whichever
-session observes a window leaves it there, so every other session picks it up on
-its next render and a session that has just opened shows both windows from its
-first render. A window whose reset time has passed is not drawn, because its
-usage no longer describes the current window.
+session observes a window leaves it there, so a session that has just opened
+shows both windows from its first render. The payload always wins over that
+file: it is the only value that describes the account right now, and a stored
+sample carries no observation time to be judged against. The file is drawn only
+for a window the payload leaves out, and a window whose reset time has passed is
+not drawn at all, because its usage no longer describes the current window.
 
 Cost is displayed only in the full layout. The background cost cache is
 refreshed for both layouts, so switching widths does not require new
