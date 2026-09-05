@@ -258,7 +258,7 @@ func AWS(credsFile, dataDir, cacheDir string, now int64) string {
 	case remaining > 0:
 		return theme.Yellow + "aws:⏳" + strconv.FormatInt(remaining, 10) + "m" + theme.Reset
 	}
-	if suppressedToday(dataDir) {
+	if suppressedToday(dataDir, now) {
 		return theme.Dim + "aws:-" + theme.Reset
 	}
 	return theme.Red + "aws:expired" + theme.Reset
@@ -297,12 +297,12 @@ func parseExpiry(exp string) int64 {
 	return 0
 }
 
-func suppressedToday(dataDir string) bool {
+func suppressedToday(dataDir string, now int64) bool {
 	b, err := os.ReadFile(filepath.Join(dataDir, "saml2aws-login-suppress"))
 	if err != nil {
 		return false
 	}
-	want := "value=" + time.Now().Format("2006-01-02")
+	want := "value=" + time.Unix(now, 0).Format("2006-01-02")
 	for _, line := range strings.Split(string(b), "\n") {
 		if line == want {
 			return true
