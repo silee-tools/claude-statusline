@@ -1,13 +1,17 @@
 package agentstatus
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type diskWindow struct {
@@ -144,6 +148,97 @@ func TestConcurrentWritersLeaveOneCompleteJSONFile(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name() != filepath.Base(path) {
 		t.Fatalf("부분 파일이나 임시 파일이 남았다: %v", entries)
+	}
+}
+
+func TestConcurrentRenderAndHookPreserveBothProducerFields(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	windows := []Window{{ID: "five-hour", Label: "5 hour", UsedPercent: 24, ResetsAt: 1800000000, WindowMinutes: 300}}
+	for i := 0; i < 100; i++ {
+		sessionID := fmt.Sprintf("concurrent-preservation-session-%d", i)
+		var wg sync.WaitGroup
+		errs := make(chan error, 2)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			errs <- RecordRender(root, Metadata{SessionID: sessionID, Workspace: "/tmp/example-project", Model: "example-model"}, windows, int64(1700000000+i))
+		}()
+		go func() {
+			defer wg.Done()
+			payload := fmt.Sprintf(`{"hook_event_name":"UserPromptSubmit","session_id":%q,"cwd":"/tmp/example-project"}`, sessionID)
+			errs <- RecordHook(root, strings.NewReader(payload), int64(1700000000+i))
+		}()
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		got := load(snapshotPath(root, sessionID), sessionID)
+		if got.Activity != "working" || got.Workspace != "/tmp/example-project" || got.Model != "example-model" || len(got.UsageWindows) != 1 {
+			t.Fatalf("동시 render/hook 뒤 producer 필드가 보존되지 않았다: activity=%q workspace=%q model=%q windows=%d", got.Activity, got.Workspace, got.Model, len(got.UsageWindows))
+		}
+	}
+}
+
+func TestRecordRenderWaitsForASeparateProcessLock(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestAgentStatusLockHelper$")
+	cmd.Env = append(os.Environ(), "AGENTSTATUS_LOCK_HELPER_ROOT="+root)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || line != "locked\n" {
+		t.Fatalf("lock helper = %q, %v", line, err)
+	}
+	done := make(chan error, 1)
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		done <- RecordRender(root, Metadata{SessionID: "locked-session"}, nil, 1700000000)
+	}()
+	<-started
+	select {
+	case err := <-done:
+		t.Fatalf("다른 프로세스 lock 중 render가 완료됐다: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAgentStatusLockHelper(t *testing.T) {
+	root := os.Getenv("AGENTSTATUS_LOCK_HELPER_ROOT")
+	if root == "" {
+		return
+	}
+	if err := withLock(root, "locked-session", func() error {
+		fmt.Println("locked")
+		_, err := io.ReadAll(os.Stdin)
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

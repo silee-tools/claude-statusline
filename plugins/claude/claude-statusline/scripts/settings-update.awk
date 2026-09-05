@@ -3,7 +3,10 @@
 # -v NEW='{"type":"command","command":"..."}'
 # 수정 시 검토 관점: 호출부는 이 출력을 tmp 에 쓰고 json.awk 로 재파싱해 목표 값을 확인한
 # 뒤에만 원본과 교체한다. 이 변환이 어긋나도 재파싱 게이트가 파손된 파일의 반영을 막는다.
-BEGIN { RS = "\x01" }
+BEGIN {
+  RS = "\x01"
+  if (NEW == "") NEW = ENVIRON["STATUSLINE_NEW"]
+}
 function skipvalue(s, i, n,   c, depth, d, e) {
   c = substr(s, i, 1)
   if (c == "\"") { i++; while (i <= n) { d = substr(s, i, 1); i++
