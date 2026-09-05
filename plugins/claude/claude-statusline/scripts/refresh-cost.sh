@@ -54,10 +54,12 @@ week_epoch=$(date -v-"${dow}"d -v0H -v0M -v0S +%s 2>/dev/null || date -d "today 
 month_epoch=$(date -v1d -v0H -v0M -v0S +%s 2>/dev/null || date -d "$(date +%Y-%m-01) 00:00:00" +%s)
 DAY=$(iso_utc "$day_epoch"); WEEK=$(iso_utc "$week_epoch"); MONTH=$(iso_utc "$month_epoch")
 
-# 6) 이번 달 시작 이후 갱신된 JSONL 만 대상으로 좁힌다(append 전용이라 mtime 이 근거).
+# 6) 월·주 집계 중 더 이른 경계 이후 갱신된 JSONL 만 대상으로 좁힌다.
 ref="$CACHE_DIR/.month-ref"
-month_touch=$(date -r "$month_epoch" +%Y%m%d0000 2>/dev/null || date -d "@$month_epoch" +%Y%m%d0000)
-touch -t "$month_touch" "$ref" 2>/dev/null || true
+ref_epoch=$month_epoch
+[ "$week_epoch" -lt "$ref_epoch" ] && ref_epoch=$week_epoch
+ref_touch=$(date -r "$ref_epoch" +%Y%m%d0000 2>/dev/null || date -d "@$ref_epoch" +%Y%m%d0000)
+touch -t "$ref_touch" "$ref" 2>/dev/null || true
 
 # 7) 집계 → cost-cache.env(원자 교체). cachedAt 을 덧붙인다.
 tmp="$CACHE.tmp.$$"

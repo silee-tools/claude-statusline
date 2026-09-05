@@ -44,8 +44,10 @@ build_binary() {
 # tmp 에 쓴 뒤 재파싱으로 목표 값을 확인하고서만 교체한다.
 auto_setup() {
   settings="$HOME/.claude/settings.json"
-  sl_cmd="sh $PLUGIN_ROOT/scripts/statusline.sh"
-  new_obj="{\"type\":\"command\",\"command\":\"$sl_cmd\"}"
+  quoted_path=$(printf '%s' "$PLUGIN_ROOT/scripts/statusline.sh" | sed "s/'/'\\\\''/g")
+  sl_cmd="sh '$quoted_path'"
+  escaped_cmd=$(printf '%s' "$sl_cmd" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  new_obj="{\"type\":\"command\",\"command\":\"$escaped_cmd\"}"
 
   [ -f "$settings" ] || return 0
 
@@ -54,16 +56,21 @@ auto_setup() {
   [ "$current" = "$sl_cmd" ] && return 0
 
   tmp="$settings.tmp.$$"
-  awk -v NEW="$new_obj" -f "$UPD_CMD" < "$settings" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  new="$settings.new.$$"
+  printf '%s\n' "$new_obj" > "$new" || return 0
+  mode=$(stat -f '%Lp' "$settings" 2>/dev/null || stat -c '%a' "$settings" 2>/dev/null || printf '')
+  awk -v NEW_FILE="$new" -f "$UPD_CMD" < "$settings" > "$tmp" 2>/dev/null || { rm -f "$tmp" "$new"; return 0; }
+  [ -z "$mode" ] || chmod "$mode" "$tmp" || { rm -f "$tmp" "$new"; return 0; }
 
   verify=$(awk -f "$JSON_CMD" < "$tmp" 2>/dev/null \
-    | awk -F"$TAB" '$1=="..statusLine.command"{print $2; exit}') || { rm -f "$tmp"; return 0; }
+    | awk -F"$TAB" '$1=="..statusLine.command"{print $2; exit}') || { rm -f "$tmp" "$new"; return 0; }
   if [ "$verify" = "$sl_cmd" ]; then
     mv "$tmp" "$settings"
   else
     rm -f "$tmp"
     printf '[claude-statusline] settings.json 자동 설정 건너뜀(안전 확인 실패)\n' >&2
   fi
+  rm -f "$new"
 }
 
 refresh_cost

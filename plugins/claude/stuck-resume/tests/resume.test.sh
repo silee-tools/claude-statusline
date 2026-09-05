@@ -333,14 +333,14 @@ run "$(failure_input "$SESSION_C" overloaded)"
 assert_equals "T16 종료 시각 뒤 중단" "0" "$rc"
 assert_equals "T16 종료 시각 뒤 빈 표준 오류" "" "$err"
 
-# T17: 네 원인의 StopFailure와 Stop은 같은 스크립트를 정해진 계약으로 호출한다.
+# T17: 네 원인의 StopFailure와 Stop은 공백이 있는 설치 경로도 하나의 스크립트 인자로 호출한다.
 hooks_compact=$(tr -d '[:space:]' < "$HOOKS")
 case "$hooks_compact" in
-  *'"StopFailure":[{"matcher":"rate_limit|authentication_failed|server_error|overloaded","hooks":[{"type":"command","command":"sh${CLAUDE_PLUGIN_ROOT}/scripts/resume.sh","asyncRewake":true,"timeout":3600}]}]'*) ok "T17 StopFailure 훅 계약" ;;
+  *'"StopFailure":[{"matcher":"rate_limit|authentication_failed|server_error|overloaded","hooks":[{"type":"command","command":"sh\"${CLAUDE_PLUGIN_ROOT}/scripts/resume.sh\"","asyncRewake":true,"timeout":3600}]}]'*) ok "T17 StopFailure 훅 계약" ;;
   *) bad "T17 StopFailure 훅 계약" "$hooks_compact" ;;
 esac
 case "$hooks_compact" in
-  *'"Stop":[{"hooks":[{"type":"command","command":"sh${CLAUDE_PLUGIN_ROOT}/scripts/resume.sh","timeout":40}]}]'*) ok "T17 Stop 훅 계약" ;;
+  *'"Stop":[{"hooks":[{"type":"command","command":"sh\"${CLAUDE_PLUGIN_ROOT}/scripts/resume.sh\"","timeout":40}]}]'*) ok "T17 Stop 훅 계약" ;;
   *) bad "T17 Stop 훅 계약" "$hooks_compact" ;;
 esac
 

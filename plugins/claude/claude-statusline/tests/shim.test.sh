@@ -130,6 +130,14 @@ if command -v go >/dev/null 2>&1; then
   assert_equals "T8 새 바이너리는 남음" "yes" "$([ -x "$BINPATH" ] && echo yes || echo no)"
   rm -f "$LIVE"
 
+  # --- T8b: 다른 빌드가 원자 교체를 위해 둔 임시 바이너리는 건드리지 않는다 ---
+  OTHER_TMP="$BINDIR/statusline-other-goos-goarch.tmp.99999"
+  : > "$OTHER_TMP"
+  rm -f "$BINPATH" "$BC/claude-statusline/binary-path-$KEY"
+  build "$BC" >/dev/null 2>&1
+  assert_equals "T8b 다른 빌드 임시 바이너리 보존" "yes" "$([ -e "$OTHER_TMP" ] && echo yes || echo no)"
+  rm -f "$OTHER_TMP"
+
   # --- T8a: 다른 키의 포인터를 건드리지 않는다 ---
   OTHER="$BC/claude-statusline/binary-path-4.0.0"
   printf '%s\n' "/nonexistent/other-binary" > "$OTHER"
@@ -201,8 +209,28 @@ HOOKS=$(awk -f "$SRC/scripts/json.awk" "$SRC/hooks/hooks.json")
 TAB=$(printf '\t')
 for event in SessionStart UserPromptSubmit PermissionRequest Notification Stop SessionEnd; do
   assert_contains "T11 $event hook 등록" \
-    "..hooks.$event.hooks.command${TAB}sh \${CLAUDE_PLUGIN_ROOT}/scripts/hook-handler.sh" "$HOOKS"
+    "..hooks.$event.hooks.command${TAB}sh \"\${CLAUDE_PLUGIN_ROOT}/scripts/hook-handler.sh\"" "$HOOKS"
 done
+
+# --- T13: 공백이 있는 설치 경로도 statusLine.command 로 원자적으로 설정한다 ---
+SETUP_ROOT="$TMPROOT/plugin \" root\\slash"
+SETUP_HOME="$TMPROOT/setup-home"
+mkdir -p "$SETUP_ROOT/scripts" "$SETUP_HOME/.claude"
+cp "$SRC/scripts/hook-handler.sh" "$SRC/scripts/json.awk" "$SRC/scripts/settings-update.awk" "$SETUP_ROOT/scripts/"
+printf '%s\n' '{"permissions":{"allow":["Read"]}}' > "$SETUP_HOME/.claude/settings.json"
+chmod 600 "$SETUP_HOME/.claude/settings.json"
+OUT=$(printf '%s' '{"hook_event_name":"SessionStart"}' | \
+  env HOME="$SETUP_HOME" XDG_CACHE_HOME="$TMPROOT/setup-cache" CLAUDE_PLUGIN_ROOT="$SETUP_ROOT" \
+  sh "$SETUP_ROOT/scripts/hook-handler.sh"); RC=$?
+assert_equals "T13 공백 설치 경로 자동 설정 종료코드 0" "0" "$RC"
+SETUP_CMD=$(awk -f "$SETUP_ROOT/scripts/json.awk" "$SETUP_HOME/.claude/settings.json" \
+  | awk -F"$TAB" '$1=="..statusLine.command"{print $2; exit}')
+assert_equals "T13 공백 설치 경로를 shell 인용으로 보존" "sh '$SETUP_ROOT/scripts/statusline.sh'" "$SETUP_CMD"
+SETUP_ALLOW=$(awk -f "$SETUP_ROOT/scripts/json.awk" "$SETUP_HOME/.claude/settings.json" \
+  | awk -F"$TAB" '$1=="..permissions.allow"{print $2; exit}')
+assert_equals "T13 기존 permissions 보존" "Read" "$SETUP_ALLOW"
+SETUP_MODE=$(stat -f '%Lp' "$SETUP_HOME/.claude/settings.json" 2>/dev/null || stat -c '%a' "$SETUP_HOME/.claude/settings.json")
+assert_equals "T13 기존 settings 권한 보존" "600" "$SETUP_MODE"
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 completed=1
