@@ -28,15 +28,8 @@ record_activity() {
 record_activity
 [ "$event" != "SessionStart" ] && exit 0
 
-refresh_cost() {
-  script="$PLUGIN_ROOT/scripts/refresh-cost.sh"
-  [ -f "$script" ] && nohup sh "$script" >/dev/null 2>&1 &
-}
-
-# 렌더 바이너리를 최초 1회 빌드한다. 배경으로 떼어 내는 이유는 hooks.json 의 SessionStart
-# 제한 시간이 5초인데 캐시가 빈 상태의 빌드가 그 값에 붙기 때문이다.
-build_binary() {
-  script="$PLUGIN_ROOT/scripts/build-binary.sh"
+run_background() {
+  script="$PLUGIN_ROOT/scripts/$1"
   [ -f "$script" ] && nohup sh "$script" >/dev/null 2>&1 &
 }
 
@@ -56,23 +49,21 @@ auto_setup() {
   [ "$current" = "$sl_cmd" ] && return 0
 
   tmp="$settings.tmp.$$"
-  new="$settings.new.$$"
-  printf '%s\n' "$new_obj" > "$new" || return 0
   mode=$(stat -f '%Lp' "$settings" 2>/dev/null || stat -c '%a' "$settings" 2>/dev/null || printf '')
-  awk -v NEW_FILE="$new" -f "$UPD_CMD" < "$settings" > "$tmp" 2>/dev/null || { rm -f "$tmp" "$new"; return 0; }
-  [ -z "$mode" ] || chmod "$mode" "$tmp" || { rm -f "$tmp" "$new"; return 0; }
+  STATUSLINE_NEW="$new_obj" awk -f "$UPD_CMD" < "$settings" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  [ -z "$mode" ] || chmod "$mode" "$tmp" || { rm -f "$tmp"; return 0; }
 
   verify=$(awk -f "$JSON_CMD" < "$tmp" 2>/dev/null \
-    | awk -F"$TAB" '$1=="..statusLine.command"{print $2; exit}') || { rm -f "$tmp" "$new"; return 0; }
+    | awk -F"$TAB" '$1=="..statusLine.command"{print $2; exit}') || { rm -f "$tmp"; return 0; }
   if [ "$verify" = "$sl_cmd" ]; then
     mv "$tmp" "$settings"
   else
     rm -f "$tmp"
     printf '[claude-statusline] settings.json 자동 설정 건너뜀(안전 확인 실패)\n' >&2
   fi
-  rm -f "$new"
 }
 
-refresh_cost
-build_binary
+run_background refresh-cost.sh
+# 렌더 바이너리는 hooks.json 의 5초 제한에 걸리지 않도록 배경에서 최초 1회 빌드한다.
+run_background build-binary.sh
 auto_setup

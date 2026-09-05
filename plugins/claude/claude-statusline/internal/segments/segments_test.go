@@ -320,14 +320,18 @@ func TestAWSExpiredSuppressionShowsDash(t *testing.T) {
 	}
 }
 
-func TestSuppressedTodayUsesTheRenderTime(t *testing.T) {
+func TestAWSExpiredSuppressionUsesRenderTime(t *testing.T) {
+	stubSaml2aws(t)
 	dataDir := t.TempDir()
-	renderedAt := time.Date(2026, 8, 20, 0, 0, 0, 0, time.Local)
 	if err := os.WriteFile(filepath.Join(dataDir, "saml2aws-login-suppress"),
 		[]byte("value=2026-08-20\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !suppressedToday(dataDir, renderedAt.Unix()) {
-		t.Fatal("억제 날짜는 렌더에 사용한 시각으로 판정해야 한다")
+	t.Setenv("AWS_SESSION_EXPIRATION", "2020-01-01T00:00:00+00:00")
+	if got := plain(AWS("", dataDir, t.TempDir(), time.Date(2026, 8, 20, 0, 0, 0, 0, time.Local).Unix())); got != "aws:-" {
+		t.Fatalf("render 시각의 억제를 써야 한다: %q", got)
+	}
+	if got := plain(AWS("", dataDir, t.TempDir(), time.Date(2026, 8, 21, 0, 0, 0, 0, time.Local).Unix())); got != "aws:expired" {
+		t.Fatalf("다른 render 날짜에는 억제하지 않아야 한다: %q", got)
 	}
 }
