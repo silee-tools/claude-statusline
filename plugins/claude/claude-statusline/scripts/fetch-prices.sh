@@ -29,14 +29,14 @@ fi
 
 command -v curl >/dev/null 2>&1 || exit 0
 
-raw="$CACHE_DIR/litellm.json.tmp"
+raw="$CACHE_DIR/litellm.json.tmp.$$"
 if ! curl -fsSL --max-time 60 "$URL" -o "$raw" 2>/dev/null; then
   rm -f "$raw"; exit 0   # fetch 실패 → 기존(또는 방금 쓴 내장) 캐시 유지
 fi
 
 # 대상 모델별로 객체 블록을 브레이스·문자열 인지로 잘라 4개 단가 필드를 뽑는다.
 # json.awk 를 쓰지 않는 이유: LiteLLM 키에 점(gpt-3.5-turbo 등)이 흔해 점 조인 경로가 깨진다.
-tmp="$CACHE_DIR/prices.tsv.tmp"
+tmp="$CACHE_DIR/prices.tsv.tmp.$$"
 : > "$tmp"
 ok=1
 for m in $MODELS; do
@@ -44,7 +44,8 @@ for m in $MODELS; do
     BEGIN { RS = "\x01" }
     {
       s = $0; k = index(s, m); if (!k) { print "MISSING"; next }
-      i = k + length(m); while (substr(s, i, 1) != "{") i++
+      i = k + length(m); while (i <= length(s) && substr(s, i, 1) ~ /[ \t\r\n]/) i++
+      if (substr(s, i, 1) != "{") { print "MISSING"; next }
       depth = 0
       ipt = ""; opt = ""; cw = ""; cr = ""
       # 현재 모델 객체 안에서만(depth 1) 필드를 잡는다. 문자열은 통째로 건너뛴다.

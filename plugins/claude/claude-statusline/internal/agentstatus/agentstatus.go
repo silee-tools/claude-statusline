@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // Metadata identifies the Claude session observed by the statusline.
@@ -49,21 +50,22 @@ func RecordRender(root string, metadata Metadata, windows []Window, observedAt i
 	if metadata.SessionID == "" {
 		return nil
 	}
-	path := snapshotPath(root, metadata.SessionID)
-	previous := load(path, metadata.SessionID)
-	activity := previous.Activity
-	if !validActivity(activity) {
-		activity = "idle"
-	}
-	return store(root, snapshot{
-		SchemaVersion: 1,
-		Provider:      "claude",
-		SessionID:     metadata.SessionID,
-		Workspace:     metadata.Workspace,
-		Model:         metadata.Model,
-		Activity:      activity,
-		UsageWindows:  validWindows(windows),
-		ObservedAt:    observedAt,
+	return withLock(root, metadata.SessionID, func() error {
+		previous := load(snapshotPath(root, metadata.SessionID), metadata.SessionID)
+		activity := previous.Activity
+		if !validActivity(activity) {
+			activity = "idle"
+		}
+		return store(root, snapshot{
+			SchemaVersion: 1,
+			Provider:      "claude",
+			SessionID:     metadata.SessionID,
+			Workspace:     metadata.Workspace,
+			Model:         metadata.Model,
+			Activity:      activity,
+			UsageWindows:  validWindows(windows),
+			ObservedAt:    observedAt,
+		})
 	})
 }
 
@@ -77,20 +79,51 @@ func RecordHook(root string, r io.Reader, observedAt int64) error {
 	if !ok || payload.SessionID == "" {
 		return nil
 	}
-	current := load(snapshotPath(root, payload.SessionID), payload.SessionID)
-	if current.SchemaVersion == 0 {
-		current = snapshot{
-			SchemaVersion: 1,
-			Provider:      "claude",
-			SessionID:     payload.SessionID,
-			Workspace:     payload.CWD,
-			UsageWindows:  []Window{},
+	return withLock(root, payload.SessionID, func() error {
+		current := load(snapshotPath(root, payload.SessionID), payload.SessionID)
+		if current.SchemaVersion == 0 {
+			current = snapshot{
+				SchemaVersion: 1,
+				Provider:      "claude",
+				SessionID:     payload.SessionID,
+				Workspace:     payload.CWD,
+				UsageWindows:  []Window{},
+			}
 		}
+		current.Activity = activity
+		current.ObservedAt = observedAt
+		current.UsageWindows = validWindows(current.UsageWindows)
+		return store(root, current)
+	})
+}
+
+// withLock은 hook과 renderer 프로세스가 한 세션의 갱신을 잃지 않게 직렬화한다.
+// flock은 보유 프로세스가 끝나면 자동으로 풀린다.
+func withLock(root, sessionID string, fn func() error) error {
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return err
 	}
-	current.Activity = activity
-	current.ObservedAt = observedAt
-	current.UsageWindows = validWindows(current.UsageWindows)
-	return store(root, current)
+	if err := os.Chmod(root, 0o700); err != nil {
+		return err
+	}
+	lockDir := filepath.Join(root, "locks")
+	if err := os.MkdirAll(lockDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(lockDir, 0o700); err != nil {
+		return err
+	}
+	sum := sha256.Sum256([]byte(sessionID))
+	f, err := os.OpenFile(filepath.Join(lockDir, hex.EncodeToString(sum[:])+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return fn()
 }
 
 func hookActivity(event, notification string) (string, bool) {

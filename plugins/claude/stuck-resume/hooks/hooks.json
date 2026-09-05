@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh ${CLAUDE_PLUGIN_ROOT}/scripts/resume.sh",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/resume.sh\"",
             "asyncRewake": true,
             "timeout": 3600
           }
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh ${CLAUDE_PLUGIN_ROOT}/scripts/resume.sh",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/resume.sh\"",
             "timeout": 40
           }
         ]

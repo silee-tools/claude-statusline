@@ -182,6 +182,45 @@ PATH="$CASE3/bin:$PATH" "$SCRIPT"
 FINAL_CHECKSUM=$(sha256sum < "$OUT3")
 check "case3: 부분 fetch 거부(캐시 보존)" "$GOOD_CHECKSUM" "$FINAL_CHECKSUM"
 
+# ---------------------------------------------------------------------------
+# 케이스 4: 모델 키의 값이 객체가 아니면 추출기가 EOF에서 멈춰 기존 캐시를 보존한다.
+# 이전 구현은 다음 { 를 제한 없이 찾으므로 이 입력에서 끝나지 않았다.
+# ---------------------------------------------------------------------------
+CASE4="$TMPROOT/case4"
+mkdir -p "$CASE4/cache/claude-statusline" "$CASE4/bin"
+export XDG_CACHE_HOME="$CASE4/cache"
+OUT4="$CASE4/cache/claude-statusline/prices.tsv"
+cp "$OUT3" "$OUT4"
+touch -t 202001010000 "$OUT4"
+cat > "$CASE4/malformed.json" <<'JSON'
+{"claude-fable-5":null}
+JSON
+cat > "$CASE4/bin/curl" <<EOF
+#!/bin/sh
+out=""
+prev=""
+for a in "\$@"; do
+  if [ "\$prev" = "-o" ]; then out="\$a"; fi
+  prev="\$a"
+done
+cp "$CASE4/malformed.json" "\$out"
+EOF
+chmod +x "$CASE4/bin/curl"
+set +e
+PATH="$CASE4/bin:$PATH" "$SCRIPT" & pid=$!
+sleep 1
+if kill -0 "$pid" 2>/dev/null; then
+  kill "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
+  RC=124
+else
+  wait "$pid"
+  RC=$?
+fi
+set -e
+check "case4: 객체가 아닌 모델도 즉시 종료" "0" "$RC"
+check "case4: 객체가 아닌 모델은 캐시 보존" "$GOOD_CHECKSUM" "$(sha256sum < "$OUT4")"
+
 printf 'prices.test.sh: %d passed, %d failed\n' "$pass" "$fail"
 completed=1
 [ "$fail" -eq 0 ]

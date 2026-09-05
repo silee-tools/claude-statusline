@@ -68,6 +68,7 @@ for f in "$BIN_DIR"/*; do
   [ -e "$f" ] || continue
   [ "$f" = "$target" ] && continue
   name=${f##*/}
+  case "$name" in *.tmp.*) continue ;; esac
   rest=${name#statusline-}
   [ -d "$siblings/${rest%-*-*}" ] && continue
   rm -f "$f"
