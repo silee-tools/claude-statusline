@@ -229,8 +229,61 @@ assert_equals "T13 공백 설치 경로를 shell 인용으로 보존" "sh '$SETU
 SETUP_ALLOW=$(awk -f "$SETUP_ROOT/scripts/json.awk" "$SETUP_HOME/.claude/settings.json" \
   | awk -F"$TAB" '$1=="..permissions.allow"{print $2; exit}')
 assert_equals "T13 기존 permissions 보존" "Read" "$SETUP_ALLOW"
-SETUP_MODE=$(stat -f '%Lp' "$SETUP_HOME/.claude/settings.json" 2>/dev/null || stat -c '%a' "$SETUP_HOME/.claude/settings.json")
+SETUP_MODE=$(stat -c '%a' "$SETUP_HOME/.claude/settings.json" 2>/dev/null || stat -f '%Lp' "$SETUP_HOME/.claude/settings.json")
 assert_equals "T13 기존 settings 권한 보존" "600" "$SETUP_MODE"
+
+# --- T13b: GNU stat 호환 경로가 BSD 형식 시도의 부분 stdout과 섞이지 않는다 ---
+STAT_BIN="$TMPROOT/stat-bin"
+mkdir -p "$STAT_BIN"
+cat > "$STAT_BIN/stat" <<'STATEOF'
+#!/bin/sh
+case "$1" in
+  -f) printf 'filesystem-description\n'; exit 1 ;;
+  -c) printf '600\n' ;;
+  *) exit 1 ;;
+esac
+STATEOF
+chmod +x "$STAT_BIN/stat"
+GNU_HOME="$TMPROOT/gnu-stat-home"
+mkdir -p "$GNU_HOME/.claude"
+printf '%s\n' '{"permissions":{"allow":["Read"]}}' > "$GNU_HOME/.claude/settings.json"
+chmod 600 "$GNU_HOME/.claude/settings.json"
+env HOME="$GNU_HOME" XDG_CACHE_HOME="$TMPROOT/gnu-stat-cache" CLAUDE_PLUGIN_ROOT="$SETUP_ROOT" \
+  PATH="$STAT_BIN:/usr/bin:/bin" sh "$SETUP_ROOT/scripts/hook-handler.sh" \
+  <<'GNUJSON'
+{"hook_event_name":"SessionStart"}
+GNUJSON
+GNU_CMD=$(awk -f "$SETUP_ROOT/scripts/json.awk" "$GNU_HOME/.claude/settings.json" \
+  | awk -F"$TAB" '$1=="..statusLine.command"{print $2; exit}')
+assert_equals "T13b GNU stat 부분 stdout 뒤에도 statusLine 자동 설정" "sh '$SETUP_ROOT/scripts/statusline.sh'" "$GNU_CMD"
+GNU_MODE=$(stat -c '%a' "$GNU_HOME/.claude/settings.json" 2>/dev/null || stat -f '%Lp' "$GNU_HOME/.claude/settings.json")
+assert_equals "T13b GNU stat 부분 stdout 뒤에도 settings 권한 보존" "600" "$GNU_MODE"
+
+# --- T13c: 권한 조회가 모두 실패하면 원본 settings를 유지한다 ---
+FAIL_STAT_BIN="$TMPROOT/fail-stat-bin"
+mkdir -p "$FAIL_STAT_BIN"
+cat > "$FAIL_STAT_BIN/stat" <<'FAILSTATEOF'
+#!/bin/sh
+printf 'unusable-stat-output\n'
+exit 1
+FAILSTATEOF
+chmod +x "$FAIL_STAT_BIN/stat"
+FAIL_HOME="$TMPROOT/fail-stat-home"
+mkdir -p "$FAIL_HOME/.claude"
+printf '%s\n' '{"permissions":{"allow":["Read"]}}' > "$FAIL_HOME/.claude/settings.json"
+chmod 600 "$FAIL_HOME/.claude/settings.json"
+env HOME="$FAIL_HOME" XDG_CACHE_HOME="$TMPROOT/fail-stat-cache" CLAUDE_PLUGIN_ROOT="$SETUP_ROOT" \
+  PATH="$FAIL_STAT_BIN:/usr/bin:/bin" sh "$SETUP_ROOT/scripts/hook-handler.sh" \
+  2>"$TMPROOT/fail-stat.err" \
+  <<'FAILJSON'
+{"hook_event_name":"SessionStart"}
+FAILJSON
+FAIL_CMD=$(awk -f "$SETUP_ROOT/scripts/json.awk" "$FAIL_HOME/.claude/settings.json" \
+  | awk -F"$TAB" '$1=="..statusLine.command"{print $2; exit}')
+assert_equals "T13c 권한 조회 실패 시 statusLine 자동 설정 건너뜀" "" "$FAIL_CMD"
+assert_equals "T13c 권한 조회 실패 시 chmod를 호출하지 않음" "" "$(cat "$TMPROOT/fail-stat.err")"
+FAIL_MODE=$(stat -c '%a' "$FAIL_HOME/.claude/settings.json" 2>/dev/null || stat -f '%Lp' "$FAIL_HOME/.claude/settings.json")
+assert_equals "T13c 권한 조회 실패 시 settings 권한 보존" "600" "$FAIL_MODE"
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 completed=1
