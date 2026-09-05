@@ -49,7 +49,7 @@ auto_setup() {
   [ "$current" = "$sl_cmd" ] && return 0
 
   tmp="$settings.tmp.$$"
-  mode=$(stat -f '%Lp' "$settings" 2>/dev/null || stat -c '%a' "$settings" 2>/dev/null || printf '')
+  mode=$(stat -c '%a' "$settings" 2>/dev/null || stat -f '%Lp' "$settings" 2>/dev/null) || return 0
   STATUSLINE_NEW="$new_obj" awk -f "$UPD_CMD" < "$settings" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
   [ -z "$mode" ] || chmod "$mode" "$tmp" || { rm -f "$tmp"; return 0; }
 
