@@ -5,7 +5,7 @@
 # 뒤에만 원본과 교체한다. 이 변환이 어긋나도 재파싱 게이트가 파손된 파일의 반영을 막는다.
 BEGIN {
   RS = "\x01"
-  if (NEW_FILE != "") { getline NEW < NEW_FILE; close(NEW_FILE) }
+  if (NEW == "") NEW = ENVIRON["STATUSLINE_NEW"]
 }
 function skipvalue(s, i, n,   c, depth, d, e) {
   c = substr(s, i, 1)
