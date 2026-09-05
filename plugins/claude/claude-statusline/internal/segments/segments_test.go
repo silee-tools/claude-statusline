@@ -319,3 +319,15 @@ func TestAWSExpiredSuppressionShowsDash(t *testing.T) {
 		t.Errorf("억제 날짜가 오늘이 아니면 aws:expired — got %q", got)
 	}
 }
+
+func TestSuppressedTodayUsesTheRenderTime(t *testing.T) {
+	dataDir := t.TempDir()
+	renderedAt := time.Date(2026, 8, 20, 0, 0, 0, 0, time.Local)
+	if err := os.WriteFile(filepath.Join(dataDir, "saml2aws-login-suppress"),
+		[]byte("value=2026-08-20\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !suppressedToday(dataDir, renderedAt.Unix()) {
+		t.Fatal("억제 날짜는 렌더에 사용한 시각으로 판정해야 한다")
+	}
+}
