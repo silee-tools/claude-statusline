@@ -15,6 +15,12 @@ Each plugin owns a directory under `plugins/claude` named after it, holding
 do not also declare a `hooks` field in `plugin.json` (double-registration errors
 out).
 
+## 문서·주석 작성
+
+- 문서·주석·PR 본문에는 독자의 실행·판단에 필요한 현재 정보만 간결하게 씁니다.
+  반복, 코드 재서술, 당연한 동작, 작업 경위와 폐기된 구현 설명은 생략합니다.
+  상세 설명은 담당 문서에 모으고, 필수 절차·제약·검증 근거는 보존합니다.
+
 ## The render path is Go
 
 `plugins/claude/claude-statusline` renders in one process: `cmd/statusline` reads
