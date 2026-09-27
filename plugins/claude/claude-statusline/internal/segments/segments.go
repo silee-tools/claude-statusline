@@ -3,7 +3,6 @@ package segments
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -204,111 +203,63 @@ func scanEmail(path string) string {
 	return ""
 }
 
-var offsetColonRe = regexp.MustCompile(`([+-]\d\d):(\d\d)$`)
+// awsLoginSessionMax is `aws login`'s documented maximum session lifetime, in
+// seconds. The cache holds no expiry of its own, so this is the only source for it.
+const awsLoginSessionMax = 12 * 60 * 60
 
-// AWS renders the saml2aws session state. Without saml2aws on PATH there is no
-// session to report and the segment is empty.
-//
-// AWS_SESSION_EXPIRATION wins when set; otherwise the expiry comes from
-// x_security_token_expires in credsFile. Only the file path caches the parsed epoch,
-// because an environment value costs nothing to reparse and would make the cache
-// disagree with the file.
-func AWS(credsFile, dataDir, cacheDir string, now int64) string {
-	if _, err := exec.LookPath("saml2aws"); err != nil {
+// AWS renders the `aws login` session state from the newest cache file's creation
+// time in loginCacheDir. Each credential refresh (at most every 15 minutes, on use)
+// rewrites that file in place, so its birth time stays the login moment while mtime tracks the
+// last refresh — the newest-by-mtime *.json file is the active session.
+func AWS(loginCacheDir string, now int64) string {
+	path, ok := newestCacheFile(loginCacheDir)
+	if !ok {
 		return ""
 	}
-	fromEnv := os.Getenv("AWS_SESSION_EXPIRATION")
-	exp := fromEnv
-	if exp == "" {
-		exp = readTokenExpiry(credsFile)
-	}
-	if exp == "" {
+	birth, ok := birthTime(path)
+	if !ok {
 		return theme.Dim + "aws:?" + theme.Reset
 	}
+	return awsSessionState(birth.Unix(), now)
+}
 
-	cache := filepath.Join(cacheDir, "aws-exp.env")
-	epoch := int64(0)
-	if fromEnv == "" {
-		credsInfo, credsErr := os.Stat(credsFile)
-		cacheInfo, cacheErr := os.Stat(cache)
-		if credsErr == nil && cacheErr == nil && !credsInfo.ModTime().After(cacheInfo.ModTime()) {
-			if b, err := os.ReadFile(cache); err == nil {
-				for _, line := range strings.Split(string(b), "\n") {
-					if k, v, found := strings.Cut(line, "="); found && k == "exp_epoch" {
-						epoch, _ = strconv.ParseInt(v, 10, 64)
-					}
-				}
-			}
+// newestCacheFile returns the *.json entry in dir with the latest mtime.
+func newestCacheFile(dir string) (string, bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+	var path string
+	var newest time.Time
+	found := false
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if !found || info.ModTime().After(newest) {
+			path = filepath.Join(dir, e.Name())
+			newest = info.ModTime()
+			found = true
 		}
 	}
-	if epoch == 0 {
-		epoch = parseExpiry(exp)
-		if fromEnv == "" {
-			if _, err := os.Stat(credsFile); err == nil && os.MkdirAll(cacheDir, 0o755) == nil {
-				_ = os.WriteFile(cache,
-					[]byte("exp_epoch="+strconv.FormatInt(epoch, 10)+"\n"), 0o600)
-			}
-		}
-	}
+	return path, found
+}
 
-	remaining := (epoch - now) / 60
+// awsSessionState renders the minutes remaining until birthUnix + the session max:
+// green above 10 minutes, yellow with a countdown down to 0, red past it.
+func awsSessionState(birthUnix, now int64) string {
+	remaining := (birthUnix + awsLoginSessionMax - now) / 60
 	switch {
 	case remaining > 10:
 		return theme.Green + "aws:✓" + theme.Reset
 	case remaining > 0:
 		return theme.Yellow + "aws:⏳" + strconv.FormatInt(remaining, 10) + "m" + theme.Reset
 	}
-	if suppressedToday(dataDir, now) {
-		return theme.Dim + "aws:-" + theme.Reset
-	}
 	return theme.Red + "aws:expired" + theme.Reset
-}
-
-func readTokenExpiry(credsFile string) string {
-	b, err := os.ReadFile(credsFile)
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		rest, ok := strings.CutPrefix(line, "x_security_token_expires")
-		if !ok {
-			continue
-		}
-		rest = strings.TrimLeft(rest, " ")
-		rest, ok = strings.CutPrefix(rest, "=")
-		if !ok {
-			continue
-		}
-		return strings.TrimLeft(rest, " ")
-	}
-	return ""
-}
-
-// parseExpiry accepts the numeric-offset form saml2aws writes and, as the shell's
-// second date attempt did, the RFC 3339 spellings a "Z" or a fractional second give.
-// An unparseable value yields 0, which renders as expired.
-func parseExpiry(exp string) int64 {
-	if t, err := time.Parse("2006-01-02T15:04:05-0700", offsetColonRe.ReplaceAllString(exp, "$1$2")); err == nil {
-		return t.Unix()
-	}
-	if t, err := time.Parse(time.RFC3339, exp); err == nil {
-		return t.Unix()
-	}
-	return 0
-}
-
-func suppressedToday(dataDir string, now int64) bool {
-	b, err := os.ReadFile(filepath.Join(dataDir, "saml2aws-login-suppress"))
-	if err != nil {
-		return false
-	}
-	want := "value=" + time.Unix(now, 0).Format("2006-01-02")
-	for _, line := range strings.Split(string(b), "\n") {
-		if line == want {
-			return true
-		}
-	}
-	return false
 }
 
 func isDigits(s string) bool {

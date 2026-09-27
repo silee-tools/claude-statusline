@@ -169,7 +169,7 @@ needs no network.
 | `git` | required | the branch indicator |
 | `ps` | optional | automatic terminal-width detection (falls back to the full layout) |
 | `curl` | optional | daily model-pricing refresh (falls back to a built-in table) |
-| `saml2aws` | optional | the `aws:` session indicator |
+| `aws` (AWS CLI 2.32+) | optional | `aws login`'s session cache, read for the `aws:` session indicator |
 
 ## Configuration
 
