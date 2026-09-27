@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -213,36 +214,66 @@ func TestClaudeAccountMissingFileRendersNothing(t *testing.T) {
 	}
 }
 
-func awsCreds(t *testing.T, exp string) string {
+// awsCacheFile writes a `aws login` cache entry — its birth time, not its JSON
+// content, is what AWS reads, so an empty object is enough of a fixture.
+func awsCacheFile(t *testing.T, dir, name string) string {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "credentials")
-	if err := os.WriteFile(p, []byte("[default]\nx_security_token_expires = "+exp+"\n"), 0o600); err != nil {
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return p
 }
 
-func stubSaml2aws(t *testing.T) {
-	t.Helper()
+func TestAWSNoCacheDirRendersEmpty(t *testing.T) {
+	if got := AWS(filepath.Join(t.TempDir(), "missing"), 0); got != "" {
+		t.Errorf("캐시 디렉터리 부재: %q", got)
+	}
+}
+
+func TestAWSEmptyCacheDirRendersEmpty(t *testing.T) {
+	if got := AWS(t.TempDir(), 0); got != "" {
+		t.Errorf("캐시 파일 부재: %q", got)
+	}
+}
+
+func TestAWSNonJSONFilesRenderEmpty(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "saml2aws"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", dir)
-}
-
-func TestAWSRendersNothingWithoutSaml2aws(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-	t.Setenv("AWS_SESSION_EXPIRATION", "2099-01-01T00:00:00+00:00")
-	if got := AWS(awsCreds(t, "2099-01-01T00:00:00+00:00"), t.TempDir(), t.TempDir(), 0); got != "" {
-		t.Errorf("saml2aws 미설치: %q", got)
+	if got := AWS(dir, 0); got != "" {
+		t.Errorf("json 아닌 파일만 있으면 빈 문자열: %q", got)
 	}
 }
 
-func TestAWSThresholds(t *testing.T) {
-	stubSaml2aws(t)
-	base := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
-	now := base.Unix()
+// The segment no longer looks at PATH at all — an aws login cache renders
+// regardless of whether saml2aws is installed.
+func TestAWSRendersWithoutSaml2aws(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("생성 시각 판독은 darwin 전용 구현이다")
+	}
+	t.Setenv("PATH", t.TempDir())
+	dir := t.TempDir()
+	awsCacheFile(t, dir, "session.json")
+	if got := plain(AWS(dir, time.Now().Unix())); got != "aws:✓" {
+		t.Errorf("방금 만든 캐시 = %q, want aws:✓", got)
+	}
+}
+
+func TestAWSBirthTimeUnreadableRendersQuestionMark(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "broken.json")
+	if err := os.Symlink(filepath.Join(dir, "does-not-exist"), link); err != nil {
+		t.Fatal(err)
+	}
+	if got := plain(AWS(dir, time.Now().Unix())); got != "aws:?" {
+		t.Errorf("생성 시각 판독 불가 → aws:? — got %q", got)
+	}
+}
+
+func TestAWSSessionStateThresholds(t *testing.T) {
+	base := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC).Unix()
 	cases := []struct {
 		offset time.Duration
 		want   string
@@ -256,82 +287,44 @@ func TestAWSThresholds(t *testing.T) {
 		{-time.Hour, "aws:expired"},
 	}
 	for _, c := range cases {
-		exp := base.Add(c.offset).Format("2006-01-02T15:04:05-07:00")
-		t.Setenv("AWS_SESSION_EXPIRATION", exp)
-		if got := plain(AWS("", t.TempDir(), t.TempDir(), now)); got != c.want {
-			t.Errorf("offset=%v exp=%s -> %q, want %q", c.offset, exp, got, c.want)
+		birth := base + int64(c.offset.Seconds()) - awsLoginSessionMax
+		if got := plain(awsSessionState(birth, base)); got != c.want {
+			t.Errorf("offset=%v -> %q, want %q", c.offset, got, c.want)
 		}
 	}
 }
 
-func TestAWSUnknownExpirationRendersQuestionMark(t *testing.T) {
-	stubSaml2aws(t)
-	t.Setenv("AWS_SESSION_EXPIRATION", "")
-	if got := plain(AWS(filepath.Join(t.TempDir(), "gone"), t.TempDir(), t.TempDir(), 0)); got != "aws:?" {
-		t.Errorf("만료를 못 찾으면 aws:? — got %q", got)
+func TestAWSNewestCacheFileByMtime(t *testing.T) {
+	dir := t.TempDir()
+	older := awsCacheFile(t, dir, "older.json")
+	newer := awsCacheFile(t, dir, "newer.json")
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(older, past, past); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := newestCacheFile(dir)
+	if !ok || got != newer {
+		t.Errorf("newestCacheFile = %q, %v; want %q, true", got, ok, newer)
 	}
 }
 
-func TestAWSCachesOnlyTheFileParsedEpoch(t *testing.T) {
-	// env 로 만료가 주어졌으면 파일도 캐시도 건드리지 않는다. 파일에서 읽은 경우에만 캐시한다.
-	stubSaml2aws(t)
-	base := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
-	exp := base.Add(2 * time.Hour)
-	cacheDir := t.TempDir()
-
-	t.Setenv("AWS_SESSION_EXPIRATION", exp.Format("2006-01-02T15:04:05-07:00"))
-	AWS(awsCreds(t, exp.Format("2006-01-02T15:04:05-07:00")), t.TempDir(), cacheDir, base.Unix())
-	if _, err := os.Stat(filepath.Join(cacheDir, "aws-exp.env")); !os.IsNotExist(err) {
-		t.Error("env 경로에서는 캐시하지 않는다")
-	}
-
-	t.Setenv("AWS_SESSION_EXPIRATION", "")
-	creds := awsCreds(t, exp.Format("2006-01-02T15:04:05-07:00"))
-	if got := plain(AWS(creds, t.TempDir(), cacheDir, base.Unix())); got != "aws:✓" {
-		t.Fatalf("파일 경로 렌더 = %q", got)
-	}
-	b, err := os.ReadFile(filepath.Join(cacheDir, "aws-exp.env"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := "exp_epoch=" + strconv.FormatInt(exp.Unix(), 10); strings.TrimSpace(string(b)) != want {
-		t.Errorf("캐시 = %q, want %q", b, want)
+func TestBirthTimeUnreadablePath(t *testing.T) {
+	if _, ok := birthTime(filepath.Join(t.TempDir(), "missing.json")); ok {
+		t.Error("존재하지 않는 파일의 생성 시각은 판독 불가여야 한다")
 	}
 }
 
-func TestAWSExpiredSuppressionShowsDash(t *testing.T) {
-	stubSaml2aws(t)
-	dataDir := t.TempDir()
-	today := time.Now().Format("2006-01-02")
-	if err := os.WriteFile(filepath.Join(dataDir, "saml2aws-login-suppress"),
-		[]byte("value="+today+"\n"), 0o600); err != nil {
-		t.Fatal(err)
+func TestBirthTimeReadsCreationTime(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("생성 시각 판독은 darwin 전용 구현이다")
 	}
-	t.Setenv("AWS_SESSION_EXPIRATION", "2020-01-01T00:00:00+00:00")
-	if got := plain(AWS("", dataDir, t.TempDir(), time.Now().Unix())); got != "aws:-" {
-		t.Errorf("억제 파일이 오늘이면 aws:- — got %q", got)
+	before := time.Now()
+	p := awsCacheFile(t, t.TempDir(), "session.json")
+	got, ok := birthTime(p)
+	if !ok {
+		t.Fatal("darwin 에서는 생성 시각을 읽어야 한다")
 	}
-	if err := os.WriteFile(filepath.Join(dataDir, "saml2aws-login-suppress"),
-		[]byte("value=1999-01-01\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if got := plain(AWS("", dataDir, t.TempDir(), time.Now().Unix())); got != "aws:expired" {
-		t.Errorf("억제 날짜가 오늘이 아니면 aws:expired — got %q", got)
-	}
-}
-
-func TestAWSExpiredSuppressionUsesRenderTime(t *testing.T) {
-	stubSaml2aws(t)
-	dataDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dataDir, "saml2aws-login-suppress"),
-		[]byte("value=2026-08-20\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("AWS_SESSION_EXPIRATION", "2020-01-01T00:00:00+00:00")
-	if got := plain(AWS("", dataDir, t.TempDir(), time.Date(2026, 8, 20, 0, 0, 0, 0, time.Local).Unix())); got != "aws:-" {
-		t.Fatalf("render 시각의 억제를 써야 한다: %q", got)
-	}
-	if got := plain(AWS("", dataDir, t.TempDir(), time.Date(2026, 8, 21, 0, 0, 0, 0, time.Local).Unix())); got != "aws:expired" {
-		t.Fatalf("다른 render 날짜에는 억제하지 않아야 한다: %q", got)
+	if got.Before(before.Add(-time.Second)) || got.After(time.Now().Add(time.Second)) {
+		t.Errorf("생성 시각 = %v, want ~now(%v)", got, before)
 	}
 }
