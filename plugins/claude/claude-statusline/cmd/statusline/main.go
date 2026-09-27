@@ -55,9 +55,9 @@ func main() {
 	if claudeConfigDir == "" {
 		claudeConfigDir = home
 	}
-	credsFile := os.Getenv("AWS_SHARED_CREDENTIALS_FILE")
-	if credsFile == "" {
-		credsFile = filepath.Join(home, ".aws", "credentials")
+	loginCacheDir := os.Getenv("AWS_LOGIN_CACHE_DIR")
+	if loginCacheDir == "" {
+		loginCacheDir = filepath.Join(home, ".aws", "login", "cache")
 	}
 
 	limits := ratelimit.Resolve(cacheDir, ratelimit.Pair{
@@ -100,7 +100,7 @@ func main() {
 	for _, s := range []string{
 		segments.ClaudeAccount(claudeConfigDir, cacheDir),
 		segments.GitHubAccount(dataDir, configDir, now.Unix()),
-		segments.AWS(credsFile, dataDir, cacheDir, now.Unix()),
+		segments.AWS(loginCacheDir, now.Unix()),
 	} {
 		if s != "" {
 			view.Meta = append(view.Meta, s)

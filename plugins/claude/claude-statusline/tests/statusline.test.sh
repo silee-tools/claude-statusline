@@ -61,20 +61,14 @@ printf 'octocat=personal,214\ntestwork=work,27\nbadcolor=weird,zz\n' > "$TMPROOT
 # RFC 2606 예약 도메인으로 실재 계정과 충돌을 막는다.
 printf '{"oauthAccount":{"emailAddress":"octocat@example.com"}}' > "$TMPROOT/.claude.json"
 
-# AWS 세션 fixture: format_aws 가 개발자의 실제 ~/.aws/credentials 를 읽지 않도록 먼 미래의
-# 만료 시각만 담은 자격증명 파일을 만든다. 진짜 액세스 키·시크릿 같은 키 자료는 없고, 파서가
-# 읽는 x_security_token_expires 필드만 담는다. saml2aws 가 설치돼 있으면 이 fixture 가
-# aws:✓ 를 결정론적으로 렌더하고, saml2aws 가 없으면 format_aws 는 이 파일을 열어보지도
-# 않고 즉시 빈 문자열을 반환하므로(첫 줄의 command -v 가드) 두 환경 모두에서 suite 가
-# 통과한다. 파일명을 T36 전용 fixture($TMPROOT/aws-credentials)와 다르게 둬, 공유 캐시
-# ($CACHE_DIR/aws-exp.env)가 mtime 비교로 서로의 파싱 결과를 잘못 재사용하지 않게 한다.
-# date 포맷팅은 -u 로 UTC 값을 찍는다 — 로컬 시각을 찍고 +0000 라벨만 붙이면(로컬 타임존이
-# UTC 가 아닐 때) format_aws 가 파싱한 epoch 가 로컬 UTC 오프셋만큼 어긋난다.
-AWS_FIXTURE_EXP=$(( $(date +%s) + 315360000 ))  # ~10년 뒤
-AWS_CREDS_FIXTURE="$TMPROOT/aws-credentials-fixture"
-printf '[default]\nx_security_token_expires = %s\n' \
-  "$(date -u -r "$AWS_FIXTURE_EXP" '+%Y-%m-%dT%H:%M:%S+0000' 2>/dev/null || date -u -d "@$AWS_FIXTURE_EXP" '+%Y-%m-%dT%H:%M:%S+0000')" \
-  > "$AWS_CREDS_FIXTURE"
+# AWS 세션 fixture: AWS 세그먼트가 개발자의 실제 ~/.aws/login/cache 를 읽지 않도록 전용
+# 디렉터리에 방금 만든 캐시 파일 하나를 둔다. 세그먼트는 파일 내용이 아니라 생성 시각(darwin
+# 만 판독 가능, +12h 가 만료)을 읽으므로 내용은 빈 객체로 충분하다. darwin 에서는 생성
+# 시각이 렌더 시각에 가까워 aws:✓ 를, 비darwin 에서는 생성 시각 판독 불가로 aws:? 를
+# 결정론적으로 렌더한다 — 둘 다 노랑·빨강은 아니므로 T17 의 절대 소진율 색 판정과 격리된다.
+AWS_LOGIN_CACHE_FIXTURE="$TMPROOT/aws-login-cache-fixture"
+mkdir -p "$AWS_LOGIN_CACHE_FIXTURE"
+printf '{}' > "$AWS_LOGIN_CACHE_FIXTURE/session.json"
 
 # 세션 ID fixture: 알려진 UUID. 축약 없이 전체가 그대로 렌더되는지 검증한다.
 KNOWN_SESSION="11111111-2222-3333-4444-555555555555"
@@ -160,18 +154,18 @@ json_eff() {
 RATE_CACHE="$TMPROOT/cache/claude-statusline/rate-limits.env"
 seed_rate_cache() { printf 'fivePct=%s\nfiveReset=%s\nweekPct=%s\nweekReset=%s\n' "$1" "$2" "$3" "$4" > "$RATE_CACHE"; }
 
-# 색 코드 제거한 출력. XDG_DATA_HOME·XDG_CONFIG_HOME·XDG_CACHE_HOME 을 TMPROOT 로, AWS_SHARED_CREDENTIALS_FILE
+# 색 코드 제거한 출력. XDG_DATA_HOME·XDG_CONFIG_HOME·XDG_CACHE_HOME 을 TMPROOT 로, AWS_LOGIN_CACHE_DIR
 # 을 위 fixture 로 고정해 gh 계정·매핑·비용 캐시·AWS 세션 표시를 모두 결정론화한다.
-_render() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS_FIXTURE" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
+_render() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_LOGIN_CACHE_DIR="$AWS_LOGIN_CACHE_FIXTURE" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
 # 색 코드 포함 원본 출력
-_render_raw() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS_FIXTURE" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null; }
+_render_raw() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_LOGIN_CACHE_DIR="$AWS_LOGIN_CACHE_FIXTURE" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null; }
 # 폭 주입을 비우고 tty 장치 디렉터리를 존재하지 않는 곳으로 고정해 판정 불가 경로를 만든다.
 _render_auto() {
   (
     unset CLAUDE_STATUSLINE_WIDTH
     printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" \
       XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" \
-      AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS_FIXTURE" \
+      AWS_LOGIN_CACHE_DIR="$AWS_LOGIN_CACHE_FIXTURE" \
       CLAUDE_STATUSLINE_TTY_DIR="$TMPROOT/missing-dev" COLUMNS=40 sh "$SL" 2>/dev/null \
       | sed "s/${ESC}\[[0-9;]*m//g"
   )
@@ -395,8 +389,8 @@ else
 fi
 
 # --- T17: 절대 소진율 색 임계 — 노랑 80%, 빨강 90% (페이스 오버레이 없는 fixture 로 격리) ---
-#    다른 색 소스(aws:⏳ 노랑, aws:expired 빨강)는 AWS_SHARED_CREDENTIALS_FILE 을 먼 미래
-#    만료 fixture 로 고정해 격리했으므로 YELLOW/RED 존재가 절대색만 가리킨다.
+#    다른 색 소스(aws:⏳ 노랑, aws:expired 빨강)는 AWS_LOGIN_CACHE_DIR 을 방금 만든 캐시
+#    fixture 로 고정해 격리했으므로(aws:✓ 또는 aws:? 만 나옴) YELLOW/RED 존재가 절대색만 가리킨다.
 #    json_pct_nr 로 reset 을 빼 예산 초과 구간의 색이 색 판정에 섞이지 않게 한다.
 YELLOW=$(printf '\033[33m')
 RAW=$(run_raw "$(json_pct_nr 80 10)" 80)
@@ -740,25 +734,31 @@ assert_contains "T35 파일 변경 시 새 이메일 반영" "newuser@example.co
 # 원복
 printf '{"oauthAccount":{"emailAddress":"octocat@example.com"}}' > "$TMPROOT/.claude.json"
 
-# --- T36: AWS 만료 파싱 캐시 (파일 파싱 경로에서만 캐시) ---
-if command -v saml2aws >/dev/null 2>&1; then
-  rm -f "$TMPROOT/cache/claude-statusline/aws-exp.env"
-  FUT=$(( $(date +%s) + 7200 ))
-  CREDS="$TMPROOT/aws-credentials"
-  # date 포맷팅은 -u 로 UTC 값을 찍는다 — 로컬 시각을 찍고 +0000 라벨만 붙이면(로컬 타임존이
-  # UTC 가 아닐 때) format_aws 가 파싱한 epoch 가 로컬 UTC 오프셋만큼 어긋난다.
-  printf '[default]\nx_security_token_expires = %s\n' \
-    "$(date -u -r "$FUT" '+%Y-%m-%dT%H:%M:%S+0000' 2>/dev/null || date -u -d "@$FUT" '+%Y-%m-%dT%H:%M:%S+0000')" > "$CREDS"
-  OUT=$(printf '%s' "$(json_with)" | \
-    CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" \
-    XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" \
-    CLAUDE_STATUSLINE_WIDTH=80 \
-    AWS_SHARED_CREDENTIALS_FILE="$CREDS" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g")
-  # 자릿수만 보는 정규식은 로컬 타임존 오프셋만큼 어긋난 epoch 도 통과시킨다. fixture 가
-  # 만든 만료 시각($FUT)과 캐시된 값이 정확히 같은지까지 확인해야 그 어긋남을 잡는다.
-  assert_equals "T36 파일 파싱 시 만료 epoch 캐시가 fixture 만료와 정확히 일치" "exp_epoch=$FUT" "$(cat "$TMPROOT/cache/claude-statusline/aws-exp.env" 2>/dev/null)"
+# --- T36: aws login 캐시 디렉터리 규칙 — 캐시가 없으면 세그먼트가 통째로 빠지고,
+#     AWS_LOGIN_CACHE_DIR 오버라이드가 실제로 반영된다 ---
+AWS_EMPTY_CACHE="$TMPROOT/aws-login-cache-empty"
+mkdir -p "$AWS_EMPTY_CACHE"
+OUT=$(printf '%s' "$(json_with)" | \
+  CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" \
+  XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" \
+  CLAUDE_STATUSLINE_WIDTH=80 \
+  AWS_LOGIN_CACHE_DIR="$AWS_EMPTY_CACHE" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g")
+assert_not_contains "T36 캐시 디렉터리가 비어 있으면 aws 세그먼트가 빠진다" "aws:" "$OUT"
+
+AWS_ONE_CACHE="$TMPROOT/aws-login-cache-one"
+mkdir -p "$AWS_ONE_CACHE"
+printf '{}' > "$AWS_ONE_CACHE/session.json"
+OUT=$(printf '%s' "$(json_with)" | \
+  CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" \
+  XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" \
+  CLAUDE_STATUSLINE_WIDTH=80 \
+  AWS_LOGIN_CACHE_DIR="$AWS_ONE_CACHE" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g")
+# 생성 시각 판독은 darwin 전용이다(AGENTS.md) — darwin 은 방금 만든 캐시를 aws:✓ 로,
+# 비darwin 은 판독 불가로 aws:? 를 렌더한다.
+if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+  assert_contains "T36 AWS_LOGIN_CACHE_DIR 오버라이드가 새 캐시를 읽어 aws:✓" "aws:✓" "$OUT"
 else
-  echo "warn: saml2aws 미설치 — T36 을 건너뜁니다" >&2
+  assert_contains "T36 비darwin 은 생성 시각 판독 불가로 aws:?" "aws:?" "$OUT"
 fi
 
 # --- T42: 두 매니페스트의 버전이 같다 ---
