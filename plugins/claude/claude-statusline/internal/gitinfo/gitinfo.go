@@ -97,21 +97,36 @@ func Branch(cwd, cacheDir string) string {
 // render's walk sees it. GIT_DIR and GIT_WORK_TREE can place a repository where this
 // walk cannot see it, so their presence hands the question back to git.
 func insideRepository(cwd string) bool {
-	if os.Getenv("GIT_DIR") != "" || os.Getenv("GIT_WORK_TREE") != "" {
+	if gitDirOverridden() {
 		return true
+	}
+	_, ok := Root(cwd)
+	return ok
+}
+
+// Root returns the directory holding the nearest .git entry above cwd. It reports
+// false outside a repository and whenever GIT_DIR or GIT_WORK_TREE is set, because
+// the walk cannot see where those put the working tree.
+func Root(cwd string) (string, bool) {
+	if gitDirOverridden() {
+		return "", false
 	}
 	for dir := cwd; ; {
 		// A linked worktree holds a .git file rather than a directory, so the kind
 		// is not checked — only that something by that name is there.
 		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return true
+			return dir, true
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return false
+			return "", false
 		}
 		dir = parent
 	}
+}
+
+func gitDirOverridden() bool {
+	return os.Getenv("GIT_DIR") != "" || os.Getenv("GIT_WORK_TREE") != ""
 }
 
 func cachedBranch(cache, cwd string) (string, bool) {

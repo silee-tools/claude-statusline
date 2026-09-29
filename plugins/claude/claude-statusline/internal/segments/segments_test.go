@@ -1,10 +1,10 @@
 package segments
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,11 +17,17 @@ var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func plain(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
-// ghFixture writes the prompt cache and the label mapping the segment reads.
-func ghFixture(t *testing.T, cache string) (dataDir, configDir string) {
+// ghRoot does not exist on disk, so its cache file name is the path with / replaced by %.
+const (
+	ghRoot = "/repo/fixture"
+	ghKey  = "%repo%fixture"
+)
+
+// ghFixture writes the prompt cache for ghRoot and the label mapping the segment reads.
+func ghFixture(t *testing.T, cache string) (cacheDir, configDir string) {
 	t.Helper()
-	dataDir, configDir = t.TempDir(), t.TempDir()
-	if err := os.WriteFile(filepath.Join(dataDir, "gh-prompt-user"), []byte(cache), 0o600); err != nil {
+	cacheDir, configDir = t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(cacheDir, ghKey), []byte(cache), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(configDir, "claude-statusline"), 0o755); err != nil {
@@ -31,7 +37,7 @@ func ghFixture(t *testing.T, cache string) (dataDir, configDir string) {
 		[]byte("# comment\noctocat=personal,214\ntestwork=work,27\nbadcolor=weird,zz\nescape=lbl,1m\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return dataDir, configDir
+	return cacheDir, configDir
 }
 
 // 기대값은 현재 셸 구현(statusline.sh 의 format_gh)에 각 레코드를 실제로 먹여 뽑았다.
@@ -63,8 +69,8 @@ func TestGitHubAccountStates(t *testing.T) {
 		{"v2\ttestwork\trate_limited\tnotanumber", "gh@work"},
 	}
 	for _, c := range cases {
-		dataDir, configDir := ghFixture(t, c.cache)
-		if got := plain(GitHubAccount(dataDir, configDir, now)); got != c.want {
+		cacheDir, configDir := ghFixture(t, c.cache)
+		if got := plain(GitHubAccount(cacheDir, configDir, ghRoot, now)); got != c.want {
 			t.Errorf("GitHubAccount(%q) = %q, want %q", c.cache, got, c.want)
 		}
 	}
@@ -80,24 +86,64 @@ func TestGitHubAccountColors(t *testing.T) {
 		{"", theme.Grey240 + "gh@?"},
 	}
 	for _, c := range cases {
-		dataDir, configDir := ghFixture(t, c.cache)
-		if got := GitHubAccount(dataDir, configDir, now); !strings.HasPrefix(got, c.wantPrefix) {
+		cacheDir, configDir := ghFixture(t, c.cache)
+		if got := GitHubAccount(cacheDir, configDir, ghRoot, now); !strings.HasPrefix(got, c.wantPrefix) {
 			t.Errorf("GitHubAccount(%q) = %q, want prefix %q", c.cache, got, c.wantPrefix)
 		}
 	}
 	// 라벨은 설정 색, 한도 마커만 노랑이다.
-	dataDir, configDir := ghFixture(t, "v2\ttestwork\trate_limited\t"+strconv.FormatInt(now+540, 10))
+	cacheDir, configDir := ghFixture(t, "v2\ttestwork\trate_limited\t"+strconv.FormatInt(now+540, 10))
 	want := "\033[38;5;27mgh@work" + theme.Reset + theme.Yellow + "⏳9m" + theme.Reset
-	if got := GitHubAccount(dataDir, configDir, now); got != want {
+	if got := GitHubAccount(cacheDir, configDir, ghRoot, now); got != want {
 		t.Errorf("GitHubAccount rate_limited = %q, want %q", got, want)
+	}
+}
+
+func TestGitHubAccountIsPerRepository(t *testing.T) {
+	cacheDir, configDir := ghFixture(t, "v2\toctocat\tok\t0")
+	other := filepath.Join(cacheDir, "%repo%other")
+	if err := os.WriteFile(other, []byte("v2\ttestwork\tok\t0"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct{ root, want string }{
+		{ghRoot, "gh@personal"},
+		{"/repo/other", "gh@work"},
+		{"/repo/never-recorded", ""},
+		{"", ""}, // 저장소가 아니면 캐시가 있어도 그리지 않는다
+	}
+	for _, c := range cases {
+		if got := plain(GitHubAccount(cacheDir, configDir, c.root, 0)); got != c.want {
+			t.Errorf("root=%q -> %q, want %q", c.root, got, c.want)
+		}
+	}
+}
+
+// The shell keys the cache by the physical root git reports, so a symlinked cwd must find it.
+func TestGitHubAccountResolvesSymlinkedRoot(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	physical, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cacheDir, strings.ReplaceAll(physical, "/", "%")),
+		[]byte("v2\toctocat\tok\t0"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := plain(GitHubAccount(cacheDir, t.TempDir(), link, 0)); got != "gh@octocat" {
+		t.Errorf("심볼릭 링크 경로 -> %q, want gh@octocat", got)
 	}
 }
 
 func TestGitHubAccountRejectsNonNumericColor(t *testing.T) {
 	// gh-accounts 의 색 코드가 숫자가 아니면 기본색을 쓴다. 설정 파일이 이스케이프를 주입하지 못하게 막는다.
 	for _, login := range []string{"badcolor", "escape"} {
-		dataDir, configDir := ghFixture(t, "v2\t"+login+"\tok\t0")
-		got := GitHubAccount(dataDir, configDir, 0)
+		cacheDir, configDir := ghFixture(t, "v2\t"+login+"\tok\t0")
+		got := GitHubAccount(cacheDir, configDir, ghRoot, 0)
 		if !strings.HasPrefix(got, theme.Amber214) {
 			t.Errorf("%s: 기본색으로 폴백하지 않았다: %q", login, got)
 		}
@@ -108,8 +154,8 @@ func TestGitHubAccountRejectsNonNumericColor(t *testing.T) {
 }
 
 func TestGitHubAccountMissingCacheRendersNothing(t *testing.T) {
-	// 캐시 파일 자체가 없으면 셸은 아무것도 내지 않는다(줄에서 자연히 빠진다).
-	if got := GitHubAccount(t.TempDir(), t.TempDir(), 0); got != "" {
+	// 저장소의 캐시 파일 자체가 없으면 아무것도 내지 않는다(줄에서 자연히 빠진다).
+	if got := GitHubAccount(t.TempDir(), t.TempDir(), ghRoot, 0); got != "" {
 		t.Errorf("캐시 부재: %q", got)
 	}
 }
@@ -214,15 +260,25 @@ func TestClaudeAccountMissingFileRendersNothing(t *testing.T) {
 	}
 }
 
-// awsCacheFile writes a `aws login` cache entry — its birth time, not its JSON
-// content, is what AWS reads, so an empty object is enough of a fixture.
-func awsCacheFile(t *testing.T, dir, name string) string {
+// awsCacheFile writes an `aws login` cache entry whose idToken was issued at iat.
+func awsCacheFile(t *testing.T, dir, name string, iat int64) string {
+	t.Helper()
+	return writeAWSCache(t, dir, name, awsIDToken(iat))
+}
+
+func writeAWSCache(t *testing.T, dir, name, idToken string) string {
 	t.Helper()
 	p := filepath.Join(dir, name)
-	if err := os.WriteFile(p, []byte("{}"), 0o600); err != nil {
+	body := `{"accessToken":{"accessKeyId":"x"},"idToken":"` + idToken + `"}`
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return p
+}
+
+func awsIDToken(iat int64) string {
+	enc := base64.RawURLEncoding.EncodeToString
+	return enc([]byte(`{"alg":"none"}`)) + "." + enc([]byte(`{"iat":`+strconv.FormatInt(iat, 10)+`}`)) + ".sig"
 }
 
 func TestAWSNoCacheDirRendersEmpty(t *testing.T) {
@@ -250,25 +306,65 @@ func TestAWSNonJSONFilesRenderEmpty(t *testing.T) {
 // The segment no longer looks at PATH at all — an aws login cache renders
 // regardless of whether saml2aws is installed.
 func TestAWSRendersWithoutSaml2aws(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("생성 시각 판독은 darwin 전용 구현이다")
-	}
 	t.Setenv("PATH", t.TempDir())
 	dir := t.TempDir()
-	awsCacheFile(t, dir, "session.json")
-	if got := plain(AWS(dir, time.Now().Unix())); got != "aws:✓" {
-		t.Errorf("방금 만든 캐시 = %q, want aws:✓", got)
+	now := time.Now().Unix()
+	awsCacheFile(t, dir, "session.json", now)
+	if got := plain(AWS(dir, now)); got != "aws:✓" {
+		t.Errorf("방금 로그인한 캐시 = %q, want aws:✓", got)
 	}
 }
 
-func TestAWSBirthTimeUnreadableRendersQuestionMark(t *testing.T) {
+// aws login rewrites the existing cache file on re-login, so the file's creation time
+// keeps the first login. The session follows the login time recorded in the idToken.
+func TestAWSFollowsLoginTimeNotFileCreation(t *testing.T) {
+	now := time.Now().Unix()
+	cases := []struct {
+		iat  int64
+		want string
+	}{
+		{now - 13*3600, "aws:expired"},
+		{now - 12*3600 + 5*60, "aws:⏳5m"},
+		{now - 3600, "aws:✓"},
+	}
+	for _, c := range cases {
+		dir := t.TempDir()
+		awsCacheFile(t, dir, "session.json", c.iat)
+		if got := plain(AWS(dir, now)); got != c.want {
+			t.Errorf("iat=now%+ds -> %q, want %q", c.iat-now, got, c.want)
+		}
+	}
+}
+
+func TestAWSUnreadableLoginTimeRendersQuestionMark(t *testing.T) {
+	enc := base64.RawURLEncoding.EncodeToString
+	claims := func(json string) string { return "h." + enc([]byte(json)) + ".s" }
+	cases := map[string]string{
+		"idToken 없음":          "",
+		"세 조각이 아님":            "notajwt",
+		"payload 가 base64 아님": "h.!!!.s",
+		"payload 가 JSON 아님":   claims("not json"),
+		"iat 없음":              claims(`{"exp":1}`),
+		"iat 가 숫자가 아님":        claims(`{"iat":"abc"}`),
+		"iat 가 0":             claims(`{"iat":0}`),
+	}
+	for name, token := range cases {
+		dir := t.TempDir()
+		writeAWSCache(t, dir, "session.json", token)
+		if got := plain(AWS(dir, time.Now().Unix())); got != "aws:?" {
+			t.Errorf("%s -> %q, want aws:?", name, got)
+		}
+	}
+}
+
+func TestAWSBrokenCacheFileRendersQuestionMark(t *testing.T) {
 	dir := t.TempDir()
 	link := filepath.Join(dir, "broken.json")
 	if err := os.Symlink(filepath.Join(dir, "does-not-exist"), link); err != nil {
 		t.Fatal(err)
 	}
 	if got := plain(AWS(dir, time.Now().Unix())); got != "aws:?" {
-		t.Errorf("생성 시각 판독 불가 → aws:? — got %q", got)
+		t.Errorf("캐시 파일 판독 불가 → aws:? — got %q", got)
 	}
 }
 
@@ -287,8 +383,8 @@ func TestAWSSessionStateThresholds(t *testing.T) {
 		{-time.Hour, "aws:expired"},
 	}
 	for _, c := range cases {
-		birth := base + int64(c.offset.Seconds()) - awsLoginSessionMax
-		if got := plain(awsSessionState(birth, base)); got != c.want {
+		login := base + int64(c.offset.Seconds()) - awsLoginSessionMax
+		if got := plain(awsSessionState(login, base)); got != c.want {
 			t.Errorf("offset=%v -> %q, want %q", c.offset, got, c.want)
 		}
 	}
@@ -296,8 +392,8 @@ func TestAWSSessionStateThresholds(t *testing.T) {
 
 func TestAWSNewestCacheFileByMtime(t *testing.T) {
 	dir := t.TempDir()
-	older := awsCacheFile(t, dir, "older.json")
-	newer := awsCacheFile(t, dir, "newer.json")
+	older := awsCacheFile(t, dir, "older.json", 0)
+	newer := awsCacheFile(t, dir, "newer.json", 0)
 	past := time.Now().Add(-time.Hour)
 	if err := os.Chtimes(older, past, past); err != nil {
 		t.Fatal(err)
@@ -305,26 +401,5 @@ func TestAWSNewestCacheFileByMtime(t *testing.T) {
 	got, ok := newestCacheFile(dir)
 	if !ok || got != newer {
 		t.Errorf("newestCacheFile = %q, %v; want %q, true", got, ok, newer)
-	}
-}
-
-func TestBirthTimeUnreadablePath(t *testing.T) {
-	if _, ok := birthTime(filepath.Join(t.TempDir(), "missing.json")); ok {
-		t.Error("존재하지 않는 파일의 생성 시각은 판독 불가여야 한다")
-	}
-}
-
-func TestBirthTimeReadsCreationTime(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("생성 시각 판독은 darwin 전용 구현이다")
-	}
-	before := time.Now()
-	p := awsCacheFile(t, t.TempDir(), "session.json")
-	got, ok := birthTime(p)
-	if !ok {
-		t.Fatal("darwin 에서는 생성 시각을 읽어야 한다")
-	}
-	if got.Before(before.Add(-time.Second)) || got.After(time.Now().Add(time.Second)) {
-		t.Errorf("생성 시각 = %v, want ~now(%v)", got, before)
 	}
 }
