@@ -209,3 +209,45 @@ func blockGit(t *testing.T) func() int {
 		return strings.Count(string(b), "\n")
 	}
 }
+
+func TestRootIsTheDirectoryHoldingDotGit(t *testing.T) {
+	dir := newRepo(t, "main")
+	sub := filepath.Join(dir, "a", "b")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(t.TempDir(), "feat")
+	cmd := exec.Command("git", "worktree", "add", "-q", wt, "-b", "feat")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("worktree 생성 실패: %v (%s)", err, out)
+	}
+	// 다른 체크아웃 안에 중첩된 worktree 는 바깥이 아니라 가장 가까운 .git 을 루트로 삼는다.
+	nested := filepath.Join(dir, ".claude", "worktrees", "feat2")
+	cmd = exec.Command("git", "worktree", "add", "-q", nested, "-b", "feat2")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("중첩 worktree 생성 실패: %v (%s)", err, out)
+	}
+	nestedSub := filepath.Join(nested, "x")
+	if err := os.MkdirAll(nestedSub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for cwd, want := range map[string]string{dir: dir, sub: dir, wt: wt, nested: nested, nestedSub: nested} {
+		if got, ok := Root(cwd); !ok || got != want {
+			t.Errorf("Root(%q) = %q, %v; want %q, true", cwd, got, ok, want)
+		}
+	}
+}
+
+func TestRootOutsideARepositoryOrUnderGitDirIsUnknown(t *testing.T) {
+	if got, ok := Root(t.TempDir()); ok {
+		t.Errorf("저장소가 아니면 루트가 없다: %q", got)
+	}
+	// GIT_DIR 은 저장소를 걷기로 볼 수 없는 자리에 둘 수 있어 루트를 모른다.
+	repo := newRepo(t, "main")
+	t.Setenv("GIT_DIR", filepath.Join(repo, ".git"))
+	if got, ok := Root(repo); ok {
+		t.Errorf("GIT_DIR 이 있으면 루트를 모른다: %q", got)
+	}
+}

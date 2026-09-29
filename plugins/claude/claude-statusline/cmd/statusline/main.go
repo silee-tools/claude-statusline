@@ -49,7 +49,7 @@ func main() {
 	}
 
 	cacheDir := filepath.Join(xdg("XDG_CACHE_HOME", filepath.Join(home, ".cache")), "claude-statusline")
-	dataDir := xdg("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	ghCacheDir := filepath.Join(xdg("XDG_CACHE_HOME", filepath.Join(home, ".cache")), "gh-prompt")
 	configDir := xdg("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	claudeConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
 	if claudeConfigDir == "" {
@@ -97,9 +97,10 @@ func main() {
 	if b := gitinfo.Branch(status.CWD, cacheDir); b != "" {
 		view.Branch = shorten.Branch(b)
 	}
+	repoRoot, _ := gitinfo.Root(status.CWD)
 	for _, s := range []string{
 		segments.ClaudeAccount(claudeConfigDir, cacheDir),
-		segments.GitHubAccount(dataDir, configDir, now.Unix()),
+		segments.GitHubAccount(ghCacheDir, configDir, repoRoot, now.Unix()),
 		segments.AWS(loginCacheDir, now.Unix()),
 	} {
 		if s != "" {

@@ -169,13 +169,14 @@ needs no network.
 | `git` | required | the branch indicator |
 | `ps` | optional | automatic terminal-width detection (falls back to the full layout) |
 | `curl` | optional | daily model-pricing refresh (falls back to a built-in table) |
-| `aws` (AWS CLI 2.32+) | optional | `aws login`'s session cache, read for the `aws:` session indicator |
+| `aws` (AWS CLI 2.32+) | optional | `aws login`'s session cache, read for the `aws:` session indicator (login time is the `iat` of its `idToken`; the session expires 12 hours later) |
 
 ## Configuration
 
 ### GitHub account indicator
 
-The `gh@<account>` segment maps the current GitHub login to a label and color.
+The `gh@<account>` segment shows the GitHub account of the repository the session
+is in, and is omitted outside a repository. It maps that login to a label and color.
 The mapping is not hardcoded — it is read from
 `${XDG_CONFIG_HOME:-$HOME/.config}/claude-statusline/gh-accounts`, one entry per
 line:
@@ -186,9 +187,13 @@ octocat=personal,214
 some-work-login=work,27
 ```
 
-The current login and its status are read from
-`${XDG_DATA_HOME:-$HOME/.local/share}/gh-prompt-user` (written by your shell
-prompt). The file holds one tab-separated record:
+The login and its status are read from
+`${XDG_CACHE_HOME:-$HOME/.cache}/gh-prompt/<repository root>` (written by your
+shell prompt), where the file name is the physical repository root with each `/`
+replaced by `%`. The segment is omitted when that file does not exist, which
+includes roots whose name exceeds 240 bytes (Korean characters count 3 bytes
+each): the prompt writes no cache for them. The file holds one tab-separated
+record:
 
 ```
 v2	<login-or-->	<state>	<deadline-epoch-or-0>
