@@ -222,7 +222,18 @@ func TestRootIsTheDirectoryHoldingDotGit(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Skipf("worktree 생성 실패: %v (%s)", err, out)
 	}
-	for cwd, want := range map[string]string{dir: dir, sub: dir, wt: wt} {
+	// 다른 체크아웃 안에 중첩된 worktree 는 바깥이 아니라 가장 가까운 .git 을 루트로 삼는다.
+	nested := filepath.Join(dir, ".claude", "worktrees", "feat2")
+	cmd = exec.Command("git", "worktree", "add", "-q", nested, "-b", "feat2")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("중첩 worktree 생성 실패: %v (%s)", err, out)
+	}
+	nestedSub := filepath.Join(nested, "x")
+	if err := os.MkdirAll(nestedSub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for cwd, want := range map[string]string{dir: dir, sub: dir, wt: wt, nested: nested, nestedSub: nested} {
 		if got, ok := Root(cwd); !ok || got != want {
 			t.Errorf("Root(%q) = %q, %v; want %q, true", cwd, got, ok, want)
 		}
