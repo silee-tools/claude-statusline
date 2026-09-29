@@ -2,6 +2,8 @@
 package segments
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,10 +14,13 @@ import (
 	"github.com/silee-tools/claude-statusline/internal/theme"
 )
 
-// GitHubAccount renders the active GitHub login as a label plus a state marker.
+// GitHubAccount renders the GitHub account gh uses for the repository at repoRoot as a
+// label plus a state marker, or "" outside a repository or before the shell has
+// recorded one.
 //
-// The login and its state come from the cache the shell prompt writes at
-// <dataDir>/gh-prompt-user, one tab separated record:
+// The account and its state come from the cache the shell prompt writes at
+// <cacheDir>/<repoRoot with / replaced by %>, keyed by the physical root that
+// `git rev-parse --show-toplevel` reports. The file holds one tab separated record:
 //
 //	v2<TAB><login or -><TAB><state><TAB><deadline epoch or 0>
 //
@@ -27,8 +32,14 @@ import (
 // reverse lets a record with an empty login slot leak out as gh@-. And the color code
 // and the deadline accept digits only, so neither the config nor the cache can inject
 // an escape sequence.
-func GitHubAccount(dataDir, configDir string, now int64) string {
-	b, err := os.ReadFile(filepath.Join(dataDir, "gh-prompt-user"))
+func GitHubAccount(cacheDir, configDir, repoRoot string, now int64) string {
+	if repoRoot == "" {
+		return ""
+	}
+	if physical, err := filepath.EvalSymlinks(repoRoot); err == nil {
+		repoRoot = physical
+	}
+	b, err := os.ReadFile(filepath.Join(cacheDir, strings.ReplaceAll(repoRoot, "/", "%")))
 	if err != nil {
 		return ""
 	}
@@ -204,23 +215,54 @@ func scanEmail(path string) string {
 }
 
 // awsLoginSessionMax is `aws login`'s documented maximum session lifetime, in
-// seconds. The cache holds no expiry of its own, so this is the only source for it.
+// seconds.
 const awsLoginSessionMax = 12 * 60 * 60
 
-// AWS renders the `aws login` session state from the newest cache file's creation
-// time in loginCacheDir. Each credential refresh (at most every 15 minutes, on use)
-// rewrites that file in place, so its birth time stays the login moment while mtime tracks the
-// last refresh — the newest-by-mtime *.json file is the active session.
+// AWS renders the `aws login` session state from the idToken issue time (iat) in the
+// newest cache file in loginCacheDir. iat is set once at login and survives credential
+// refreshes, which rewrite the file at most every 15 minutes on use. The file's
+// creation time cannot stand in for it: a re-login overwrites the same file, so the
+// creation time keeps the first login. The newest-by-mtime *.json file is the active
+// session.
 func AWS(loginCacheDir string, now int64) string {
 	path, ok := newestCacheFile(loginCacheDir)
 	if !ok {
 		return ""
 	}
-	birth, ok := birthTime(path)
+	login, ok := awsLoginTime(path)
 	if !ok {
 		return theme.Dim + "aws:?" + theme.Reset
 	}
-	return awsSessionState(birth.Unix(), now)
+	return awsSessionState(login, now)
+}
+
+// awsLoginTime reads iat from the JWT payload of the cache file's idToken.
+func awsLoginTime(path string) (int64, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	var cache struct {
+		IDToken string `json:"idToken"`
+	}
+	if json.Unmarshal(b, &cache) != nil {
+		return 0, false
+	}
+	parts := strings.Split(cache.IDToken, ".")
+	if len(parts) != 3 {
+		return 0, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return 0, false
+	}
+	var claims struct {
+		IAT int64 `json:"iat"`
+	}
+	if json.Unmarshal(payload, &claims) != nil || claims.IAT <= 0 {
+		return 0, false
+	}
+	return claims.IAT, true
 }
 
 // newestCacheFile returns the *.json entry in dir with the latest mtime.
@@ -249,10 +291,10 @@ func newestCacheFile(dir string) (string, bool) {
 	return path, found
 }
 
-// awsSessionState renders the minutes remaining until birthUnix + the session max:
+// awsSessionState renders the minutes remaining until loginUnix + the session max:
 // green above 10 minutes, yellow with a countdown down to 0, red past it.
-func awsSessionState(birthUnix, now int64) string {
-	remaining := (birthUnix + awsLoginSessionMax - now) / 60
+func awsSessionState(loginUnix, now int64) string {
+	remaining := (loginUnix + awsLoginSessionMax - now) / 60
 	switch {
 	case remaining > 10:
 		return theme.Green + "aws:✓" + theme.Reset
