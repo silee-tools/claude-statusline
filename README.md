@@ -190,8 +190,10 @@ some-work-login=work,27
 The login and its status are read from
 `${XDG_CACHE_HOME:-$HOME/.cache}/gh-prompt/<repository root>` (written by your
 shell prompt), where the file name is the physical repository root with each `/`
-replaced by `%`. The segment is omitted when that file does not exist. The file
-holds one tab-separated record:
+replaced by `%`. The segment is omitted when that file does not exist, which
+includes roots whose name exceeds 240 bytes (Korean characters count 3 bytes
+each): the prompt writes no cache for them. The file holds one tab-separated
+record:
 
 ```
 v2	<login-or-->	<state>	<deadline-epoch-or-0>

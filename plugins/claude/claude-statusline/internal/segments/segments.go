@@ -252,7 +252,7 @@ func awsLoginTime(path string) (int64, bool) {
 	if len(parts) != 3 {
 		return 0, false
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return 0, false
 	}

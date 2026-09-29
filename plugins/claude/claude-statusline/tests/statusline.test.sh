@@ -588,20 +588,23 @@ printf 'octocat' > "$GH_CACHE_FILE"
 OUT=$(run "$(json_gh)" 80)
 assert_contains     "T45 탭 없는 한 줄은 계정명으로 해석" "gh@personal" "$(nth_line 2 "$OUT")"
 
-# --- T46: gh 세그먼트는 현재 저장소 기준이다 ---
+# --- T55: gh 세그먼트는 현재 저장소 기준이다 ---
 #    저장소가 아니면 캐시가 있어도 그리지 않고, 저장소여도 그 저장소의 캐시가 없으면 그리지 않는다.
 gh_cache testwork ok 0
 OUT=$(run "$(json_without)" 80)
-assert_not_contains "T46 저장소가 아닌 cwd(/tmp)에서는 gh 세그먼트 없음" "gh@" "$OUT"
+assert_not_contains "T55 저장소가 아닌 cwd(/tmp)에서는 gh 세그먼트 없음" "gh@" "$OUT"
 GH_OTHER_REPO="$TMPROOT/gh-other-repo"
 mkdir -p "$GH_OTHER_REPO/.git"
 OUT=$(run "$(json_gh | sed "s#$GH_REPO#$GH_OTHER_REPO#")" 80)
-assert_not_contains "T46 캐시가 없는 저장소에서는 gh 세그먼트 없음" "gh@" "$OUT"
+assert_not_contains "T55 캐시가 없는 저장소에서는 gh 세그먼트 없음" "gh@" "$OUT"
 printf 'octocat' > "$(gh_cache_file "$GH_OTHER_REPO")"
 OUT=$(run "$(json_gh | sed "s#$GH_REPO#$GH_OTHER_REPO#")" 80)
-assert_contains     "T46 저장소마다 자기 캐시를 읽는다(other=personal)" "gh@personal" "$(nth_line 2 "$OUT")"
+assert_contains     "T55 저장소마다 자기 캐시를 읽는다(other=personal)" "gh@personal" "$(nth_line 2 "$OUT")"
+mkdir -p "$GH_REPO/sub/deep"
+OUT=$(run "$(json_gh | sed "s#$GH_REPO#$GH_REPO/sub/deep#")" 80)
+assert_contains     "T55 저장소 하위 디렉터리에서도 그 저장소의 기록을 읽는다" "gh@work" "$(nth_line 2 "$OUT")"
 OUT=$(run "$(json_gh)" 80)
-assert_contains     "T46 원래 저장소는 자기 기록(work)을 유지" "gh@work" "$(nth_line 2 "$OUT")"
+assert_contains     "T55 원래 저장소는 자기 기록(work)을 유지" "gh@work" "$(nth_line 2 "$OUT")"
 printf 'octocat' > "$GH_CACHE_FILE"
 
 # --- T20: 요소별 색 — 모델명 시안, 파이프·라벨 등 dim 유지 ---
