@@ -169,7 +169,7 @@ needs no network.
 | `git` | required | the branch indicator |
 | `ps` | optional | automatic terminal-width detection (falls back to the full layout) |
 | `curl` | optional | daily model-pricing refresh (falls back to a built-in table) |
-| `aws` (AWS CLI 2.32+) | optional | `aws login`'s session cache, read for the `aws:` session indicator (login time is the `iat` of its `idToken`; the session expires 12 hours later) |
+| `aws` (AWS CLI 2.32+) | optional | `aws login`'s session cache, read for the `aws:` session indicator: a cache refreshed within 15 minutes is `✓`; an older one is settled by a background `aws sts get-caller-identity`, at most every 10 minutes (`✓` on success, `expired` on failure) |
 
 ## Configuration
 
