@@ -101,7 +101,7 @@ func main() {
 	for _, s := range []string{
 		segments.ClaudeAccount(claudeConfigDir, cacheDir),
 		segments.GitHubAccount(ghCacheDir, configDir, repoRoot, now.Unix()),
-		segments.AWS(loginCacheDir, now.Unix()),
+		segments.AWS(loginCacheDir, filepath.Join(cacheDir, "aws-check"), now.Unix(), segments.SpawnAWSCheck),
 	} {
 		if s != "" {
 			view.Meta = append(view.Meta, s)

@@ -788,10 +788,15 @@ aws_render() { printf '%s' "$(json_with)" | \
 aws_cache "$AWS_ONE_CACHE/session.json" "$(date +%s)"
 assert_contains "T36 AWS_LOGIN_CACHE_DIR 오버라이드가 새 캐시를 읽어 aws:✓" "aws:✓" "$(aws_render "$AWS_ONE_CACHE")"
 
-# 같은 파일을 다시 로그인으로 덮어쓰면 파일 생성 시각은 그대로고 iat 만 새로 정해진다.
-# 판정은 파일 생성 시각이 아니라 iat 를 따른다.
+# iat 는 로그인이 아니라 마지막 갱신 시각이다. 낡은 iat 는 직전 확인 결과(aws-check)를 따르고,
+# 확인이 신선하면 실제 aws 를 부르지 않는다.
+AWS_CHECK="$TMPROOT/cache/claude-statusline/aws-check"
 aws_cache "$AWS_ONE_CACHE/session.json" "$(( $(date +%s) - 13 * 3600 ))"
-assert_contains "T36 iat 가 13시간 전이면 방금 만든 파일이어도 aws:expired" "aws:expired" "$(aws_render "$AWS_ONE_CACHE")"
+printf '%s fail\n' "$(date +%s)" > "$AWS_CHECK"
+assert_contains "T36 iat 가 낡고 직전 확인이 fail 이면 aws:expired" "aws:expired" "$(aws_render "$AWS_ONE_CACHE")"
+printf '%s ok\n' "$(date +%s)" > "$AWS_CHECK"
+assert_contains "T36 iat 가 낡아도 직전 확인이 ok 면 aws:✓" "aws:✓" "$(aws_render "$AWS_ONE_CACHE")"
+rm -f "$AWS_CHECK"
 aws_cache "$AWS_ONE_CACHE/session.json" "$(date +%s)"
 assert_contains "T36 같은 파일에 재로그인하면 aws:✓ 로 돌아온다" "aws:✓" "$(aws_render "$AWS_ONE_CACHE")"
 printf '{}' > "$AWS_ONE_CACHE/session.json"
