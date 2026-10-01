@@ -2,7 +2,9 @@ package segments
 
 import (
 	"encoding/base64"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -281,58 +283,101 @@ func awsIDToken(iat int64) string {
 	return enc([]byte(`{"alg":"none"}`)) + "." + enc([]byte(`{"iat":`+strconv.FormatInt(iat, 10)+`}`)) + ".sig"
 }
 
-func TestAWSNoCacheDirRendersEmpty(t *testing.T) {
-	if got := AWS(filepath.Join(t.TempDir(), "missing"), 0); got != "" {
+// awsEnv is an AWS call fixture: a spawn that counts runs and a state file path.
+type awsEnv struct {
+	state  string
+	spawns int
+}
+
+func newAWSEnv(t *testing.T) *awsEnv { return &awsEnv{state: filepath.Join(t.TempDir(), "aws-check")} }
+
+func (e *awsEnv) spawn(string) { e.spawns++ }
+
+func (e *awsEnv) render(dir string, now int64) string {
+	return plain(AWS(dir, e.state, now, e.spawn))
+}
+
+func TestAWSNoCacheRendersEmpty(t *testing.T) {
+	e := newAWSEnv(t)
+	if got := e.render(filepath.Join(t.TempDir(), "missing"), 0); got != "" {
 		t.Errorf("캐시 디렉터리 부재: %q", got)
 	}
-}
-
-func TestAWSEmptyCacheDirRendersEmpty(t *testing.T) {
-	if got := AWS(t.TempDir(), 0); got != "" {
+	if got := e.render(t.TempDir(), 0); got != "" {
 		t.Errorf("캐시 파일 부재: %q", got)
 	}
-}
-
-func TestAWSNonJSONFilesRenderEmpty(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := AWS(dir, 0); got != "" {
+	if got := e.render(dir, 0); got != "" {
 		t.Errorf("json 아닌 파일만 있으면 빈 문자열: %q", got)
 	}
+	if e.spawns != 0 {
+		t.Errorf("캐시가 없으면 확인하지 않는다: spawns=%d", e.spawns)
+	}
 }
 
-// The segment no longer looks at PATH at all — an aws login cache renders
-// regardless of whether saml2aws is installed.
-func TestAWSRendersWithoutSaml2aws(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
+// A recent iat proves the login is live, so no check runs.
+func TestAWSFreshCredentialsNeedNoCheck(t *testing.T) {
+	e := newAWSEnv(t)
 	dir := t.TempDir()
 	now := time.Now().Unix()
-	awsCacheFile(t, dir, "session.json", now)
-	if got := plain(AWS(dir, now)); got != "aws:✓" {
-		t.Errorf("방금 로그인한 캐시 = %q, want aws:✓", got)
+	awsCacheFile(t, dir, "session.json", now-14*60)
+	if got := e.render(dir, now); got != "aws:✓" || e.spawns != 0 {
+		t.Errorf("got %q spawns=%d, want aws:✓ 0", got, e.spawns)
 	}
 }
 
-// aws login rewrites the existing cache file on re-login, so the file's creation time
-// keeps the first login. The session follows the login time recorded in the idToken.
-func TestAWSFollowsLoginTimeNotFileCreation(t *testing.T) {
+// An old iat means no refresh happened, not that the login ended: the last check decides.
+func TestAWSStaleCredentialsFollowLastCheck(t *testing.T) {
 	now := time.Now().Unix()
 	cases := []struct {
-		iat  int64
-		want string
+		name   string
+		state  string // "" = no state file
+		want   string
+		spawns int
 	}{
-		{now - 13*3600, "aws:expired"},
-		{now - 12*3600 + 5*60, "aws:⏳5m"},
-		{now - 3600, "aws:✓"},
+		{"확인 기록 없음", "", "aws:?", 1},
+		{"최근 ok", "%d ok", "aws:✓", 0},
+		{"최근 fail", "%d fail", "aws:expired", 0},
+		{"오래된 ok", "%d ok", "aws:✓", 1},
+		{"오래된 fail", "%d fail", "aws:expired", 1},
+		{"깨진 기록", "garbage", "aws:?", 1},
 	}
+	ages := map[string]int64{"최근 ok": 60, "최근 fail": 60, "오래된 ok": 11 * 60, "오래된 fail": 11 * 60}
 	for _, c := range cases {
+		e := newAWSEnv(t)
 		dir := t.TempDir()
-		awsCacheFile(t, dir, "session.json", c.iat)
-		if got := plain(AWS(dir, now)); got != c.want {
-			t.Errorf("iat=now%+ds -> %q, want %q", c.iat-now, got, c.want)
+		awsCacheFile(t, dir, "session.json", now-13*3600)
+		if c.state != "" {
+			body := c.state
+			if strings.Contains(body, "%d") {
+				body = fmt.Sprintf(body, now-ages[c.name])
+			}
+			if err := os.WriteFile(e.state, []byte(body+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 		}
+		if got := e.render(dir, now); got != c.want || e.spawns != c.spawns {
+			t.Errorf("%s: got %q spawns=%d, want %q %d", c.name, got, e.spawns, c.want, c.spawns)
+		}
+	}
+}
+
+// Rendering again right after a spawn must not spawn a second check.
+func TestAWSSpawnsOncePerTTL(t *testing.T) {
+	e := newAWSEnv(t)
+	dir := t.TempDir()
+	now := time.Now().Unix()
+	awsCacheFile(t, dir, "session.json", now-13*3600)
+	e.render(dir, now)
+	e.render(dir, now+5)
+	if e.spawns != 1 {
+		t.Errorf("spawns=%d, want 1", e.spawns)
+	}
+	e.render(dir, now+awsCheckTTL)
+	if e.spawns != 2 {
+		t.Errorf("TTL 경과 후 spawns=%d, want 2", e.spawns)
 	}
 }
 
@@ -349,44 +394,24 @@ func TestAWSUnreadableLoginTimeRendersQuestionMark(t *testing.T) {
 		"iat 가 0":             claims(`{"iat":0}`),
 	}
 	for name, token := range cases {
+		e := newAWSEnv(t)
 		dir := t.TempDir()
 		writeAWSCache(t, dir, "session.json", token)
-		if got := plain(AWS(dir, time.Now().Unix())); got != "aws:?" {
-			t.Errorf("%s -> %q, want aws:?", name, got)
+		if got := e.render(dir, time.Now().Unix()); got != "aws:?" || e.spawns != 0 {
+			t.Errorf("%s -> %q spawns=%d, want aws:? 0", name, got, e.spawns)
 		}
 	}
 }
 
 func TestAWSBrokenCacheFileRendersQuestionMark(t *testing.T) {
+	e := newAWSEnv(t)
 	dir := t.TempDir()
 	link := filepath.Join(dir, "broken.json")
 	if err := os.Symlink(filepath.Join(dir, "does-not-exist"), link); err != nil {
 		t.Fatal(err)
 	}
-	if got := plain(AWS(dir, time.Now().Unix())); got != "aws:?" {
+	if got := e.render(dir, time.Now().Unix()); got != "aws:?" {
 		t.Errorf("캐시 파일 판독 불가 → aws:? — got %q", got)
-	}
-}
-
-func TestAWSSessionStateThresholds(t *testing.T) {
-	base := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC).Unix()
-	cases := []struct {
-		offset time.Duration
-		want   string
-	}{
-		{30 * time.Minute, "aws:✓"},
-		{11 * time.Minute, "aws:✓"},
-		{10 * time.Minute, "aws:⏳10m"},
-		{5 * time.Minute, "aws:⏳5m"},
-		{1 * time.Minute, "aws:⏳1m"},
-		{0, "aws:expired"},
-		{-time.Hour, "aws:expired"},
-	}
-	for _, c := range cases {
-		login := base + int64(c.offset.Seconds()) - awsLoginSessionMax
-		if got := plain(awsSessionState(login, base)); got != c.want {
-			t.Errorf("offset=%v -> %q, want %q", c.offset, got, c.want)
-		}
 	}
 }
 
@@ -401,5 +426,33 @@ func TestAWSNewestCacheFileByMtime(t *testing.T) {
 	got, ok := newestCacheFile(dir)
 	if !ok || got != newer {
 		t.Errorf("newestCacheFile = %q, %v; want %q, true", got, ok, newer)
+	}
+}
+
+// The check script records ok/fail from the aws exit status and picks the profile
+// that has a login_session.
+func TestAWSCheckScript(t *testing.T) {
+	for _, c := range []struct{ exit, want string }{{"0", "ok"}, {"255", "fail"}} {
+		home := t.TempDir()
+		bin := t.TempDir()
+		cfg := "[default]\nregion = x\n[profile work]\nlogin_session = arn:example\n"
+		if err := os.WriteFile(filepath.Join(home, "config"), []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fake := "#!/bin/sh\necho \"$@\" > '" + filepath.Join(home, "args") + "'\nexit " + c.exit + "\n"
+		if err := os.WriteFile(filepath.Join(bin, "aws"), []byte(fake), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		state := filepath.Join(home, "aws-check")
+		cmd := exec.Command("sh", "-c", awsCheckScript, "sh", state)
+		cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "AWS_CONFIG_FILE=" + filepath.Join(home, "config")}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		_, got := readAWSCheck(state)
+		args, _ := os.ReadFile(filepath.Join(home, "args"))
+		if got != c.want || strings.TrimSpace(string(args)) != "--profile work sts get-caller-identity" {
+			t.Errorf("exit %s: result=%q args=%q", c.exit, got, args)
+		}
 	}
 }

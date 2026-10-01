@@ -5,10 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/silee-tools/claude-statusline/internal/theme"
@@ -214,26 +216,88 @@ func scanEmail(path string) string {
 	return ""
 }
 
-// awsLoginSessionMax is `aws login`'s documented maximum session lifetime, in
-// seconds.
-const awsLoginSessionMax = 12 * 60 * 60
+// awsAccessTTL is how long the access credentials in the login cache stay valid; `aws`
+// rewrites the cache (and its idToken iat) only when a call refreshes them.
+const awsAccessTTL = 15 * 60
 
-// AWS renders the `aws login` session state from the idToken issue time (iat) in the
-// newest cache file in loginCacheDir. iat is set once at login and survives credential
-// refreshes, which rewrite the file at most every 15 minutes on use. The file's
-// creation time cannot stand in for it: a re-login overwrites the same file, so the
-// creation time keeps the first login. The newest-by-mtime *.json file is the active
-// session.
-func AWS(loginCacheDir string, now int64) string {
+// awsCheckTTL is how long the last background check stands before the next one.
+const awsCheckTTL = 10 * 60
+
+// awsCheckScript asks AWS whether the login still works and records "<epoch> ok|fail"
+// in $1. It uses AWS_PROFILE, else the first profile in the config with a login_session.
+// A success also makes `aws` refresh the login cache. ponytail: a network outage reads
+// as fail, add an exit-code split if that proves noisy.
+const awsCheckScript = `p=${AWS_PROFILE:-$(awk '/^\[profile /{n=$2;sub(/\]/,"",n)} /^login_session/{print n;exit}' "${AWS_CONFIG_FILE:-$HOME/.aws/config}" 2>/dev/null)}
+if aws ${p:+--profile "$p"} sts get-caller-identity >/dev/null 2>&1; then r=ok; else r=fail; fi
+printf '%s %s\n' "$(date +%s)" "$r" > "$1.$$" && mv "$1.$$" "$1"`
+
+// SpawnAWSCheck runs awsCheckScript detached, so the render never waits for AWS.
+func SpawnAWSCheck(stateFile string) {
+	cmd := exec.Command("sh", "-c", awsCheckScript, "sh", stateFile)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if cmd.Start() == nil {
+		go cmd.Wait()
+	}
+}
+
+// AWS renders the `aws login` session state, or "" without a login cache.
+//
+// The newest *.json in loginCacheDir is the active session. Its idToken iat is the time
+// of the last credential refresh, not of the login, so a recent iat proves a live login
+// and an old one proves nothing. Then the last background check decides, kept in
+// stateFile as "<epoch> ok|fail". A check older than awsCheckTTL is renewed through
+// spawn; the state file is stamped first so concurrent renders spawn only once.
+func AWS(loginCacheDir, stateFile string, now int64, spawn func(stateFile string)) string {
 	path, ok := newestCacheFile(loginCacheDir)
 	if !ok {
 		return ""
 	}
-	login, ok := awsLoginTime(path)
+	iat, ok := awsLoginTime(path)
 	if !ok {
 		return theme.Dim + "aws:?" + theme.Reset
 	}
-	return awsSessionState(login, now)
+	if now-iat < awsAccessTTL {
+		return theme.Green + "aws:✓" + theme.Reset
+	}
+	checked, result := readAWSCheck(stateFile)
+	if now-checked >= awsCheckTTL {
+		writeAWSCheck(stateFile, now, result)
+		spawn(stateFile)
+	}
+	switch result {
+	case "ok":
+		return theme.Green + "aws:✓" + theme.Reset
+	case "fail":
+		return theme.Red + "aws:expired" + theme.Reset
+	}
+	return theme.Dim + "aws:?" + theme.Reset
+}
+
+func readAWSCheck(file string) (int64, string) {
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return 0, ""
+	}
+	f := strings.Fields(string(b))
+	if len(f) != 2 {
+		return 0, ""
+	}
+	at, err := strconv.ParseInt(f[0], 10, 64)
+	if err != nil {
+		return 0, ""
+	}
+	return at, f[1]
+}
+
+func writeAWSCheck(file string, at int64, result string) {
+	if result == "" {
+		result = "?"
+	}
+	os.MkdirAll(filepath.Dir(file), 0o755)
+	tmp := file + ".tmp"
+	if os.WriteFile(tmp, []byte(strconv.FormatInt(at, 10)+" "+result+"\n"), 0o600) == nil {
+		os.Rename(tmp, file)
+	}
 }
 
 // awsLoginTime reads iat from the JWT payload of the cache file's idToken.
@@ -289,19 +353,6 @@ func newestCacheFile(dir string) (string, bool) {
 		}
 	}
 	return path, found
-}
-
-// awsSessionState renders the minutes remaining until loginUnix + the session max:
-// green above 10 minutes, yellow with a countdown down to 0, red past it.
-func awsSessionState(loginUnix, now int64) string {
-	remaining := (loginUnix + awsLoginSessionMax - now) / 60
-	switch {
-	case remaining > 10:
-		return theme.Green + "aws:✓" + theme.Reset
-	case remaining > 0:
-		return theme.Yellow + "aws:⏳" + strconv.FormatInt(remaining, 10) + "m" + theme.Reset
-	}
-	return theme.Red + "aws:expired" + theme.Reset
 }
 
 func isDigits(s string) bool {
