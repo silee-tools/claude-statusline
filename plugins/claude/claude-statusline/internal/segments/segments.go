@@ -240,24 +240,25 @@ func SpawnAWSCheck(stateFile string) {
 	}
 }
 
-// AWS renders the `aws login` session state, or "" without a login cache.
+// AWS renders the `aws login` session state, or "" without a login cache. healthy is
+// true only for aws:✓, which the narrow layout leaves out.
 //
 // The newest *.json in loginCacheDir is the active session. Its idToken iat is the time
 // of the last credential refresh, not of the login, so a recent iat proves a live login
 // and an old one proves nothing. Then the last background check decides, kept in
 // stateFile as "<epoch> ok|fail". A check older than awsCheckTTL is renewed through
 // spawn; the state file is stamped first so concurrent renders spawn only once.
-func AWS(loginCacheDir, stateFile string, now int64, spawn func(stateFile string)) string {
+func AWS(loginCacheDir, stateFile string, now int64, spawn func(stateFile string)) (text string, healthy bool) {
 	path, ok := newestCacheFile(loginCacheDir)
 	if !ok {
-		return ""
+		return "", false
 	}
 	iat, ok := awsLoginTime(path)
 	if !ok {
-		return theme.Dim + "aws:?" + theme.Reset
+		return theme.Dim + "aws:?" + theme.Reset, false
 	}
 	if now-iat < awsAccessTTL {
-		return theme.Green + "aws:✓" + theme.Reset
+		return theme.Green + "aws:✓" + theme.Reset, true
 	}
 	checked, result := readAWSCheck(stateFile)
 	if now-checked >= awsCheckTTL {
@@ -266,11 +267,11 @@ func AWS(loginCacheDir, stateFile string, now int64, spawn func(stateFile string
 	}
 	switch result {
 	case "ok":
-		return theme.Green + "aws:✓" + theme.Reset
+		return theme.Green + "aws:✓" + theme.Reset, true
 	case "fail":
-		return theme.Red + "aws:expired" + theme.Reset
+		return theme.Red + "aws:expired" + theme.Reset, false
 	}
-	return theme.Dim + "aws:?" + theme.Reset
+	return theme.Dim + "aws:?" + theme.Reset, false
 }
 
 func readAWSCheck(file string) (int64, string) {

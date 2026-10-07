@@ -285,8 +285,9 @@ func awsIDToken(iat int64) string {
 
 // awsEnv is an AWS call fixture: a spawn that counts runs and a state file path.
 type awsEnv struct {
-	state  string
-	spawns int
+	state   string
+	spawns  int
+	healthy bool // the second return value of the last AWS call
 }
 
 func newAWSEnv(t *testing.T) *awsEnv { return &awsEnv{state: filepath.Join(t.TempDir(), "aws-check")} }
@@ -294,7 +295,9 @@ func newAWSEnv(t *testing.T) *awsEnv { return &awsEnv{state: filepath.Join(t.Tem
 func (e *awsEnv) spawn(string) { e.spawns++ }
 
 func (e *awsEnv) render(dir string, now int64) string {
-	return plain(AWS(dir, e.state, now, e.spawn))
+	text, healthy := AWS(dir, e.state, now, e.spawn)
+	e.healthy = healthy
+	return plain(text)
 }
 
 func TestAWSNoCacheRendersEmpty(t *testing.T) {
@@ -361,6 +364,46 @@ func TestAWSStaleCredentialsFollowLastCheck(t *testing.T) {
 		if got := e.render(dir, now); got != c.want || e.spawns != c.spawns {
 			t.Errorf("%s: got %q spawns=%d, want %q %d", c.name, got, e.spawns, c.want, c.spawns)
 		}
+	}
+}
+
+// Only aws:✓ is healthy; the narrow layout hides that one and shows every other state,
+// including an empty cache, which has no text to show.
+func TestAWSHealthyOnlyForTheCheckMark(t *testing.T) {
+	now := time.Now().Unix()
+	cases := []struct {
+		name    string
+		iat     int64  // 0 = no cache file
+		state   string // "%d ok" style, "" = no state file
+		want    string
+		healthy bool
+	}{
+		{"캐시 없음", 0, "", "", false},
+		{"방금 로그인", now - 60, "", "aws:✓", true},
+		{"오래된 로그인 + 최근 ok", now - 13*3600, "%d ok", "aws:✓", true},
+		{"오래된 로그인 + 최근 fail", now - 13*3600, "%d fail", "aws:expired", false},
+		{"오래된 로그인 + 기록 없음", now - 13*3600, "", "aws:?", false},
+	}
+	for _, c := range cases {
+		e := newAWSEnv(t)
+		dir := t.TempDir()
+		if c.iat != 0 {
+			awsCacheFile(t, dir, "session.json", c.iat)
+		}
+		if c.state != "" {
+			if err := os.WriteFile(e.state, []byte(fmt.Sprintf(c.state, now-60)+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := e.render(dir, now); got != c.want || e.healthy != c.healthy {
+			t.Errorf("%s: got %q healthy=%v, want %q %v", c.name, got, e.healthy, c.want, c.healthy)
+		}
+	}
+	e := newAWSEnv(t)
+	dir := t.TempDir()
+	writeAWSCache(t, dir, "session.json", "notajwt")
+	if got := e.render(dir, now); got != "aws:?" || e.healthy {
+		t.Errorf("판독 불가: got %q healthy=%v, want aws:? false", got, e.healthy)
 	}
 }
 
