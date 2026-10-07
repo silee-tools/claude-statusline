@@ -4,7 +4,7 @@ Guidance for AI agents and contributors working in this repository.
 
 This repo holds two Claude Code plugins published through one marketplace
 catalog. `claude-statusline` is a width-aware statusline HUD with a compact
-three-row layout and a full seven-row layout. `stuck-resume` is a
+two-row layout and a full seven-row layout. `stuck-resume` is a
 `StopFailure` hook that waits out a usage limit or an expired login and then
 resumes the interrupted turn. End-user documentation lives in
 [README.md](README.md); this file covers how to change the code safely.

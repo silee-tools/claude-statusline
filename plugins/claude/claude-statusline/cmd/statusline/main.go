@@ -85,7 +85,6 @@ func main() {
 
 	view := render.View{
 		Clock:   now.Format("15:04"),
-		Path:    shorten.Path(status.CWD, home),
 		Model:   theme.FormatModel(status.ModelDisplay),
 		Effort:  theme.EffortGlyph(status.Effort),
 		CtxPct:  status.ContextUsed() * 100 / status.WindowSize(),
@@ -98,25 +97,38 @@ func main() {
 		view.Branch = shorten.Branch(b)
 	}
 	repoRoot, _ := gitinfo.Root(status.CWD)
-	for _, s := range []string{
-		segments.ClaudeAccount(claudeConfigDir, cacheDir),
-		segments.GitHubAccount(ghCacheDir, configDir, repoRoot, now.Unix()),
-		segments.AWS(loginCacheDir, filepath.Join(cacheDir, "aws-check"), now.Unix(), segments.SpawnAWSCheck),
-	} {
+	gh := segments.GitHubAccount(ghCacheDir, configDir, repoRoot, now.Unix())
+	aws, awsHealthy := segments.AWS(loginCacheDir, filepath.Join(cacheDir, "aws-check"), now.Unix(), segments.SpawnAWSCheck)
+
+	cols, ok := width.Terminal(cacheDir)
+	view.Width = cols
+	if ok && cols <= compactAtOrBelow {
+		view.Status = compactStatus(gh, aws, awsHealthy)
+		fmt.Print(render.Compact(view, now.Unix()))
+		return
+	}
+	// The path, the account row and the cost are read only for the full layout.
+	view.Path = shorten.Path(status.CWD, home)
+	for _, s := range []string{segments.ClaudeAccount(claudeConfigDir, cacheDir), gh, aws} {
 		if s != "" {
 			view.Meta = append(view.Meta, s)
 		}
 	}
-
-	cols, ok := width.Terminal(cacheDir)
-	if ok && cols <= compactAtOrBelow {
-		view.Width = cols
-		fmt.Print(render.Compact(view, now.Unix()))
-		return
-	}
-	view.Width = cols
 	view.Cost = costLine(cacheDir, now)
 	fmt.Print(render.Full(view, now.Unix()))
+}
+
+// compactStatus picks the first-row indicators of the compact layout: gh always, aws
+// only when it is not healthy. Unknown states count as not healthy.
+func compactStatus(gh, aws string, awsHealthy bool) []string {
+	var out []string
+	if gh != "" {
+		out = append(out, gh)
+	}
+	if aws != "" && !awsHealthy {
+		out = append(out, aws)
+	}
+	return out
 }
 
 func sample(w input.Window) ratelimit.Sample {
@@ -133,7 +145,7 @@ func gauge(s ratelimit.Sample, window int64) render.Gauge {
 	}
 }
 
-// costLine is read only for the full layout, which is the only one that shows it.
+// costLine is the full layout's cost row.
 func costLine(cacheDir string, now time.Time) render.CostLine {
 	c := costcache.Load(cacheDir)
 	line := render.CostLine{

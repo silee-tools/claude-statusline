@@ -145,55 +145,127 @@ func TestFullLayoutCostRowWithNoModelOverADollar(t *testing.T) {
 	}
 }
 
-func TestCompactLayoutIsThreeRows(t *testing.T) {
+func TestCompactLayoutIsTwoRows(t *testing.T) {
 	v := sample()
 	v.Width = 70
+	v.Status = []string{"gh@personal"}
 	rows := strings.Split(plain(Compact(v, 1_999_000_000)), "\n")
-	if len(rows) != 3 {
-		t.Fatalf("압축 레이아웃은 3행이다: %d행 — %q", len(rows), rows)
+	if len(rows) != 2 {
+		t.Fatalf("압축 레이아웃은 2행이다: %d행 — %q", len(rows), rows)
+	}
+	if want := theme.BranchGlyph + "main gh@personal"; rows[0] != want {
+		t.Errorf("행1 = %q, want %q", rows[0], want)
 	}
 	for _, w := range []string{"ctx", "Opus 4.8", "5h", "7d"} {
-		if !strings.Contains(rows[2], w) {
-			t.Errorf("행3 에 %q 가 없다: %q", w, rows[2])
-		}
-	}
-	if strings.Contains(rows[2], "█") || strings.Contains(rows[2], "░") {
-		t.Errorf("압축 레이아웃에는 막대를 그리지 않는다: %q", rows[2])
-	}
-}
-
-func TestCompactShortensTheSessionIDToSixCharacters(t *testing.T) {
-	v := sample()
-	v.Width = 70
-	out := plain(Compact(v, 1_999_000_000))
-	if strings.Contains(out, session) {
-		t.Fatal("압축 레이아웃은 전체 식별자를 넣지 않는다")
-	}
-	if !strings.Contains(out, session[:6]) {
-		t.Fatalf("앞 6자가 없다: %q", out)
-	}
-}
-
-func TestCompactKeepsAShortSessionIDWhole(t *testing.T) {
-	// 6자 미만이면 접두 대신 전체 값을 쓴다. 그러지 않으면 마커만 남고 id 가 사라진다.
-	v := sample()
-	v.Width, v.Session = 70, "abc"
-	if !strings.Contains(plain(Compact(v, 1_999_000_000)), theme.SessionGlyph+" abc") {
-		t.Errorf("짧은 세션 id 전체 표시 실패: %q", plain(Compact(v, 1_999_000_000)))
-	}
-}
-
-func TestCompactPutsVersionAndSessionOnTheIdentityRow(t *testing.T) {
-	v := sample()
-	v.Width = 70
-	rows := strings.Split(plain(Compact(v, 1_999_000_000)), "\n")
-	for _, w := range []string{"gh@personal", "v2.1.11", theme.SessionGlyph} {
 		if !strings.Contains(rows[1], w) {
 			t.Errorf("행2 에 %q 가 없다: %q", w, rows[1])
 		}
 	}
-	if strings.Contains(rows[0], "v2.1.11") || strings.Contains(rows[0], "gh@") {
-		t.Errorf("행1 은 시각·경로·브랜치만 담는다: %q", rows[0])
+	if strings.Contains(rows[1], "█") || strings.Contains(rows[1], "░") {
+		t.Errorf("압축 레이아웃에는 막대를 그리지 않는다: %q", rows[1])
+	}
+	out := plain(Compact(v, 1_999_000_000))
+	for _, gone := range []string{"08:06", "~/proj", "octocat@example.com", "v2.1.11", theme.SessionGlyph, "aws:✓"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("압축 레이아웃에 %q 가 남았다: %q", gone, out)
+		}
+	}
+}
+
+func TestCompactShowsUnknownIndicatorsToo(t *testing.T) {
+	// 불명(?)도 이상과 같이 1행에 보인다. 침묵은 정상만 뜻하게 한다.
+	v := sample()
+	v.Width = 70
+	v.Status = []string{"gh@personal?", "aws:?"}
+	if row := strings.Split(plain(Compact(v, 1_999_000_000)), "\n")[0]; !strings.Contains(row, "gh@personal? aws:?") {
+		t.Errorf("불명 지표가 1행에 없다: %q", row)
+	}
+}
+
+func TestCompactOutsideARepositoryOmitsTheFirstRow(t *testing.T) {
+	v := sample()
+	v.Width, v.Branch, v.Status = 70, "", nil
+	rows := strings.Split(plain(Compact(v, 1_999_000_000)), "\n")
+	if len(rows) != 1 || !strings.HasPrefix(rows[0], "ctx") {
+		t.Fatalf("저장소 밖 정상 상태는 게이지 행만 낸다: %q", rows)
+	}
+	v.Status = []string{"aws:expired"}
+	rows = strings.Split(plain(Compact(v, 1_999_000_000)), "\n")
+	if len(rows) != 2 || rows[0] != "aws:expired" {
+		t.Fatalf("저장소 밖 aws 이상은 aws 만 1행에 낸다: %q", rows)
+	}
+}
+
+func TestCompactNeverCutsTheIndicators(t *testing.T) {
+	// 예산 = 폭 - 2(글리프) - 1(공백) - 지표 폭. 지표 "gh@personal aws:expired" 는 23열이다.
+	v := sample()
+	v.Branch = "feature/long-branch-name"
+	v.Status = []string{"gh@personal", "aws:expired"}
+
+	v.Width = 34 // 예산 8: 브랜치를 줄임표로 자른다
+	row := strings.Split(plain(Compact(v, 1_999_000_000)), "\n")[0]
+	if want := theme.BranchGlyph + "feature… gh@personal aws:expired"; row != want {
+		t.Errorf("예산 8: %q, want %q", row, want)
+	}
+
+	v.Width = 33 // 예산 7: 브랜치를 통째로 뺀다
+	row = strings.Split(plain(Compact(v, 1_999_000_000)), "\n")[0]
+	if want := "gh@personal aws:expired"; row != want {
+		t.Errorf("예산 7: %q, want %q", row, want)
+	}
+
+	v.Width = 30 // 지표만으로도 폭 안이다
+	row = strings.Split(plain(Compact(v, 1_999_000_000)), "\n")[0]
+	if want := "gh@personal aws:expired"; row != want {
+		t.Errorf("폭 30: %q, want %q", row, want)
+	}
+}
+
+func TestCompactBranchFillsWhatTheIndicatorsLeave(t *testing.T) {
+	v := sample()
+	v.Branch = "feature/PROJ-1469-connect-api-secrets"
+	v.Status = []string{"gh@personal"}
+	v.Width = 40 // 예산 40-2-1-11 = 26. 글리프를 2열로 잡지만 Visible 은 1열이라 행은 39열이다
+	row := Compact(v, 1_999_000_000)
+	first := strings.Split(row, "\n")[0]
+	if got := width.Visible(first); got != 39 {
+		t.Errorf("1행 폭 %d, want 39 — %q", got, plain(first))
+	}
+	if !strings.Contains(first, "…") {
+		t.Errorf("넘치면 줄임표: %q", plain(first))
+	}
+}
+
+func TestCompactTrimsTheGaugeRowInOrder(t *testing.T) {
+	// 폭이 모자라면 🔥 → 7d 리셋 → 5h 리셋 → 모델·강도 순으로 뗀다. 각 단계 문자열의 폭에서는
+	// 그 단계가, 폭이 1 줄면 다음 단계가 나온다.
+	now := int64(1_999_991_000)
+	v := sample()
+	v.Branch, v.Status = "", nil
+	v.Five = Gauge{Present: true, Pct: 70, ResetsAt: 2_000_000_000, HasReset: true, Window: 18000}
+	v.Week = Gauge{Present: true, Pct: 10, ResetsAt: now + 200000, HasReset: true, Window: 604800}
+	steps := []string{
+		"ctx 20% Opus 4.8 ● 5h 70%▲ ↺2h30m (🔥1h) 7d 10% ↺2d7h",
+		"ctx 20% Opus 4.8 ● 5h 70%▲ ↺2h30m 7d 10% ↺2d7h",
+		"ctx 20% Opus 4.8 ● 5h 70%▲ ↺2h30m 7d 10%",
+		"ctx 20% Opus 4.8 ● 5h 70%▲ 7d 10%",
+		"ctx 20% 5h 70%▲ 7d 10%",
+	}
+	v.Width = 0
+	if got := plain(Compact(v, now)); got != steps[0] {
+		t.Errorf("폭 미지정은 절단하지 않는다: %q, want %q", got, steps[0])
+	}
+	for i, want := range steps {
+		v.Width = width.Visible(want)
+		if got := plain(Compact(v, now)); got != want {
+			t.Errorf("단계 %d 폭 %d: %q, want %q", i, v.Width, got, want)
+		}
+		if i+1 < len(steps) {
+			v.Width--
+			if got := plain(Compact(v, now)); got != steps[i+1] {
+				t.Errorf("단계 %d 폭 %d: %q, want %q", i+1, v.Width, got, steps[i+1])
+			}
+		}
 	}
 }
 
@@ -204,13 +276,13 @@ func TestCompactMarksPaceWithATriangle(t *testing.T) {
 	v.Width, v.Week = 70, Gauge{}
 	v.Five = Gauge{Present: true, Pct: 70, ResetsAt: 2_000_000_000, HasReset: true, Window: 18000}
 	rows := strings.Split(plain(Compact(v, 2_000_000_000-9000)), "\n")
-	if !strings.Contains(rows[2], "▲") {
-		t.Errorf("초과 시 ▲ 표시: %q", rows[2])
+	if !strings.Contains(rows[1], "▲") {
+		t.Errorf("초과 시 ▲ 표시: %q", rows[1])
 	}
 	v.Five.Pct = 40
 	rows = strings.Split(plain(Compact(v, 2_000_000_000-9000)), "\n")
-	if strings.Contains(rows[2], "▲") {
-		t.Errorf("여유면 ▲ 없음: %q", rows[2])
+	if strings.Contains(rows[1], "▲") {
+		t.Errorf("여유면 ▲ 없음: %q", rows[1])
 	}
 }
 
@@ -248,34 +320,38 @@ func TestPaceMarkerOmitsOverpaceWhenUsageKeepsPace(t *testing.T) {
 	}
 }
 
-func TestCompactFirstRowFitsTheDetectedWidth(t *testing.T) {
-	// 브랜치가 있으면 예산이 폭-8, 없으면 폭-6 이다. 시각 5칸과 공백, 브랜치 아이콘이
-	// 그 차이다. 이 예산을 렌더러가 다시 계산하면 조립부와 조용히 어긋난다.
-	v := sample()
-	v.Width = 40
-	v.Path = "~/↪1/webapp/↪2/PROJ-1469-connect-api-gateway"
-	v.Branch = "feature/PROJ-1469-connect-api-secrets"
-	row1 := strings.Split(Compact(v, 1_999_000_000), "\n")[0]
-	if got := width.Visible(row1); got > 40 {
-		t.Errorf("첫 행 폭 %d, want <= 40 — %q", got, plain(row1))
+func TestCompactRowsFitEveryWidth(t *testing.T) {
+	// 모든 행의 표시 폭이 감지 폭 이하다. 지표(gh·aws)는 자르지 않으므로 가장 긴 조합
+	// "gh@personal! aws:expired"(24열)가 30열 안에 들어가는 것까지 함께 확인한다.
+	hangul := "feature/한글-브랜치-이름-매우-길어서-절단된다"
+	cases := map[string]func(*View){
+		"정상 gh 상시 표시": func(v *View) { v.Status = []string{"gh@personal"} },
+		"확정 이상":       func(v *View) { v.Status = []string{"gh@personal!", "aws:expired"}; v.Branch = hangul },
+		"불명도 표시":      func(v *View) { v.Status = []string{"gh@personal?", "aws:?"} },
+		"저장소 밖 1행 생략": func(v *View) { v.Branch, v.Status = "", nil },
+		"gh 없음":       func(v *View) { v.Status = nil },
+		"긴 브랜치":       func(v *View) { v.Status = []string{"gh@personal"}; v.Branch = "feature/PROJ-1469-connect-api-secrets" },
 	}
-	if !strings.Contains(row1, "…") {
-		t.Errorf("넘치면 줄임표를 붙인다: %q", plain(row1))
-	}
-
-	v.Branch = ""
-	row1 = strings.Split(Compact(v, 1_999_000_000), "\n")[0]
-	if got := width.Visible(row1); got != 40 {
-		t.Errorf("브랜치 부재 시 첫 행 폭 %d, want 40 — %q", got, plain(row1))
+	for name, mutate := range cases {
+		for _, w := range []int{30, 40, 50, 60, 80} {
+			v := sample()
+			v.Five = Gauge{Present: true, Pct: 70, ResetsAt: 2_000_000_000, HasReset: true, Window: 18000}
+			v.Width = w
+			mutate(&v)
+			for i, row := range strings.Split(Compact(v, 1_999_991_000), "\n") {
+				if got := width.Visible(row); got > w {
+					t.Errorf("%s 폭 %d 행%d 표시 폭 %d: %q", name, w, i+1, got, plain(row))
+				}
+			}
+		}
 	}
 }
 
-func TestCompactFirstRowSurvivesATinyWidth(t *testing.T) {
-	// 예산이 1 미만으로 내려가도 1 로 붙잡아 경로가 통째로 사라지지 않게 한다.
+func TestCompactTinyWidthStillPrintsTheGaugeRow(t *testing.T) {
 	v := sample()
 	v.Width = 3
-	if out := Compact(v, 1_999_000_000); out == "" {
-		t.Fatal("좁은 폭에서 출력이 비었다")
+	if out := Compact(v, 1_999_000_000); !strings.Contains(plain(out), "ctx") {
+		t.Fatalf("좁은 폭에서 게이지 행이 사라졌다: %q", plain(out))
 	}
 }
 
@@ -364,7 +440,7 @@ func TestAbsentGaugesDropTheirRows(t *testing.T) {
 	if strings.Contains(compact, "5h") || strings.Contains(compact, "7d") {
 		t.Errorf("압축에서도 없는 창은 빠진다: %q", compact)
 	}
-	if !strings.Contains(strings.Split(compact, "\n")[2], "ctx") {
+	if !strings.Contains(strings.Split(compact, "\n")[1], "ctx") {
 		t.Errorf("ctx 는 남는다: %q", compact)
 	}
 }
