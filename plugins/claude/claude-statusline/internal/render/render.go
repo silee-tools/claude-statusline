@@ -22,7 +22,8 @@ type View struct {
 	Clock   string   // current time, already formatted as "15:04"
 	Path    string   // shortened path, already colored
 	Branch  string   // shortened branch, empty when there is none
-	Meta    []string // account and auth indicators; the caller dropped the empty ones
+	Meta    []string // full layout: account and auth indicators; the caller dropped the empty ones
+	Status  []string // compact layout: gh always, aws only when not healthy
 	Model   string   // tidied model name such as "Opus 4.8"
 	Effort  string   // effort glyph, empty when the model has no effort level
 	CtxPct  int
@@ -30,8 +31,8 @@ type View struct {
 	Week    Gauge
 	Cost    CostLine
 	Version string
-	Session string // full session id; the compact layout keeps only the first six
-	Width   int    // truncation budget, used by the compact layout only
+	Session string // full session id
+	Width   int    // detected columns; the compact layout fits its rows to it, 0 means no cut
 }
 
 // Gauge is one rate-limit window. Window is its length in seconds — 18000 for five
@@ -83,48 +84,79 @@ func Full(v View, now int64) string {
 		fullGauge(ralign("5h"), v.Five, now), fullGauge(ralign("7d"), v.Week, now), cost, foot)
 }
 
-// Compact is the three-row layout, used at 80 columns or fewer. It drops the bars and
-// the cost row, folds the version and the session prefix into the identity row, and
-// caps the first row at the detected width.
+// Compact is the layout for 80 columns or fewer: at most two rows, each within Width.
+// Row one is the branch and the Status indicators, row two the ctx, model and rate
+// values. A row with nothing to show is left out.
 func Compact(v View, now int64) string {
-	// The first row spends 5 columns on the clock and one on a space. A branch costs
-	// another space and the two-column glyph, and the path and the branch share what
-	// is left.
-	budget := v.Width - 6
-	if v.Branch != "" {
-		budget = v.Width - 8
-	}
-	if budget < 1 {
-		budget = 1
-	}
-	path, branch := width.Fit(v.Path, v.Branch, budget)
+	return emit(compactStatusRow(v), compactGaugeRow(v, now))
+}
 
-	loc := theme.Green + v.Clock + theme.Reset + " " + path
-	if branch != "" {
-		loc += " " + theme.Magenta + theme.BranchGlyph + branch + theme.Reset
-	}
+// branchGlyphCells is what the glyph is budgeted at; terminals disagree on its width,
+// so the wider reading keeps the row from wrapping.
+const branchGlyphCells = 2
 
-	meta := append([]string(nil), v.Meta...)
-	if v.Version != "" {
-		meta = append(meta, theme.Label("v"+v.Version))
-	}
-	if v.Session != "" {
-		meta = append(meta, theme.Grey240+theme.SessionGlyph+" "+shortSession(v.Session)+theme.Reset)
-	}
+// minBranchCells is the narrowest branch worth drawing next to the indicators.
+const minBranchCells = 8
 
-	gauge := theme.Label("ctx") + " " + contextColor(v.CtxPct) +
-		strconv.Itoa(v.CtxPct) + "%" + theme.Reset
-	gauge += modelAndEffort(v)
-	for _, g := range []struct {
-		label string
-		gauge Gauge
-	}{{"5h", v.Five}, {"7d", v.Week}} {
-		if s := compactGauge(g.label, g.gauge, now); s != "" {
-			gauge += " " + s
+// compactStatusRow never cuts an indicator. The branch takes what they leave, with an
+// ellipsis, and is dropped when less than minBranchCells remain.
+func compactStatusRow(v View) string {
+	status := strings.Join(v.Status, " ")
+	branch := v.Branch
+	if branch != "" && v.Width > 0 {
+		budget := v.Width - branchGlyphCells
+		if status != "" {
+			budget -= 1 + width.Visible(status)
+		}
+		switch {
+		case status != "" && budget < minBranchCells:
+			branch = ""
+		case budget < 1:
+			budget = 1
+			fallthrough
+		default:
+			_, branch = width.Fit("", branch, budget)
 		}
 	}
+	row := ""
+	if branch != "" {
+		row = theme.Magenta + theme.BranchGlyph + branch + theme.Reset
+	}
+	if status != "" {
+		if row != "" {
+			row += " "
+		}
+		row += status
+	}
+	return row
+}
 
-	return emit(loc, strings.Join(meta, " "), gauge)
+// compactGaugeRow drops the pace flame, the 7d reset, the 5h reset and the model with
+// its effort, in that order, until the row fits. A width of 0 or less cuts nothing.
+func compactGaugeRow(v View, now int64) string {
+	row := ""
+	for step := 0; step <= 4; step++ {
+		row = compactGaugeRowAt(v, now, step)
+		if v.Width <= 0 || width.Visible(row) <= v.Width {
+			break
+		}
+	}
+	return row
+}
+
+func compactGaugeRowAt(v View, now int64, step int) string {
+	row := theme.Label("ctx") + " " + contextColor(v.CtxPct) +
+		strconv.Itoa(v.CtxPct) + "%" + theme.Reset
+	if step < 4 {
+		row += modelAndEffort(v)
+	}
+	if s := compactGauge("5h", v.Five, now, step < 3, step < 1); s != "" {
+		row += " " + s
+	}
+	if s := compactGauge("7d", v.Week, now, step < 2, step < 1); s != "" {
+		row += " " + s
+	}
+	return row
 }
 
 func modelAndEffort(v View) string {
@@ -166,7 +198,8 @@ func fullGauge(label string, g Gauge, now int64) string {
 }
 
 // compactGauge draws one rate value without a bar, marking pace overshoot with ▲.
-func compactGauge(label string, g Gauge, now int64) string {
+// reset and fire switch the reset time and the overshoot duration on.
+func compactGauge(label string, g Gauge, now int64, reset, fire bool) string {
 	if !g.Present {
 		return ""
 	}
@@ -176,9 +209,9 @@ func compactGauge(label string, g Gauge, now int64) string {
 	if pace != "" {
 		out += pace + "▲" + theme.Reset
 	}
-	if g.HasReset {
+	if g.HasReset && reset {
 		out += " " + theme.Dim + theme.FormatReset(g.ResetsAt, now) + theme.Reset
-		if marker := overpaceMarker(g, now, pace); marker != "" {
+		if marker := overpaceMarker(g, now, pace); fire && marker != "" {
 			out += " " + marker
 		}
 	}
@@ -300,14 +333,6 @@ func ralign(s string) string {
 		return strings.Repeat(" ", n) + s
 	}
 	return s
-}
-
-func shortSession(id string) string {
-	r := []rune(id)
-	if len(r) < 6 {
-		return id
-	}
-	return string(r[:6])
 }
 
 // emit joins the non-empty rows with newlines and adds none at the end.

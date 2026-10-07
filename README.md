@@ -11,11 +11,11 @@ A width-aware statusline HUD for [Claude Code](https://code.claude.com). It
 shows location, accounts, session state, context usage, rate limits, reasoning
 effort, and cost without forcing the same layout onto every terminal.
 
-At 80 columns or fewer, the compact layout uses up to three rows:
+At 80 columns or fewer, the compact layout uses up to two rows, each within
+the detected width:
 
 ```text
-17:14 ~/↪1/webapp/↪1/src feature/PROJ-123-post-editor
-dev@example.com gh@personal aws:✓ v3.1.0 ⧉ 3f9c1a
+feature/PROJ-123-post-editor gh@personal
 ctx 68% Opus 4.8 ● 5h 47% ↺2h30m 7d 83%▲ ↺3d16h
 ```
 
@@ -47,24 +47,30 @@ all information visible when the available width is uncertain.
 
 ## Layouts
 
-The compact layout groups related values into three rows:
+The compact layout has up to two rows, and a row with nothing to show is left
+out:
 
-- **Row 1 (location)** contains time, the current path, and the git branch.
-  Its display width is capped at the detected terminal width. With a branch,
-  the path and branch share `width - 8` columns; without one, the path can use
-  `width - 6`. Overflow is marked with `…`, ANSI color codes count as zero
-  width, and wide characters such as Hangul and CJK are never split.
-- **Row 2 (identity and constants)** contains the Claude account,
-  `gh@<account>`, `aws:<session>`, the Claude Code version, and the first six
-  characters of the session id.
-- **Row 3 (gauges)** contains context usage, model, reasoning effort, and the
+- **Row 1 (branch and indicators)** contains the git branch, `gh@<account>`
+  whenever a repository account is known, and `aws:<state>` only when the login
+  is not healthy (`aws:expired` or `aws:?`). An uncertain or failing gh state
+  (`gh@x?`, `gh@x!`) is shown the same way. Indicators are never cut. The branch
+  takes the columns they leave, with `…` marking a cut, and is dropped when
+  fewer than 8 columns remain. Outside a repository with a healthy aws login,
+  the row is omitted.
+- **Row 2 (gauges)** contains context usage, model, reasoning effort, and the
   5-hour and 7-day limits. Rate data that is absent is omitted independently.
+  When the row is too wide, it drops the overpace duration `🔥…`, then the `7d`
+  reset time, the `5h` reset time, and finally the model and effort.
 
-The full layout keeps the location and identity rows, gives `ctx`, `5h`, and
-`7d` separate 20-cell gauge rows, restores the cost row, and puts the version
-and full session id in a footer. Its first row is not truncated. Widths from
-81 through 85 can therefore wrap when both the shortened path and branch are
-long.
+The compact layout shows no clock, path, Claude account, version, or session id.
+ANSI color codes count as zero width, and wide characters such as Hangul and CJK
+are never split.
+
+The full layout adds the clock, the path, the Claude account, the version, and
+the full session id, shows every `aws:` state, gives `ctx`, `5h`, and `7d`
+separate 20-cell gauge rows, and restores the cost row. Its first row is not
+truncated. Widths from 81 through 85 can therefore wrap when both the shortened
+path and branch are long.
 
 The path collapses `$HOME` to `~`, preserves repository and current-directory
 names, and marks skipped segments as `↪N`. The branch and session glyphs need a
