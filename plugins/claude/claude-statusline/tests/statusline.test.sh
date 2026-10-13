@@ -31,6 +31,19 @@ mkdir -p "$TMPROOT/scripts" "$TMPROOT/cache/claude-statusline"
 ln -sf "$SRC/scripts/statusline.sh" "$TMPROOT/scripts/statusline.sh"
 SL="$TMPROOT/scripts/statusline.sh"
 
+# 스위트는 실제 aws 를 부르지 않는다. 낡은 로그인 캐시는 백그라운드 aws sts 확인(SpawnAWSCheck)을 띄우고,
+# 실제 aws 는 개발자의 ~/.aws 자격 증명으로 STS 를 호출하며 로그인 캐시를 다시 쓸 수 있다. 그래서 호출을
+# 기록만 하는 가짜 aws 를 PATH 앞에 두고 aws 설정 파일도 빈 파일로 바꾸며, 스위트 끝에서 호출이 0회임을 단언한다.
+AWS_CALLS="$TMPROOT/aws-calls"
+mkdir -p "$TMPROOT/awsbin"
+printf '#!/bin/sh\nprintf "call %%s\\n" "$*" >> "%s"\n' "$AWS_CALLS" > "$TMPROOT/awsbin/aws"
+chmod +x "$TMPROOT/awsbin/aws"
+: > "$TMPROOT/aws-config"
+: > "$AWS_CALLS"
+PATH="$TMPROOT/awsbin:$PATH"
+AWS_CONFIG_FILE="$TMPROOT/aws-config"
+export PATH AWS_CONFIG_FILE
+
 # 렌더 본체는 Go 바이너리다. statusline.sh 는 XDG_CACHE_HOME 아래 포인터가 가리키는 그
 # 바이너리로 exec 하는 shim 이므로, 스위트가 먼저 한 번 빌드해 포인터를 심는다.
 # 빌드 실패를 건너뛰면 shim 이 저하 표시를 내고 이후 단언이 통째로 실패하거나, 더 나쁘게는
@@ -56,6 +69,9 @@ printf '%s\n' "$BINARY" > "$TMPROOT/cache/claude-statusline/binary-path-${SL_ROO
 GH_CACHE_DIR="$TMPROOT/cache/gh-prompt"
 GH_REPO="$TMPROOT/gh-repo"
 mkdir -p "$GH_CACHE_DIR" "$GH_REPO/.git"
+# 저장소 분류는 .git/config 의 origin 만 본다. 빈 .git 디렉터리에 origin 설정만 써 둔다.
+set_origin() { printf '[remote "origin"]\n\turl = %s\n' "$2" > "$1/.git/config"; }
+set_origin "$GH_REPO" git@github.com:o/r.git
 gh_cache_file() { printf '%s/%s' "$GH_CACHE_DIR" "$(cd "$1" && pwd -P | sed 's#/#%#g')"; }
 GH_CACHE_FILE=$(gh_cache_file "$GH_REPO")
 printf 'octocat' > "$GH_CACHE_FILE"
@@ -76,6 +92,7 @@ aws_id_token() { printf '%s.%s.sig' "$(b64url '{"alg":"none"}')" "$(b64url "{\"i
 aws_cache() { printf '{"idToken":"%s"}' "$(aws_id_token "$2")" > "$1"; }
 AWS_LOGIN_CACHE_FIXTURE="$TMPROOT/aws-login-cache-fixture"
 mkdir -p "$AWS_LOGIN_CACHE_FIXTURE"
+export AWS_LOGIN_CACHE_DIR="$AWS_LOGIN_CACHE_FIXTURE"   # 어느 렌더 헬퍼도 개발자의 실제 로그인 캐시를 읽지 않는다
 aws_cache "$AWS_LOGIN_CACHE_FIXTURE/session.json" "$(date +%s)"
 
 # 세션 ID fixture: 알려진 UUID. 축약 없이 전체가 그대로 렌더되는지 검증한다.
@@ -92,6 +109,7 @@ if command -v git >/dev/null 2>&1; then
   if ( cd "$GITREPO" \
        && git init -q \
        && git symbolic-ref HEAD refs/heads/wip \
+       && git remote add origin git@github.com:o/r.git \
        && git -c commit.gpgsign=false -c user.email=t@example.com -c user.name=t \
               commit -q --allow-empty -m init ); then
     HAVE_GIT=1
@@ -602,12 +620,14 @@ OUT=$(run "$(json_gh)" 80)
 assert_contains     "T45 탭 없는 한 줄은 계정명으로 해석" "gh@personal" "$(first_line "$OUT")"
 
 # --- T55: gh 세그먼트는 현재 저장소 기준이다 ---
-#    저장소가 아니면 캐시가 있어도 그리지 않고, 저장소여도 그 저장소의 캐시가 없으면 그리지 않는다.
+#    저장소의 캐시가 없으면 그리지 않고, 저장소 캐시는 다른 저장소나 저장소 밖에 새지 않는다.
+#    저장소 밖은 non-git 기록이 없으면 그리지 않는다(있을 때는 T57).
 gh_cache testwork ok 0
 OUT=$(run "$(json_without)" 80)
-assert_not_contains "T55 저장소가 아닌 cwd(/tmp)에서는 gh 세그먼트 없음" "gh@" "$OUT"
+assert_not_contains "T55 저장소가 아닌 cwd(/tmp)에서는 non-git 기록이 없으면 gh 세그먼트 없음" "gh@" "$OUT"
 GH_OTHER_REPO="$TMPROOT/gh-other-repo"
 mkdir -p "$GH_OTHER_REPO/.git"
+set_origin "$GH_OTHER_REPO" git@github.com:o/r.git
 OUT=$(run "$(json_gh | sed "s#$GH_REPO#$GH_OTHER_REPO#")" 80)
 assert_not_contains "T55 캐시가 없는 저장소에서는 gh 세그먼트 없음" "gh@" "$OUT"
 printf 'octocat' > "$(gh_cache_file "$GH_OTHER_REPO")"
@@ -619,6 +639,103 @@ assert_contains     "T55 저장소 하위 디렉터리에서도 그 저장소의
 OUT=$(run "$(json_gh)" 80)
 assert_contains     "T55 원래 저장소는 자기 기록(work)을 유지" "gh@work" "$(first_line "$OUT")"
 printf 'octocat' > "$GH_CACHE_FILE"
+
+# --- T56: origin 이 gh 슬롯을 정한다 — GitHub 는 계정, Forgejo 는 라벨만, 그 밖은 비표시 ---
+#    Forgejo 호스트 목록은 설정 파일 forgejo-hosts 에서 읽는다(예약 도메인과 별칭으로 만든 fixture).
+FORGEJO_HOSTS="$TMPROOT/claude-statusline/forgejo-hosts"
+printf '# forge\nforgejo.example.test\nforge-alias\n' > "$FORGEJO_HOSTS"
+gh_repo_with() { mkdir -p "$1/.git"; if [ -n "$2" ]; then set_origin "$1" "$2"; else : > "$1/.git/config"; fi; }
+gh_render()   { run "$(json_gh | sed "s#$GH_REPO#$1#")" "${2:-80}"; }
+FORGEJO_REPO="$TMPROOT/forge-repo"
+gh_repo_with "$FORGEJO_REPO" ssh://git@forge-alias:2222/o/r.git
+printf 'v2\t-\tno_active\t0\n' > "$(gh_cache_file "$FORGEJO_REPO")"
+OUT=$(gh_render "$FORGEJO_REPO")
+assert_contains     "T56 Forgejo 저장소는 forgejo 라벨" "forgejo" "$(first_line "$OUT")"
+assert_not_contains "T56 Forgejo 저장소에 남은 옛 no_active 기록은 gh@--- 로 새지 않는다" "gh@" "$OUT"
+printf 'v2\toctocat\tok\t0\n' > "$(gh_cache_file "$FORGEJO_REPO")"
+OUT=$(gh_render "$FORGEJO_REPO")
+assert_not_contains "T56 Forgejo 저장소에 남은 옛 계정 기록은 보이지 않는다" "gh@" "$OUT"
+assert_contains     "T56 그 저장소도 forgejo 라벨" "forgejo" "$(first_line "$OUT")"
+RAW=$(run_raw "$(json_gh | sed "s#$GH_REPO#$FORGEJO_REPO#")" 80)
+assert_contains     "T56 forgejo 라벨은 기본 색(214)" "${AMBER}forgejo" "$RAW"
+OUT=$(gh_render "$FORGEJO_REPO" 120)
+assert_contains     "T56 전체 레이아웃의 계정 행에도 forgejo" "forgejo" "$OUT"
+assert_not_contains "T56 전체 레이아웃에 gh@ 없음" "gh@" "$OUT"
+mv "$FORGEJO_HOSTS" "$FORGEJO_HOSTS.off"
+OUT=$(gh_render "$FORGEJO_REPO")
+assert_not_contains "T56 호스트 목록이 없으면 Forgejo 도 다른 호스트로 보고 비표시(forgejo)" "forgejo" "$OUT"
+assert_not_contains "T56 호스트 목록이 없어도 계정은 보이지 않는다" "gh@" "$OUT"
+mv "$FORGEJO_HOSTS.off" "$FORGEJO_HOSTS"
+OTHER_HOST_REPO="$TMPROOT/other-host-repo"
+gh_repo_with "$OTHER_HOST_REPO" https://gitlab.example.com/o/r.git
+printf 'octocat' > "$(gh_cache_file "$OTHER_HOST_REPO")"
+OUT=$(gh_render "$OTHER_HOST_REPO")
+assert_not_contains "T56 다른 호스트 저장소는 캐시가 있어도 gh@ 없음" "gh@" "$OUT"
+assert_not_contains "T56 다른 호스트 저장소는 forgejo 도 없음" "forgejo" "$OUT"
+NO_ORIGIN_REPO="$TMPROOT/no-origin-repo"
+gh_repo_with "$NO_ORIGIN_REPO" ""
+printf 'octocat' > "$(gh_cache_file "$NO_ORIGIN_REPO")"
+OUT=$(gh_render "$NO_ORIGIN_REPO")
+assert_not_contains "T56 origin 없는 저장소는 캐시가 있어도 gh@ 없음" "gh@" "$OUT"
+assert_not_contains "T56 origin 없는 저장소는 forgejo 도 없음" "forgejo" "$OUT"
+GH_ALIAS_REPO="$TMPROOT/gh-alias-repo"
+gh_repo_with "$GH_ALIAS_REPO" git@github.com-work:o/r.git
+printf 'testwork' > "$(gh_cache_file "$GH_ALIAS_REPO")"
+OUT=$(gh_render "$GH_ALIAS_REPO")
+assert_contains     "T56 GitHub ssh 별칭(github.com-*)은 GitHub 로 본다" "gh@work" "$(first_line "$OUT")"
+# linked worktree 의 설정은 본 저장소의 .git 에 있다.
+if [ "$HAVE_GIT" = 1 ]; then
+  GH_WT="$TMPROOT/gh-worktree"
+  ( cd "$GITREPO" && git worktree add -q "$GH_WT" -b gh-wt ) 2>/dev/null || true
+  if [ -f "$GH_WT/.git" ]; then
+    printf 'octocat' > "$(gh_cache_file "$GH_WT")"
+    OUT=$(gh_render "$GH_WT")
+    assert_contains "T56 linked worktree 도 본 저장소의 origin 으로 분류한다" "gh@personal" "$(first_line "$OUT")"
+  fi
+fi
+
+# --- T57: 저장소 밖은 non-git 기록(프롬프트가 gh 기본 계정으로 쓴다)을 같은 형식으로 그린다 ---
+printf 'octocat' > "$GH_CACHE_DIR/non-git"
+OUT=$(run "$(json_without)" 80)
+assert_contains     "T57 저장소 밖(/tmp)은 non-git 기록의 계정" "gh@personal" "$(first_line "$OUT")"
+printf 'v2\toctocat\tauth_failed\t0\n' > "$GH_CACHE_DIR/non-git"
+OUT=$(run "$(json_without)" 80)
+assert_contains     "T57 non-git 기록의 상태도 같은 형식" "gh@personal!" "$(first_line "$OUT")"
+printf 'v2\t-\tno_active\t0\n' > "$GH_CACHE_DIR/non-git"
+OUT=$(run "$(json_without)" 120)
+assert_contains     "T57 전체 레이아웃에서도 저장소 밖 gh 표시" "gh@---" "$OUT"
+printf 'testwork' > "$(gh_cache_file "$GH_REPO")"
+printf 'octocat' > "$GH_CACHE_DIR/non-git"
+OUT=$(run "$(json_gh)" 80)
+assert_contains     "T57 저장소 안에서는 non-git 기록이 아니라 저장소 기록(work)" "gh@work" "$(first_line "$OUT")"
+rm -f "$GH_CACHE_DIR/non-git"
+printf 'octocat' > "$GH_CACHE_FILE"
+
+# --- T60: GIT_DIR·GIT_WORK_TREE 는 저장소를 걷기로 볼 수 없는 자리에 둔다 — 저장소 밖(non-git)으로 읽지 않고 gh 를 비운다 ---
+printf 'octocat' > "$GH_CACHE_DIR/non-git"
+OUT=$(export GIT_DIR="$GH_REPO/.git"; run "$(json_without)" 80)
+assert_not_contains "T60 GIT_DIR 가 있으면 non-git 기록의 계정을 쓰지 않는다" "gh@" "$OUT"
+OUT=$(export GIT_WORK_TREE="$GH_REPO"; run "$(json_without)" 80)
+assert_not_contains "T60 GIT_WORK_TREE 가 있어도 같다" "gh@" "$OUT"
+OUT=$(run '{"model":{"display_name":"Claude Opus 4.8"},"version":"2.11.0"}' 80)
+assert_not_contains "T60 작업 디렉터리를 모르는 입력도 non-git 계정을 쓰지 않는다" "gh@" "$OUT"
+rm -f "$GH_CACHE_DIR/non-git"
+
+# --- T58: idToken 이 없는 aws login 캐시(awscli 2.37)는 ? 로 굳지 않고 백그라운드 확인 결과를 따른다 ---
+#    확인 기록이 신선하면(10분 안) 확인 프로세스를 띄우지 않으므로 실제 aws 를 부르지 않는다.
+AWS_CHECK="$TMPROOT/cache/claude-statusline/aws-check"
+printf '{"accessToken":{"accessKeyId":"x","expiresAt":"2026-10-13T01:16:58Z"},"tokenType":"urn:x","refreshToken":"y"}' \
+  > "$AWS_LOGIN_CACHE_FIXTURE/session.json"
+printf '%s ok\n' "$(date +%s)" > "$AWS_CHECK"
+OUT=$(run "$(json_without)" 80)
+assert_not_contains "T58 새 형식 캐시 + 최근 확인 ok 는 aws:? 가 아니다" "aws:?" "$OUT"
+OUT=$(run "$(json_without)" 120)
+assert_contains     "T58 전체 레이아웃은 aws:✓" "aws:✓" "$OUT"
+printf '%s fail\n' "$(date +%s)" > "$AWS_CHECK"
+OUT=$(run "$(json_without)" 80)
+assert_contains     "T58 새 형식 캐시 + 최근 확인 fail 은 aws:expired" "aws:expired" "$OUT"
+rm -f "$AWS_CHECK"
+aws_cache "$AWS_LOGIN_CACHE_FIXTURE/session.json" "$(date +%s)"
 
 # --- T20: 요소별 색 — 모델명 시안, 파이프·라벨 등 dim 유지 ---
 RAW=$(run_raw "$(json_with)" 80)
@@ -685,7 +802,7 @@ FAKEGIT
       PATH="$TMPROOT/fakebin:$PATH" CLAUDE_PLUGIN_ROOT="$TMPROOT" \
       XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" \
       XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" \
-      CLAUDE_STATUSLINE_WIDTH=80 \
+      AWS_LOGIN_CACHE_DIR="$AWS_LOGIN_CACHE_FIXTURE" CLAUDE_STATUSLINE_WIDTH=80 \
       sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"
   }
 
@@ -812,6 +929,7 @@ rm -f "$AWS_CHECK"
 aws_cache "$AWS_ONE_CACHE/session.json" "$(date +%s)"
 assert_contains "T36 같은 파일에 재로그인하면 aws:✓ 로 돌아온다" "aws:✓" "$(aws_render "$AWS_ONE_CACHE")"
 printf '{}' > "$AWS_ONE_CACHE/session.json"
+printf '%s ?\n' "$(date +%s)" > "$AWS_CHECK"   # 판독 불가 캐시도 확인을 띄우므로, 결과가 불명인 신선한 기록으로 막는다
 assert_contains "T36 idToken 을 읽지 못하면 aws:?" "aws:?" "$(aws_render "$AWS_ONE_CACHE")"
 assert_contains "T36 압축도 불명(aws:?)을 표시" "gh@personal aws:?" "$(first_line "$(aws_render "$AWS_ONE_CACHE" 80)")"
 
@@ -861,6 +979,13 @@ OUT=$(run_keep "$(json_pct 3 41)" 80)
 assert_match    "T54 새 창이 화면을 차지" '5h 3%' "$OUT"
 assert_contains "T54 새 창이 파일에도 반영" "fivePct=3" "$(cat "$RATE_CACHE")"
 rm -f "$RATE_CACHE"
+
+# --- T59: 스위트가 실제 aws 를 한 번도 부르지 않았다 ---
+#    낡거나 판독할 수 없는 aws 캐시는 확인 프로세스를 띄운다. 그 시나리오는 신선한 aws-check 기록으로 막는다.
+#    확인 프로세스는 렌더와 분리돼 늦게 호출을 남기므로 잠시 기다린 뒤 센다. 실제 로그인 캐시를 읽지 않는 것은
+#    위 export 가 맡고, 이 단언은 확인 프로세스가 뜨지 않았음만 본다.
+sleep 1
+assert_equals "T59 가짜 aws 호출 기록 0줄" "0" "$(wc -l < "$AWS_CALLS" | tr -d ' ')"
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 completed=1
