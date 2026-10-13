@@ -16,9 +16,25 @@ import (
 	"github.com/silee-tools/claude-statusline/internal/theme"
 )
 
-// GitHubAccount renders the GitHub account gh uses for the repository at repoRoot as a
-// label plus a state marker, or "" outside a repository or before the shell has
-// recorded one.
+// nonGitKey is the cache file the prompt writes for directories outside any repository.
+// Repository keys always start with %, so the two never collide.
+const nonGitKey = "non-git"
+
+// GitHubAccount renders the gh slot of the identity row for the directory the session is
+// in, or "" when there is nothing to show.
+//
+// What the slot shows follows the origin remote of the repository at repoRoot, the same
+// remote gh's account routing follows:
+//
+//   - a GitHub origin (github.com or an ssh alias github.com-*) shows the account gh
+//     uses, read from the prompt's cache;
+//   - an origin whose host is listed in <configDir>/claude-statusline/forgejo-hosts
+//     shows "forgejo" and no account;
+//   - any other origin, or none, shows nothing.
+//
+// Outside a repository (repoRoot == "") the slot shows the account recorded under
+// nonGitKey. The cache is read only for GitHub and non-git, so a record an older prompt
+// left for a Forgejo repository never surfaces.
 //
 // The account and its state come from the cache the shell prompt writes at
 // <cacheDir>/<repoRoot with / replaced by %>, keyed by the physical root that
@@ -34,14 +50,22 @@ import (
 // reverse lets a record with an empty login slot leak out as gh@-. And the color code
 // and the deadline accept digits only, so neither the config nor the cache can inject
 // an escape sequence.
-func GitHubAccount(cacheDir, configDir, repoRoot string, now int64) string {
-	if repoRoot == "" {
-		return ""
+func GitHubAccount(cacheDir, configDir, repoRoot, origin string, now int64) string {
+	key := nonGitKey
+	if repoRoot != "" {
+		switch originKind(configDir, origin) {
+		case kindGitHub:
+			if physical, err := filepath.EvalSymlinks(repoRoot); err == nil {
+				repoRoot = physical
+			}
+			key = strings.ReplaceAll(repoRoot, "/", "%")
+		case kindForgejo:
+			return theme.Amber214 + "forgejo" + theme.Reset
+		default:
+			return ""
+		}
 	}
-	if physical, err := filepath.EvalSymlinks(repoRoot); err == nil {
-		repoRoot = physical
-	}
-	b, err := os.ReadFile(filepath.Join(cacheDir, strings.ReplaceAll(repoRoot, "/", "%")))
+	b, err := os.ReadFile(filepath.Join(cacheDir, key))
 	if err != nil {
 		return ""
 	}
@@ -101,6 +125,50 @@ func GitHubAccount(cacheDir, configDir, repoRoot string, now int64) string {
 		}
 	}
 	return base + "gh@" + label + theme.Reset
+}
+
+const (
+	kindGitHub  = "github"
+	kindForgejo = "forgejo"
+)
+
+// originKind classifies an origin URL by its host. The Forgejo hosts live in
+// <configDir>/claude-statusline/forgejo-hosts, one per line with # starting a comment,
+// so the source names no private host.
+func originKind(configDir, origin string) string {
+	host := remoteHost(origin)
+	switch {
+	case host == "":
+		return ""
+	case host == "github.com" || strings.HasPrefix(host, "github.com-"):
+		return kindGitHub
+	}
+	b, err := os.ReadFile(filepath.Join(configDir, "claude-statusline", "forgejo-hosts"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") && strings.EqualFold(line, host) {
+			return kindForgejo
+		}
+	}
+	return ""
+}
+
+// remoteHost returns the lower-cased host of a git remote URL: either
+// scheme://[user@]host[:port]/path or the scp form [user@]host:path. A local path has
+// none.
+func remoteHost(url string) string {
+	var authority string
+	if _, rest, ok := strings.Cut(url, "://"); ok {
+		authority, _, _ = strings.Cut(rest, "/")
+		authority = authority[strings.LastIndex(authority, "@")+1:]
+		authority, _, _ = strings.Cut(authority, ":")
+	} else if head, _, ok := strings.Cut(url, ":"); ok && !strings.Contains(head, "/") {
+		authority = head[strings.LastIndex(head, "@")+1:]
+	}
+	return strings.ToLower(authority)
 }
 
 // lookupAccount reads the login to label and color mapping. Account names, labels and
@@ -217,7 +285,8 @@ func scanEmail(path string) string {
 }
 
 // awsAccessTTL is how long the access credentials in the login cache stay valid; `aws`
-// rewrites the cache (and its idToken iat) only when a call refreshes them.
+// rewrites the cache (and its idToken iat, where there is one) only when a call
+// refreshes them.
 const awsAccessTTL = 15 * 60
 
 // awsCheckTTL is how long the last background check stands before the next one.
@@ -245,19 +314,16 @@ func SpawnAWSCheck(stateFile string) {
 //
 // The newest *.json in loginCacheDir is the active session. Its idToken iat is the time
 // of the last credential refresh, not of the login, so a recent iat proves a live login
-// and an old one proves nothing. Then the last background check decides, kept in
-// stateFile as "<epoch> ok|fail". A check older than awsCheckTTL is renewed through
-// spawn; the state file is stamped first so concurrent renders spawn only once.
+// and an old one proves nothing. Newer awscli caches hold no idToken at all, which
+// proves nothing either. Then the last background check decides, kept in stateFile as
+// "<epoch> ok|fail". A check older than awsCheckTTL is renewed through spawn; the state
+// file is stamped first so concurrent renders spawn only once.
 func AWS(loginCacheDir, stateFile string, now int64, spawn func(stateFile string)) (text string, healthy bool) {
 	path, ok := newestCacheFile(loginCacheDir)
 	if !ok {
 		return "", false
 	}
-	iat, ok := awsLoginTime(path)
-	if !ok {
-		return theme.Dim + "aws:?" + theme.Reset, false
-	}
-	if now-iat < awsAccessTTL {
+	if iat, ok := awsLoginTime(path); ok && now-iat < awsAccessTTL {
 		return theme.Green + "aws:✓" + theme.Reset, true
 	}
 	checked, result := readAWSCheck(stateFile)
