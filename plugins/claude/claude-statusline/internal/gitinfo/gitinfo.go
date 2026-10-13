@@ -1,11 +1,13 @@
 // Package gitinfo reports the current branch, keeping git as the source of truth and
-// caching only its answer.
+// caching only its answer, and the origin remote, which it reads from the config file.
 package gitinfo
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -97,7 +99,7 @@ func Branch(cwd, cacheDir string) string {
 // render's walk sees it. GIT_DIR and GIT_WORK_TREE can place a repository where this
 // walk cannot see it, so their presence hands the question back to git.
 func insideRepository(cwd string) bool {
-	if gitDirOverridden() {
+	if Overridden() {
 		return true
 	}
 	_, ok := Root(cwd)
@@ -108,7 +110,7 @@ func insideRepository(cwd string) bool {
 // false outside a repository and whenever GIT_DIR or GIT_WORK_TREE is set, because
 // the walk cannot see where those put the working tree.
 func Root(cwd string) (string, bool) {
-	if gitDirOverridden() {
+	if Overridden() {
 		return "", false
 	}
 	for dir := cwd; ; {
@@ -125,7 +127,10 @@ func Root(cwd string) (string, bool) {
 	}
 }
 
-func gitDirOverridden() bool {
+// Overridden reports whether GIT_DIR or GIT_WORK_TREE is set, which puts the repository
+// where Root's walk cannot see it. Callers that must tell "outside a repository" from
+// "somewhere unknown" check it first.
+func Overridden() bool {
 	return os.Getenv("GIT_DIR") != "" || os.Getenv("GIT_WORK_TREE") != ""
 }
 
@@ -187,4 +192,75 @@ func stripControl(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// originSection matches the header of the origin remote. Git compares the section name
+// case-insensitively but the subsection name exactly.
+var originSection = regexp.MustCompile(`^\[(?i:remote)[ \t]+"origin"\]`)
+
+// Origin returns the URL of the origin remote of the repository whose working tree is
+// root, or "" without one. It reads the config file rather than asking git so that a
+// render serving the branch from its cache still starts no process; as a result
+// insteadOf rewrites and included files are not applied.
+//
+// In a linked worktree or a submodule .git is a file holding a gitdir: pointer. A
+// linked worktree keeps the shared config in the directory its commondir names.
+func Origin(root string) string {
+	if root == "" {
+		return ""
+	}
+	gitDir := filepath.Join(root, ".git")
+	if b, ok := readRegular(gitDir); ok {
+		ptr, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "gitdir:")
+		if !ok {
+			return ""
+		}
+		gitDir = joinIfRelative(root, strings.TrimSpace(ptr))
+		if b, ok := readRegular(filepath.Join(gitDir, "commondir")); ok {
+			gitDir = joinIfRelative(gitDir, strings.TrimSpace(string(b)))
+		}
+	}
+	cfg, ok := readRegular(filepath.Join(gitDir, "config"))
+	if !ok {
+		return ""
+	}
+	inOrigin := false
+	for _, line := range strings.Split(string(cfg), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			inOrigin = originSection.MatchString(line)
+			continue
+		}
+		if k, v, ok := strings.Cut(line, "="); ok && inOrigin && strings.EqualFold(strings.TrimSpace(k), "url") {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// maxGitFileBytes bounds what Origin reads: a git config or pointer file is a few
+// lines, and a larger one is not worth the memory.
+const maxGitFileBytes = 1 << 20
+
+// readRegular reads path only if it is a regular file, and at most maxGitFileBytes of
+// it. The render runs in whatever directory the session is in, so a .git that is a
+// FIFO would block it and one that links to /dev/zero would never end.
+func readRegular(path string) ([]byte, bool) {
+	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() {
+		return nil, false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxGitFileBytes))
+	return b, err == nil
+}
+
+func joinIfRelative(base, p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(base, p)
 }

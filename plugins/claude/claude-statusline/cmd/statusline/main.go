@@ -96,8 +96,14 @@ func main() {
 	if b := gitinfo.Branch(status.CWD, cacheDir); b != "" {
 		view.Branch = shorten.Branch(b)
 	}
-	repoRoot, _ := gitinfo.Root(status.CWD)
-	gh := segments.GitHubAccount(ghCacheDir, configDir, repoRoot, now.Unix())
+	// Without a working directory, or where GIT_DIR places the repository, the location
+	// is unknown, so neither the repository's account nor the outside-a-repository one
+	// applies.
+	var gh string
+	if status.CWD != "" && !gitinfo.Overridden() {
+		repoRoot, _ := gitinfo.Root(status.CWD)
+		gh = segments.GitHubAccount(ghCacheDir, configDir, repoRoot, gitinfo.Origin(repoRoot), now.Unix())
+	}
 	aws, awsHealthy := segments.AWS(loginCacheDir, filepath.Join(cacheDir, "aws-check"), now.Unix(), segments.SpawnAWSCheck)
 
 	cols, ok := width.Terminal(cacheDir)

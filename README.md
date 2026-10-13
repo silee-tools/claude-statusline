@@ -50,13 +50,14 @@ all information visible when the available width is uncertain.
 The compact layout has up to two rows, and a row with nothing to show is left
 out:
 
-- **Row 1 (branch and indicators)** contains the git branch, `gh@<account>`
-  whenever a repository account is known, and `aws:<state>` only when the login
+- **Row 1 (branch and indicators)** contains the git branch, the gh slot
+  (`gh@<account>` or `forgejo`, see [GitHub account indicator](#github-account-indicator))
+  whenever it has something to show, and `aws:<state>` only when the login
   is not healthy (`aws:expired` or `aws:?`). An uncertain or failing gh state
   (`gh@x?`, `gh@x!`) is shown the same way. Indicators are never cut. The branch
   takes the columns they leave, with `…` marking a cut, and is dropped when
-  fewer than 8 columns remain. Outside a repository with a healthy aws login,
-  the row is omitted.
+  fewer than 8 columns remain. With no branch, no gh slot, and a healthy aws
+  login, the row is omitted.
 - **Row 2 (gauges)** contains context usage, model, reasoning effort, and the
   5-hour and 7-day limits. Rate data that is absent is omitted independently.
   When the row is too wide, it drops the overpace duration `🔥…`, then the `7d`
@@ -175,17 +176,34 @@ needs no network.
 | `git` | required | the branch indicator |
 | `ps` | optional | automatic terminal-width detection (falls back to the full layout) |
 | `curl` | optional | daily model-pricing refresh (falls back to a built-in table) |
-| `aws` (AWS CLI 2.32+) | optional | `aws login`'s session cache, read for the `aws:` session indicator: a cache refreshed within 15 minutes is `✓`; an older one is settled by a background `aws sts get-caller-identity`, at most every 10 minutes (`✓` on success, `expired` on failure) |
+| `aws` (AWS CLI 2.32+) | optional | `aws login`'s session cache, read for the `aws:` session indicator: a cache whose `idToken` was refreshed within 15 minutes is `✓`; any other cache, including one without an `idToken` (newer AWS CLI), is settled by a background `aws sts get-caller-identity`, at most every 10 minutes (`✓` on success, `expired` on failure) |
 
 ## Configuration
 
 ### GitHub account indicator
 
-The `gh@<account>` segment shows the GitHub account of the repository the session
-is in, and is omitted outside a repository. It maps that login to a label and color.
-The mapping is not hardcoded — it is read from
-`${XDG_CONFIG_HOME:-$HOME/.config}/claude-statusline/gh-accounts`, one entry per
-line:
+The gh slot follows the `origin` remote of the repository the session is in, the
+remote the shell prompt that writes the cache resolves the account from:
+
+| Where the session is | Shows |
+|---|---|
+| origin host is `github.com` or an ssh alias `github.com-*` | `gh@<account>` and its state |
+| origin host is listed in `forgejo-hosts` | `forgejo` only; no account |
+| any other origin, or no origin | nothing |
+| outside a git repository | `gh@<account>` of the default (active) account |
+
+The host is the one in `scheme://[user@]host[:port]/path` or `[user@]host:path`,
+compared case-insensitively. The Forgejo hosts are read from
+`${XDG_CONFIG_HOME:-$HOME/.config}/claude-statusline/forgejo-hosts`, one host per
+line, `#` starting a comment; without that file no host is Forgejo. The origin is read
+from the repository's `.git/config` (following a worktree's or submodule's `.git`
+file), without starting `git`, so `insteadOf` rewrites and included files are not
+applied. While `GIT_DIR` or `GIT_WORK_TREE` is set the repository cannot be located,
+so nothing is shown.
+
+A GitHub login is mapped to a label and color. The mapping is not hardcoded — it is
+read from `${XDG_CONFIG_HOME:-$HOME/.config}/claude-statusline/gh-accounts`, one entry
+per line:
 
 ```
 # <github-login>=<label>,<256-color-code>
@@ -196,10 +214,12 @@ some-work-login=work,27
 The login and its status are read from
 `${XDG_CACHE_HOME:-$HOME/.cache}/gh-prompt/<repository root>` (written by your
 shell prompt), where the file name is the physical repository root with each `/`
-replaced by `%`. The segment is omitted when that file does not exist, which
-includes roots whose name exceeds 240 bytes (Korean characters count 3 bytes
-each): the prompt writes no cache for them. The file holds one tab-separated
-record:
+replaced by `%`; outside a repository it is `non-git`, which the prompt fills with
+the active account of `gh auth status`. The cache is read only for
+those two cases, so a record left for a Forgejo or other repository is never shown.
+The segment is omitted when the file does not exist, which includes roots whose name
+exceeds 240 bytes (Korean characters count 3 bytes each): the prompt writes no cache
+for them. The file holds one tab-separated record:
 
 ```
 v2	<login-or-->	<state>	<deadline-epoch-or-0>

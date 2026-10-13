@@ -21,8 +21,9 @@ func plain(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 // ghRoot does not exist on disk, so its cache file name is the path with / replaced by %.
 const (
-	ghRoot = "/repo/fixture"
-	ghKey  = "%repo%fixture"
+	ghRoot   = "/repo/fixture"
+	ghKey    = "%repo%fixture"
+	ghOrigin = "git@github.com:o/r.git"
 )
 
 // ghFixture writes the prompt cache for ghRoot and the label mapping the segment reads.
@@ -72,7 +73,7 @@ func TestGitHubAccountStates(t *testing.T) {
 	}
 	for _, c := range cases {
 		cacheDir, configDir := ghFixture(t, c.cache)
-		if got := plain(GitHubAccount(cacheDir, configDir, ghRoot, now)); got != c.want {
+		if got := plain(GitHubAccount(cacheDir, configDir, ghRoot, ghOrigin, now)); got != c.want {
 			t.Errorf("GitHubAccount(%q) = %q, want %q", c.cache, got, c.want)
 		}
 	}
@@ -89,14 +90,14 @@ func TestGitHubAccountColors(t *testing.T) {
 	}
 	for _, c := range cases {
 		cacheDir, configDir := ghFixture(t, c.cache)
-		if got := GitHubAccount(cacheDir, configDir, ghRoot, now); !strings.HasPrefix(got, c.wantPrefix) {
+		if got := GitHubAccount(cacheDir, configDir, ghRoot, ghOrigin, now); !strings.HasPrefix(got, c.wantPrefix) {
 			t.Errorf("GitHubAccount(%q) = %q, want prefix %q", c.cache, got, c.wantPrefix)
 		}
 	}
 	// 라벨은 설정 색, 한도 마커만 노랑이다.
 	cacheDir, configDir := ghFixture(t, "v2\ttestwork\trate_limited\t"+strconv.FormatInt(now+540, 10))
 	want := "\033[38;5;27mgh@work" + theme.Reset + theme.Yellow + "⏳9m" + theme.Reset
-	if got := GitHubAccount(cacheDir, configDir, ghRoot, now); got != want {
+	if got := GitHubAccount(cacheDir, configDir, ghRoot, ghOrigin, now); got != want {
 		t.Errorf("GitHubAccount rate_limited = %q, want %q", got, want)
 	}
 }
@@ -111,10 +112,10 @@ func TestGitHubAccountIsPerRepository(t *testing.T) {
 		{ghRoot, "gh@personal"},
 		{"/repo/other", "gh@work"},
 		{"/repo/never-recorded", ""},
-		{"", ""}, // 저장소가 아니면 캐시가 있어도 그리지 않는다
+		{"", ""}, // 저장소가 아니면 저장소 캐시는 읽지 않는다(non-git 캐시는 따로 있다)
 	}
 	for _, c := range cases {
-		if got := plain(GitHubAccount(cacheDir, configDir, c.root, 0)); got != c.want {
+		if got := plain(GitHubAccount(cacheDir, configDir, c.root, ghOrigin, 0)); got != c.want {
 			t.Errorf("root=%q -> %q, want %q", c.root, got, c.want)
 		}
 	}
@@ -136,7 +137,7 @@ func TestGitHubAccountResolvesSymlinkedRoot(t *testing.T) {
 		[]byte("v2\toctocat\tok\t0"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := plain(GitHubAccount(cacheDir, t.TempDir(), link, 0)); got != "gh@octocat" {
+	if got := plain(GitHubAccount(cacheDir, t.TempDir(), link, ghOrigin, 0)); got != "gh@octocat" {
 		t.Errorf("심볼릭 링크 경로 -> %q, want gh@octocat", got)
 	}
 }
@@ -145,7 +146,7 @@ func TestGitHubAccountRejectsNonNumericColor(t *testing.T) {
 	// gh-accounts 의 색 코드가 숫자가 아니면 기본색을 쓴다. 설정 파일이 이스케이프를 주입하지 못하게 막는다.
 	for _, login := range []string{"badcolor", "escape"} {
 		cacheDir, configDir := ghFixture(t, "v2\t"+login+"\tok\t0")
-		got := GitHubAccount(cacheDir, configDir, ghRoot, 0)
+		got := GitHubAccount(cacheDir, configDir, ghRoot, ghOrigin, 0)
 		if !strings.HasPrefix(got, theme.Amber214) {
 			t.Errorf("%s: 기본색으로 폴백하지 않았다: %q", login, got)
 		}
@@ -157,8 +158,107 @@ func TestGitHubAccountRejectsNonNumericColor(t *testing.T) {
 
 func TestGitHubAccountMissingCacheRendersNothing(t *testing.T) {
 	// 저장소의 캐시 파일 자체가 없으면 아무것도 내지 않는다(줄에서 자연히 빠진다).
-	if got := GitHubAccount(t.TempDir(), t.TempDir(), ghRoot, 0); got != "" {
+	if got := GitHubAccount(t.TempDir(), t.TempDir(), ghRoot, ghOrigin, 0); got != "" {
 		t.Errorf("캐시 부재: %q", got)
+	}
+}
+
+// forgejoHosts writes the Forgejo host list the segment reads from configDir.
+func forgejoHosts(t *testing.T, configDir, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(configDir, "claude-statusline", "forgejo-hosts"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The origin remote alone decides what the gh slot shows; the cache is read only for GitHub.
+func TestGitHubAccountClassifiesByOrigin(t *testing.T) {
+	const hosts = "# forges\n\n  Forgejo.Example.Test  \nforge-alias\n"
+	cases := []struct{ origin, want string }{
+		{"git@github.com:o/r.git", "gh@personal"},
+		{"https://github.com/o/r.git", "gh@personal"},
+		{"ssh://git@github.com/o/r.git", "gh@personal"},
+		{"git@github.com-work:o/r.git", "gh@personal"}, // ssh 별칭
+		{"https://user:pw@github.com/o/r.git", "gh@personal"},
+		{"https://GitHub.com/o/r.git", "gh@personal"},
+		{"https://forgejo.example.test/o/r.git", "forgejo"},
+		{"git@forgejo.example.test:o/r.git", "forgejo"},
+		{"ssh://git@forge-alias:2222/o/r.git", "forgejo"},
+		{"https://FORGEJO.example.test:3000/o/r.git", "forgejo"},
+		{"", ""},               // origin 없음
+		{"/srv/git/r.git", ""}, // 로컬 경로
+		{"../r.git", ""},       // 상대 경로
+		{"https://gitlab.example.com/o/r.git", ""},      // 다른 호스트
+		{"git@bitbucket.org:o/r.git", ""},               // 다른 호스트(scp 형)
+		{"https://github.com.evil.example/o/r.git", ""}, // 접두만 닮은 호스트
+		{"https://notgithub.com/o/r.git", ""},
+		{"https://example.test/forgejo.example.test/r.git", ""}, // 호스트는 경로가 아니다
+	}
+	for _, c := range cases {
+		cacheDir, configDir := ghFixture(t, "v2\toctocat\tok\t0")
+		forgejoHosts(t, configDir, hosts)
+		got := plain(GitHubAccount(cacheDir, configDir, ghRoot, c.origin, 0))
+		if got != c.want {
+			t.Errorf("origin %q -> %q, want %q", c.origin, got, c.want)
+		}
+	}
+}
+
+func TestGitHubAccountForgejoLabelColor(t *testing.T) {
+	cacheDir, configDir := ghFixture(t, "")
+	forgejoHosts(t, configDir, "forge.example.test\n")
+	want := theme.Amber214 + "forgejo" + theme.Reset
+	if got := GitHubAccount(cacheDir, configDir, ghRoot, "https://forge.example.test/o/r.git", 0); got != want {
+		t.Errorf("forgejo = %q, want %q", got, want)
+	}
+}
+
+// A Forgejo or unrelated repository never shows an account, even when an older prompt
+// left a record for its root.
+func TestGitHubAccountIgnoresCachesOfNonGitHubRepositories(t *testing.T) {
+	for _, rec := range []string{"v2\t-\tno_active\t0", "v2\toctocat\tok\t0", "octocat"} {
+		for _, c := range []struct{ origin, want string }{
+			{"ssh://git@forge-alias:2222/o/r.git", "forgejo"},
+			{"https://gitlab.example.com/o/r.git", ""},
+			{"", ""},
+		} {
+			cacheDir, configDir := ghFixture(t, rec)
+			forgejoHosts(t, configDir, "forge-alias\n")
+			if got := plain(GitHubAccount(cacheDir, configDir, ghRoot, c.origin, 0)); got != c.want {
+				t.Errorf("record %q origin %q -> %q, want %q", rec, c.origin, got, c.want)
+			}
+		}
+	}
+}
+
+func TestGitHubAccountForgejoNeedsTheHostList(t *testing.T) {
+	cacheDir, configDir := ghFixture(t, "v2\toctocat\tok\t0")
+	if got := GitHubAccount(cacheDir, configDir, ghRoot, "ssh://git@forge-alias:2222/o/r.git", 0); got != "" {
+		t.Errorf("목록이 없으면 다른 호스트로 본다: %q", got)
+	}
+}
+
+// Outside a repository the slot shows the account the prompt recorded under non-git.
+func TestGitHubAccountOutsideARepositoryReadsTheNonGitRecord(t *testing.T) {
+	const now = int64(1_800_000_000)
+	cases := []struct{ record, want string }{
+		{"v2\toctocat\tok\t0", "gh@personal"},
+		{"v2\toctocat\tauth_failed\t0", "gh@personal!"},
+		{"v2\t-\tno_active\t0", "gh@---"},
+		{"v2\toctocat\tunknown\t0", "gh@personal?"},
+	}
+	for _, c := range cases {
+		cacheDir, configDir := ghFixture(t, "v2\ttestwork\tok\t0") // 저장소 캐시는 섞이지 않는다
+		if err := os.WriteFile(filepath.Join(cacheDir, "non-git"), []byte(c.record), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := plain(GitHubAccount(cacheDir, configDir, "", "", now)); got != c.want {
+			t.Errorf("non-git record %q -> %q, want %q", c.record, got, c.want)
+		}
+	}
+	cacheDir, configDir := ghFixture(t, "v2\toctocat\tok\t0")
+	if got := GitHubAccount(cacheDir, configDir, "", "", now); got != "" {
+		t.Errorf("non-git 기록이 없으면 비표시: %q", got)
 	}
 }
 
@@ -424,10 +524,12 @@ func TestAWSSpawnsOncePerTTL(t *testing.T) {
 	}
 }
 
-func TestAWSUnreadableLoginTimeRendersQuestionMark(t *testing.T) {
+// Without a readable idToken iat (the awscli 2.37 cache has none) the last check decides,
+// exactly as for a stale iat.
+func TestAWSWithoutLoginTimeFollowsTheLastCheck(t *testing.T) {
 	enc := base64.RawURLEncoding.EncodeToString
 	claims := func(json string) string { return "h." + enc([]byte(json)) + ".s" }
-	cases := map[string]string{
+	tokens := map[string]string{
 		"idToken 없음":          "",
 		"세 조각이 아님":            "notajwt",
 		"payload 가 base64 아님": "h.!!!.s",
@@ -436,25 +538,78 @@ func TestAWSUnreadableLoginTimeRendersQuestionMark(t *testing.T) {
 		"iat 가 숫자가 아님":        claims(`{"iat":"abc"}`),
 		"iat 가 0":             claims(`{"iat":0}`),
 	}
-	for name, token := range cases {
-		e := newAWSEnv(t)
-		dir := t.TempDir()
-		writeAWSCache(t, dir, "session.json", token)
-		if got := e.render(dir, time.Now().Unix()); got != "aws:?" || e.spawns != 0 {
-			t.Errorf("%s -> %q spawns=%d, want aws:? 0", name, got, e.spawns)
+	now := time.Now().Unix()
+	for name, token := range tokens {
+		for _, c := range []struct {
+			state  string
+			age    int64
+			want   string
+			spawns int
+		}{
+			{"", 0, "aws:?", 1},
+			{"%d ok", 60, "aws:✓", 0},
+			{"%d fail", 60, "aws:expired", 0},
+			{"%d ok", 11 * 60, "aws:✓", 1},
+		} {
+			e := newAWSEnv(t)
+			dir := t.TempDir()
+			writeAWSCache(t, dir, "session.json", token)
+			if c.state != "" {
+				if err := os.WriteFile(e.state, []byte(fmt.Sprintf(c.state, now-c.age)+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := e.render(dir, now); got != c.want || e.spawns != c.spawns {
+				t.Errorf("%s / %q: got %q spawns=%d, want %q %d", name, c.state, got, e.spawns, c.want, c.spawns)
+			}
 		}
 	}
 }
 
-func TestAWSBrokenCacheFileRendersQuestionMark(t *testing.T) {
+// The awscli 2.37 login cache holds accessToken, refreshToken and friends but no idToken.
+func TestAWSCacheWithoutIDTokenFollowsTheLastCheck(t *testing.T) {
+	now := time.Now().Unix()
+	body := `{"accessToken":{"accessKeyId":"x","expiresAt":"2026-10-13T01:16:58Z"},"tokenType":"urn:x","refreshToken":"y"}`
+	for _, c := range []struct {
+		state  string
+		age    int64
+		want   string
+		spawns int
+	}{
+		{"", 0, "aws:?", 1},
+		{"%d ok", 60, "aws:✓", 0},
+		{"%d fail", 60, "aws:expired", 0},
+		{"%d ok", 11 * 60, "aws:✓", 1},
+		{"%d fail", 11 * 60, "aws:expired", 1},
+	} {
+		e := newAWSEnv(t)
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "session.json"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if c.state != "" {
+			if err := os.WriteFile(e.state, []byte(fmt.Sprintf(c.state, now-c.age)+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := e.render(dir, now); got != c.want || e.spawns != c.spawns {
+			t.Errorf("%q: got %q spawns=%d, want %q %d", c.state, got, e.spawns, c.want, c.spawns)
+		}
+		if e.healthy != (c.want == "aws:✓") {
+			t.Errorf("%q: healthy=%v for %q", c.state, e.healthy, c.want)
+		}
+	}
+}
+
+func TestAWSBrokenCacheFileFollowsTheLastCheck(t *testing.T) {
 	e := newAWSEnv(t)
 	dir := t.TempDir()
 	link := filepath.Join(dir, "broken.json")
 	if err := os.Symlink(filepath.Join(dir, "does-not-exist"), link); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.render(dir, time.Now().Unix()); got != "aws:?" {
-		t.Errorf("캐시 파일 판독 불가 → aws:? — got %q", got)
+	if got := e.render(dir, time.Now().Unix()); got != "aws:?" || e.spawns != 1 {
+		t.Errorf("캐시 파일 판독 불가 → 확인 결과를 따름 — got %q spawns=%d, want aws:? 1", got, e.spawns)
 	}
 }
 
