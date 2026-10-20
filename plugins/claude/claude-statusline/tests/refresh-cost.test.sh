@@ -9,7 +9,7 @@ trap 'rc=$?; rm -rf "$WORK"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
 ROOT="$WORK/plugin"
 HOME_DIR="$WORK/home"
 mkdir -p "$ROOT/scripts" "$HOME_DIR/.claude/projects/example" "$WORK/bin"
-cp "$SRC/scripts/refresh-cost.sh" "$SRC/scripts/aggregate-cost.awk" "$ROOT/scripts/"
+cp "$SRC/scripts/config-paths.sh" "$SRC/scripts/refresh-cost.sh" "$SRC/scripts/aggregate-cost.awk" "$ROOT/scripts/"
 
 cat > "$ROOT/scripts/fetch-prices.sh" <<'SH'
 #!/bin/sh
@@ -49,5 +49,18 @@ OUT="$CACHE/claude-statusline/cost-cache.env"
 [ "$(awk -F= '$1=="weekly"{print $2}' "$OUT")" = 5 ] || {
   printf 'FAIL 전월 주간 로그가 weekly에 포함되지 않음\n'; cat "$OUT"; exit 1;
 }
-printf 'refresh-cost.test.sh: 1 passed, 0 failed\n'
+CUSTOM="$WORK/별도 계정"
+mkdir -p "$CUSTOM/projects/example"
+sed 's/1000000/2000000/' "$HOME_DIR/.claude/projects/example/log.jsonl" > "$CUSTOM/projects/example/log.jsonl"
+touch -t 202608311200 "$CUSTOM/projects/example/log.jsonl"
+BEFORE=$(cat "$OUT")
+PATH="$WORK/bin:$PATH" HOME="$HOME_DIR" XDG_CACHE_HOME="$CACHE" CLAUDE_CONFIG_DIR="$CUSTOM/" CLAUDE_PLUGIN_ROOT="$ROOT" \
+  sh "$ROOT/scripts/refresh-cost.sh"
+HASH=$(printf '%s' "$CUSTOM" | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | awk '{print $1}')
+CUSTOM_OUT="$CACHE/claude-statusline/accounts/$HASH/cost-cache.env"
+[ -f "$CUSTOM_OUT" ] && [ "$(awk -F= '$1=="weekly"{print $2}' "$CUSTOM_OUT")" = 10 ] || {
+  printf 'FAIL custom projects 비용이 계정 캐시에 없음\n'; exit 1;
+}
+[ "$(cat "$OUT")" = "$BEFORE" ] || exit 1
+printf 'refresh-cost.test.sh: 3 passed, 0 failed\n'
 completed=1

@@ -1,0 +1,7 @@
+[
+ {"name":"unset","config":"","want":"$HOME/.claude","default":true},
+ {"name":"explicit default","config":"$HOME/.claude/","want":"$HOME/.claude","default":true},
+ {"name":"custom Unicode","config":"$HOME/별도 계정//./","want":"$HOME/별도 계정"},
+ {"name":"relative","config":"account/../other/","want":"$PWD/other"},
+ {"name":"root","config":"/../","want":"/"}
+]
