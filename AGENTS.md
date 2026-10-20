@@ -45,9 +45,9 @@ and the shim derives it from its own `$0` while the two hook scripts derive it f
 `CLAUDE_PLUGIN_ROOT`. Splitting the pointer is what keeps two installed versions
 apart: the shim is pinned in `settings.json` to one version's path while every
 installed version runs its own `SessionStart`, so a single pointer had each version's
-hook overwriting the line the pinned shim reads. For the same reason the build's
-cleanup keeps a binary whose version still has a sibling directory under the plugin
-root and removes only the rest. The `SessionStart` hook detaches that build into the
+hook overwriting the line the pinned shim reads. 계정마다 설치 경로가 달라도 바이너리와 포인터는 공용이다. 다른 계정 설치와
+동시 빌드를 보호하기 위해 빌드는 기존 바이너리를 자동 삭제하지 않는다.
+The `SessionStart` hook detaches that build into the
 background because the hook's timeout is 5 seconds and a cold build lands on it.
 
 Two properties keep the port worth its while, so hold them when editing:

@@ -51,16 +51,13 @@ func main() {
 	cacheDir := filepath.Join(xdg("XDG_CACHE_HOME", filepath.Join(home, ".cache")), "claude-statusline")
 	ghCacheDir := filepath.Join(xdg("XDG_CACHE_HOME", filepath.Join(home, ".cache")), "gh-prompt")
 	configDir := xdg("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	claudeConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
-	if claudeConfigDir == "" {
-		claudeConfigDir = home
-	}
+	paths := resolveClaudePaths(home, cacheDir)
 	loginCacheDir := os.Getenv("AWS_LOGIN_CACHE_DIR")
 	if loginCacheDir == "" {
 		loginCacheDir = filepath.Join(home, ".aws", "login", "cache")
 	}
 
-	limits := ratelimit.Resolve(cacheDir, ratelimit.Pair{
+	limits := ratelimit.Resolve(paths.AccountCache, ratelimit.Pair{
 		Five: sample(status.FiveHour),
 		Week: sample(status.SevenDay),
 	}, now.Unix())
@@ -115,12 +112,12 @@ func main() {
 	}
 	// The path, the account row and the cost are read only for the full layout.
 	view.Path = shorten.Path(status.CWD, home)
-	for _, s := range []string{segments.ClaudeAccount(claudeConfigDir, cacheDir), gh, aws} {
+	for _, s := range []string{segments.ClaudeAccount(paths.OAuthDir, paths.AccountCache), gh, aws} {
 		if s != "" {
 			view.Meta = append(view.Meta, s)
 		}
 	}
-	view.Cost = costLine(cacheDir, now)
+	view.Cost = costLine(paths.AccountCache, now)
 	fmt.Print(render.Full(view, now.Unix()))
 }
 

@@ -2,11 +2,12 @@
 set -eu
 
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline"
+. "$PLUGIN_ROOT/scripts/config-paths.sh"
+CACHE_DIR=$(account_cache_dir) || exit 0
 CACHE="$CACHE_DIR/cost-cache.env"
-PRICES="$CACHE_DIR/prices.tsv"
+PRICES="$SHARED_CACHE_DIR/prices.tsv"
 LOCK="$CACHE_DIR/cost-refresh.lock"
-PROJECTS="$HOME/.claude/projects"
+PROJECTS="$CLAUDE_SETTINGS_DIR/projects"
 TTL=300           # 5분
 LOCK_STALE=120    # 2분
 
