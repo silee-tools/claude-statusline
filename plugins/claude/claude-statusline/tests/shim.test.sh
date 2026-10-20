@@ -91,10 +91,63 @@ OUT=$(printf '%s' "$JSON" | iso "$CACHE" sh "$KEYROOT/scripts/statusline.sh")
 assert_contains "T12 자기 키의 포인터로 렌더" "rendered-by-binary" "$OUT"
 rm -f "$CACHE/claude-statusline/binary-path-5.9.9" "$CACHE/claude-statusline/binary-path"
 
+# 설정이 필요 없는 이벤트는 경로 helper를 실행하지 않는다.
+HOOK_ROOT="$TMPROOT/activity-only"
+mkdir -p "$HOOK_ROOT/scripts"
+cp "$SRC/scripts/hook-handler.sh" "$SRC/scripts/json.awk" "$HOOK_ROOT/scripts/"
+printf 'exit 99\n' > "$HOOK_ROOT/scripts/config-paths.sh"
+if printf '{"hook_event_name":"UserPromptSubmit"}' | iso "$CACHE" env CLAUDE_PLUGIN_ROOT="$HOOK_ROOT" sh "$HOOK_ROOT/scripts/hook-handler.sh"; then
+  ok "T15 activity 이벤트는 설정 helper를 실행하지 않음"
+else
+  bad "T15 activity 이벤트는 설정 helper를 실행하지 않음" "$?"
+fi
+
 # --- 이하 build-binary.sh ---
 BUILD="$SRC/scripts/build-binary.sh"
 PLUGIN_VERSION=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$SRC/.claude-plugin/plugin.json" | head -1)
 build() { iso "$1" env CLAUDE_PLUGIN_ROOT="$SRC" sh "$BUILD" 2>"$TMPROOT/build-err"; }
+
+# 서로 다른 계정의 plugin 판본은 공용 binary/pointer를 함께 사용한다.
+MULTI="$TMPROOT/multi-account"
+mkdir -p "$MULTI/tools"
+cat > "$MULTI/tools/go" <<'GOEOF'
+#!/bin/sh
+if [ "$1" = env ]; then
+  case "$2" in GOOS) echo fixture ;; GOARCH) echo arch ;; esac
+  exit 0
+fi
+while [ "$1" != -o ]; do shift; done
+shift
+printf '#!/bin/sh\nexit 0\n' > "$1"
+chmod +x "$1"
+GOEOF
+chmod +x "$MULTI/tools/go"
+for pair in 'account-a:5.5.1' 'account-b:5.5.2'; do
+  account=${pair%:*}; version=${pair#*:}
+  root="$MULTI/$account/$version"
+  mkdir -p "$root/.claude-plugin" "$root/scripts"
+  printf '{"version":"%s"}\n' "$version" > "$root/.claude-plugin/plugin.json"
+  cp "$BUILD" "$root/scripts/build-binary.sh"
+done
+multi_build() {
+  root="$MULTI/$1/$2"
+  env PATH="$MULTI/tools:$PATH" HOME="$TMPROOT" XDG_CACHE_HOME="$MULTI/cache" \
+    CLAUDE_CONFIG_DIR="$MULTI/$1" CLAUDE_PLUGIN_ROOT="$root" sh "$root/scripts/build-binary.sh"
+}
+multi_build account-a 5.5.1
+A_PTR="$MULTI/cache/claude-statusline/binary-path-5.5.1"
+A_BIN=$(cat "$A_PTR")
+A_BEFORE=$(cksum < "$A_BIN")
+GAP_BIN="$MULTI/cache/claude-statusline/bin/statusline-5.5.3-fixture-arch"
+printf 'published-before-pointer\n' > "$GAP_BIN"
+multi_build account-b 5.5.2
+assert_equals "T14 다른 계정 binary 보존" "$A_BEFORE" "$(cksum < "$A_BIN")"
+assert_equals "T14 다른 계정 pointer 보존" "$A_BIN" "$(cat "$A_PTR")"
+assert_equals "T14 pointer publish 전 binary 보존" "published-before-pointer" "$(cat "$GAP_BIN")"
+B_BIN=$(cat "$MULTI/cache/claude-statusline/binary-path-5.5.2")
+rm -f "$A_BIN"
+multi_build account-a 5.5.1
+assert_equals "T14 반대 순서에서도 다른 계정 binary 보존" yes "$([ -x "$B_BIN" ] && echo yes || echo no)"
 
 BC="$TMPROOT/build-cache"
 if command -v go >/dev/null 2>&1; then
@@ -113,22 +166,22 @@ if command -v go >/dev/null 2>&1; then
   AFTER=$(stat -f '%m' "$BINPATH" 2>/dev/null || stat -c '%Y' "$BINPATH")
   assert_equals "T7 재실행은 바이너리를 다시 만들지 않음" "$BEFORE" "$AFTER"
 
-  # --- T8: 설치돼 있지 않은 버전의 바이너리만 지운다 ---
-  #     지워진 바이너리의 주인 세션은 다음 렌더에서 저하 표시로 떨어진다. 그래서 정리는
-  #     플러그인 루트의 형제로 남아 있지 않은 버전에만 미친다.
+  # 다른 계정의 설치 디렉터리는 현재 plugin의 sibling이 아닐 수 있다.
   BINDIR=$(dirname "$BINPATH")
   STALE="$BINDIR/statusline-0.0.0-old-arch"
   LIVE="$BINDIR/statusline-9.9.9-old-arch"
   : > "$STALE"
   : > "$LIVE"
+  printf '%s\n' "$LIVE" > "$BC/claude-statusline/binary-path-9.9.9"
   mkdir -p "$(dirname "$SRC")/9.9.9"
   rm -f "$BINPATH" "$BC/claude-statusline/binary-path-$KEY"
   build "$BC" >/dev/null 2>&1
   rmdir "$(dirname "$SRC")/9.9.9"
-  assert_equals "T8 설치돼 있지 않은 버전은 제거" "no" "$([ -e "$STALE" ] && echo yes || echo no)"
+  assert_equals "T8 다른 계정 설치 여부를 몰라도 바이너리 보존" "yes" "$([ -e "$STALE" ] && echo yes || echo no)"
   assert_equals "T8 설치돼 있는 버전은 보존" "yes" "$([ -e "$LIVE" ] && echo yes || echo no)"
   assert_equals "T8 새 바이너리는 남음" "yes" "$([ -x "$BINPATH" ] && echo yes || echo no)"
-  rm -f "$LIVE"
+  assert_equals "T8 다른 계정 포인터 보존" "$LIVE" "$(cat "$BC/claude-statusline/binary-path-9.9.9")"
+  rm -f "$LIVE" "$BC/claude-statusline/binary-path-9.9.9"
 
   # --- T8b: 다른 빌드가 원자 교체를 위해 둔 임시 바이너리는 건드리지 않는다 ---
   OTHER_TMP="$BINDIR/statusline-other-goos-goarch.tmp.99999"
@@ -216,7 +269,7 @@ done
 SETUP_ROOT="$TMPROOT/plugin \" root\\slash"
 SETUP_HOME="$TMPROOT/setup-home"
 mkdir -p "$SETUP_ROOT/scripts" "$SETUP_HOME/.claude"
-cp "$SRC/scripts/hook-handler.sh" "$SRC/scripts/json.awk" "$SRC/scripts/settings-update.awk" "$SETUP_ROOT/scripts/"
+cp "$SRC/scripts/config-paths.sh" "$SRC/scripts/hook-handler.sh" "$SRC/scripts/json.awk" "$SRC/scripts/settings-update.awk" "$SETUP_ROOT/scripts/"
 printf '%s\n' '{"permissions":{"allow":["Read"]}}' > "$SETUP_HOME/.claude/settings.json"
 chmod 600 "$SETUP_HOME/.claude/settings.json"
 OUT=$(printf '%s' '{"hook_event_name":"SessionStart"}' | \

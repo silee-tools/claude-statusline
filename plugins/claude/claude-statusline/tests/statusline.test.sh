@@ -120,8 +120,12 @@ else
   echo "warn: git 미설치 — T18 을 건너뜁니다" >&2
 fi
 
+ACCOUNT_HASH=$(printf '%s' "$TMPROOT" | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | awk '{print $1}')
+ACCOUNT_CACHE="$TMPROOT/cache/claude-statusline/accounts/$ACCOUNT_HASH"
+mkdir -p "$ACCOUNT_CACHE"
+
 # 비용 fixture: 오늘 Opus $12, 주간 $605, 월간 $605
-cat > "$TMPROOT/cache/claude-statusline/cost-cache.env" <<'ENV'
+cat > "$ACCOUNT_CACHE/cost-cache.env" <<'ENV'
 available=true
 dailyOpus=12
 dailySonnet=0
@@ -130,7 +134,7 @@ weekly=605
 monthly=605
 cachedAt=1784000000
 ENV
-rm -f "$TMPROOT/cache/claude-statusline/cost-cache.json"
+rm -f "$ACCOUNT_CACHE/cost-cache.json"
 
 NOW=$(date +%s)
 FIVE_RESET=$((NOW + 9000))    # 2h30m 뒤
@@ -181,7 +185,7 @@ json_eff() {
 # 세션 공유 5h·7d 캐시. 렌더가 이 파일에 쓰므로 케이스마다 지워 앞 케이스의 값이 뒤로 새지
 # 않게 한다. 캐시 디렉터리 전체를 지우면 같은 곳에 사는 binary-path-<키> 포인터까지 날아가 shim 이
 # 저하 표시를 내므로 이 파일 하나만 지운다.
-RATE_CACHE="$TMPROOT/cache/claude-statusline/rate-limits.env"
+RATE_CACHE="$ACCOUNT_CACHE/rate-limits.env"
 seed_rate_cache() { printf 'fivePct=%s\nfiveReset=%s\nweekPct=%s\nweekReset=%s\n' "$1" "$2" "$3" "$4" > "$RATE_CACHE"; }
 
 # 색 코드 제거한 출력. XDG_CONFIG_HOME·XDG_CACHE_HOME 을 TMPROOT 로, AWS_LOGIN_CACHE_DIR
@@ -884,10 +888,10 @@ else
 fi
 
 # --- T35: Claude 계정 이메일 캐시 ---
-rm -f "$TMPROOT/cache/claude-statusline/cc-account.env"
+rm -f "$ACCOUNT_CACHE/cc-account.env"
 OUT_A=$(run "$(json_with)" 81)
 assert_contains "T35 이메일 첫 렌더 표시" "octocat@example.com" "$OUT_A"
-assert_match    "T35 캐시 파일 생성" "email=octocat@example.com" "$(cat "$TMPROOT/cache/claude-statusline/cc-account.env" 2>/dev/null)"
+assert_match    "T35 캐시 파일 생성" "email=octocat@example.com" "$(cat "$ACCOUNT_CACHE/cc-account.env" 2>/dev/null)"
 
 # .claude.json 을 캐시보다 새 것으로 만들고 이메일을 바꾸면 다음 렌더에 반영된다(무손실).
 sleep 1

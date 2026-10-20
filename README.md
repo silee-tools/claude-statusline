@@ -104,8 +104,8 @@ The `7d` pace budget advances continuously during local Monday-to-Friday
 calendar days and pauses on Saturday and Sunday. The reset countdown remains
 wall-clock based, and the `5h` pace budget continues to use elapsed time.
 
-The `5h` and `7d` windows are shared between sessions through
-`${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/rate-limits.env`. Whichever
+The `5h` and `7d` windows are shared between sessions of the same account through
+`rate-limits.env` in the account cache described below. Whichever
 session observes a window leaves it there, so a session that has just opened
 shows both windows from its first render. The payload always wins over that
 file: it is the only value that describes the account right now, and a stored
@@ -136,8 +136,7 @@ table once a day from the public
 the fetch fails), a built-in price table is used. The full layout displays a
 per-model cost tally (`24h` / `7d` / month) computed directly from local Claude
 Code session logs
-(`~/.claude/projects/**/*.jsonl`) and cached under
-`${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/`.
+(`<config>/projects/**/*.jsonl`) and stored in the account cache described below.
 
 ```shell
 claude plugin marketplace add silee-tools/claude-statusline
@@ -146,8 +145,37 @@ claude   # restart
 ```
 
 On restart, the plugin's `SessionStart` hook wires `statusLine` in
-`~/.claude/settings.json` automatically and refreshes the cost cache in the
+`<config>/settings.json` automatically and refreshes the cost cache in the
 background — no manual `settings.json` edit is needed.
+
+### 계정별 설정과 캐시
+
+`CLAUDE_CONFIG_DIR`가 비어 있거나 없으면 설정 디렉터리는 `$HOME/.claude`입니다.
+지정하면 해당 경로의 `settings.json`과 `projects/`만 사용합니다. 상대경로는
+현재 작업 디렉터리 기준 절대경로로 만들고, 중복 `/`, `.`, `..`와 끝의 `/`를
+정리합니다. 심볼릭 링크는 해석하지 않습니다. 기본 경로를 명시해도 기본 계정으로
+취급합니다. 계정마다 같은 환경변수를 사용해 설치하고 실행합니다.
+추가 계정을 설치하기 전에 기존 모든 계정의 플러그인을 먼저 5.5.1 이상으로 갱신합니다.
+
+```shell
+CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude plugin marketplace add silee-tools/claude-statusline
+CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude plugin install claude-statusline@silee-tools
+CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude
+```
+
+기본 계정은 `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/`의 기존 캐시를
+유지합니다. custom 계정은 그 아래 `accounts/<정규화한 config 경로의 SHA-256 전체>/`를
+사용합니다. `cc-account.env`, `rate-limits.env`, `cost-cache.env`와 비용 집계의
+lock·기준 시각·임시 파일이 분리됩니다. 기존 공유 캐시는 복사하거나 삭제하지 않습니다.
+셸 비용 집계에는 GNU `sha256sum` 또는 macOS `shasum -a 256`이 필요하며, hash를
+계산하지 못하면 공유 캐시에 쓰지 않고 집계를 건너뜁니다. Go 렌더러는 표준 라이브러리로
+같은 hash를 계산합니다.
+
+GitHub·AWS·가격·Git·터미널 폭 캐시와 렌더 바이너리·포인터는 공용입니다.
+다른 계정 설치와 진행 중인 빌드를 보호하기 위해 바이너리는 자동 삭제하지 않습니다.
+따라서 사용하지 않는 판본의 바이너리가 남을 수 있습니다. 5.5.0 이하의 기존 빌드
+스크립트는 공용 바이너리를 삭제할 수 있으므로 여러 계정에서 사용할 때는 각 계정의
+플러그인을 5.5.1 이상으로 갱신해야 합니다.
 
 ### First run
 
@@ -236,7 +264,8 @@ numeric.
 ### Claude account indicator
 
 The logged-in Claude account email is read (read-only) from the
-`oauthAccount.emailAddress` field of `${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json`,
+`oauthAccount.emailAddress` field of `$HOME/.claude.json` for the default
+configuration, or `<config>/.claude.json` for a custom configuration,
 Claude Code's own account state. Only that one field is scanned, and the result
 is cached until the file changes, so the large config file is not parsed in full
 on every render. The segment is

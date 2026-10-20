@@ -36,7 +36,8 @@ run_background() {
 # statusLine.command 를 이 플러그인으로 가리킨다. settings.json 파손을 막기 위해
 # tmp 에 쓴 뒤 재파싱으로 목표 값을 확인하고서만 교체한다.
 auto_setup() {
-  settings="$HOME/.claude/settings.json"
+  . "$PLUGIN_ROOT/scripts/config-paths.sh"
+  settings="$CLAUDE_SETTINGS_DIR/settings.json"
   quoted_path=$(printf '%s' "$PLUGIN_ROOT/scripts/statusline.sh" | sed "s/'/'\\\\''/g")
   sl_cmd="sh '$quoted_path'"
   escaped_cmd=$(printf '%s' "$sl_cmd" | sed 's/\\/\\\\/g; s/"/\\"/g')
