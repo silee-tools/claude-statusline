@@ -1,4 +1,4 @@
-// Package width measures display width, fits the first row into a column budget,
+// Package width measures display width, fits text into a column budget,
 // and detects the terminal width.
 package width
 
@@ -93,9 +93,9 @@ func cut(s string, limit int) string {
 	return b.String()
 }
 
-// fitOne cuts s only when it overflows, spending one column on the ellipsis. A cut
+// Fit cuts s only when it overflows, spending one column on the ellipsis. A cut
 // can end inside an open color, so a colored input is closed with a reset.
-func fitOne(s string, limit int) string {
+func Fit(s string, limit int) string {
 	if Visible(s) <= limit {
 		return s
 	}
@@ -104,24 +104,4 @@ func fitOne(s string, limit int) string {
 		out += "\033[0m"
 	}
 	return out
-}
-
-// Fit divides budget between the path and the branch. Whichever side already fits
-// in half keeps what it needs and the other side takes the rest; when neither fits,
-// they split evenly. The caller owns the fixed width of the row — the clock, the
-// spaces and the branch glyph — so this function never recomputes it.
-func Fit(path, branch string, budget int) (string, string) {
-	pw, bw := Visible(path), Visible(branch)
-	var plim, blim int
-	switch half := budget / 2; {
-	case pw+bw <= budget:
-		plim, blim = pw, bw
-	case bw <= half:
-		plim, blim = budget-bw, bw
-	case pw <= half:
-		plim, blim = pw, budget-pw
-	default:
-		plim, blim = half, budget-half
-	}
-	return fitOne(path, plim), fitOne(branch, blim)
 }
