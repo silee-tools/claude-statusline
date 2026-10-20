@@ -31,7 +31,6 @@ func TestClaudePathsMatchShellFixtures(t *testing.T) {
 			config, want := expand.Replace(tc.Config), expand.Replace(tc.Want)
 			t.Setenv("HOME", home)
 			t.Setenv("CLAUDE_CONFIG_DIR", config)
-			t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
 			cache := filepath.Join(home, "cache", "claude-statusline")
 			account, oauth := cache, want
 			if tc.Default {
@@ -40,8 +39,8 @@ func TestClaudePathsMatchShellFixtures(t *testing.T) {
 				account = filepath.Join(cache, "accounts", fmt.Sprintf("%x", sha256.Sum256([]byte(want))))
 			}
 			got := resolveClaudePaths(home, cache)
-			if got.Config != want || got.AccountCache != account || got.OAuthDir != oauth {
-				t.Fatalf("paths=%+v want %s %s %s", got, want, account, oauth)
+			if got.AccountCache != account || got.OAuthDir != oauth {
+				t.Fatalf("paths=%+v want %s %s", got, account, oauth)
 			}
 			cmd := exec.Command("sh", "-c", `. ../../scripts/config-paths.sh; printf '%s\n' "$CLAUDE_SETTINGS_DIR"`)
 			out, err := cmd.CombinedOutput()

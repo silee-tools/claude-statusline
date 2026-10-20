@@ -1,6 +1,2 @@
-# Plugin runtime data
-**/data/sessions/
-**/data/user-config.json
-
 # macOS
 .DS_Store

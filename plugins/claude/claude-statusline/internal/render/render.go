@@ -104,7 +104,7 @@ func compactStatusRow(v View) string {
 			budget = 1
 			fallthrough
 		default:
-			_, branch = width.Fit("", branch, budget)
+			branch = width.Fit(branch, budget)
 		}
 	}
 	row := ""
