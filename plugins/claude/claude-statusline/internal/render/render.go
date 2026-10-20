@@ -10,9 +10,9 @@ import (
 	"github.com/silee-tools/claude-statusline/internal/width"
 )
 
-// labelWidth right-aligns ctx, 5h, 7d and cost into one column so their bars start
+// labelWidth right-aligns ctx, 5h and 7d into one column so their bars start
 // at the same place.
-const labelWidth = 4
+const labelWidth = 3
 
 const sevenDayWindow int64 = 7 * 24 * 60 * 60
 
@@ -29,7 +29,6 @@ type View struct {
 	CtxPct  int
 	Five    Gauge
 	Week    Gauge
-	Cost    CostLine
 	Version string
 	Session string // full session id
 	Width   int    // detected columns; the compact layout fits its rows to it, 0 means no cut
@@ -46,15 +45,7 @@ type Gauge struct {
 	Window   int64
 }
 
-// CostLine is the cost row. Daily holds the per-model pieces the caller assembled;
-// Weekly, Monthly and MonthDays are the strings the cache and the calendar gave.
-type CostLine struct {
-	Available                  bool
-	Daily                      []string
-	Weekly, Monthly, MonthDays string
-}
-
-// Full is the seven-row layout, used above 80 columns and whenever the width could
+// Full is the six-row layout, used above 80 columns and whenever the width could
 // not be determined. Its first row is not truncated.
 func Full(v View, now int64) string {
 	loc := theme.Green + v.Clock + theme.Reset + " " + v.Path
@@ -66,8 +57,6 @@ func Full(v View, now int64) string {
 		theme.Bar(v.CtxPct, theme.NoBudget, contextColor(v.CtxPct), "") +
 		" " + contextColor(v.CtxPct) + strconv.Itoa(v.CtxPct) + "%" + theme.Reset
 	ctx += modelAndEffort(v)
-
-	cost := theme.Label(ralign("cost")) + " " + costSegments(v.Cost)
 
 	foot := ""
 	if v.Version != "" {
@@ -81,7 +70,7 @@ func Full(v View, now int64) string {
 	}
 
 	return emit(loc, strings.Join(v.Meta, " "), ctx,
-		fullGauge(ralign("5h"), v.Five, now), fullGauge(ralign("7d"), v.Week, now), cost, foot)
+		fullGauge(ralign("5h"), v.Five, now), fullGauge(ralign("7d"), v.Week, now), foot)
 }
 
 // Compact is the layout for 80 columns or fewer: at most two rows, each within Width.
@@ -115,7 +104,7 @@ func compactStatusRow(v View) string {
 			budget = 1
 			fallthrough
 		default:
-			_, branch = width.Fit("", branch, budget)
+			branch = width.Fit(branch, budget)
 		}
 	}
 	row := ""
@@ -309,21 +298,6 @@ func businessSecondsBetween(start, end int64) int64 {
 		day = next
 	}
 	return seconds
-}
-
-func costSegments(c CostLine) string {
-	daily, weekly, monthly := "$--", "$--", "$--"
-	if c.Available {
-		weekly, monthly = "$"+c.Weekly, "$"+c.Monthly
-		daily = "$0"
-		if len(c.Daily) > 0 {
-			daily = strings.Join(c.Daily, " ")
-		}
-	}
-	slash := " " + theme.Dim + "/" + theme.Reset + " "
-	return theme.Label("24h") + " " + daily + slash +
-		theme.Label("7d") + " " + weekly + slash +
-		theme.Label(c.MonthDays+"d") + " " + monthly
 }
 
 func contextColor(pct int) string { return theme.GaugeColor(pct, 40, 70) }

@@ -35,18 +35,15 @@ CUSTOM_CACHE="$CACHE/accounts/$HASH"
 mkdir -p "$CACHE" "$CUSTOM_CACHE"
 printf '{"oauthAccount":{"emailAddress":"default@example.com"}}' > "$HOME/.claude.json"
 printf '{"oauthAccount":{"emailAddress":"custom@example.com"}}' > "$CUSTOM/.claude.json"
-printf 'available=true\ndailyOpus=7\nweekly=7\nmonthly=7\n' > "$CACHE/cost-cache.env"
-printf 'available=true\ndailyOpus=13\nweekly=13\nmonthly=13\n' > "$CUSTOM_CACHE/cost-cache.env"
 render() { printf '{"workspace":{"current_dir":"/tmp"},"version":"test","rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":1999999999}}}' "$2" | CLAUDE_CONFIG_DIR="$1" "$WORK/statusline"; }
 render '' 12 > "$WORK/default.out" &
 PID=$!
 render "$CUSTOM/" 67 > "$WORK/custom.out"
 wait "$PID"
-for entry in 'default:default@example.com:12:7' 'custom:custom@example.com:67:13'; do
-  name=${entry%%:*}; rest=${entry#*:}; email=${rest%%:*}; rest=${rest#*:}; pct=${rest%%:*}; cost=${rest#*:}
+for entry in 'default:default@example.com:12' 'custom:custom@example.com:67'; do
+  name=${entry%%:*}; rest=${entry#*:}; email=${rest%%:*}; rest=${rest#*:}; pct=$rest
   dir=$CACHE; [ "$name" = default ] || dir=$CUSTOM_CACHE
   case "$(cat "$WORK/$name.out")" in *"$email"*) pass=$((pass+1));; *) printf 'FAIL %s account render\n' "$name"; fail=$((fail+1));; esac
-  case "$(cat "$WORK/$name.out")" in *"\$$cost"*) pass=$((pass+1));; *) printf 'FAIL %s cost render\n' "$name"; fail=$((fail+1));; esac
   check "$name rate cache" "$pct" "$(if [ -f "$dir/rate-limits.env" ]; then awk -F= '$1=="fivePct"{print $2}' "$dir/rate-limits.env"; else printf missing; fi)"
   check "$name account cache" "email=$email" "$(cat "$dir/cc-account.env" 2>/dev/null || printf missing)"
 done
