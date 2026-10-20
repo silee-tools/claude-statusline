@@ -8,7 +8,7 @@ import (
 )
 
 type claudePaths struct {
-	Config, OAuthDir, AccountCache string
+	OAuthDir, AccountCache string
 }
 
 func resolveClaudePaths(home, cache string) claudePaths {
@@ -18,7 +18,7 @@ func resolveClaudePaths(home, cache string) claudePaths {
 	}
 	config, _ = filepath.Abs(config)
 	base, _ := filepath.Abs(filepath.Join(home, ".claude"))
-	p := claudePaths{Config: config, OAuthDir: config, AccountCache: cache}
+	p := claudePaths{OAuthDir: config, AccountCache: cache}
 	if config == base {
 		p.OAuthDir = home
 	} else {

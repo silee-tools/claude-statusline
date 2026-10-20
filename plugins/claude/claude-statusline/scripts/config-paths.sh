@@ -11,23 +11,6 @@ config_path() {
     print (out=="" ? "/" : out)
   }'
 }
+# hook-handler.sh reads this after sourcing.
+# shellcheck disable=SC2034
 CLAUDE_SETTINGS_DIR=$(config_path "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
-SHARED_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline"
-account_cache_dir() {
-  if [ "$CLAUDE_SETTINGS_DIR" = "$(config_path "$HOME/.claude")" ]; then
-    printf '%s\n' "$SHARED_CACHE_DIR"
-    return
-  fi
-  hash=""
-  if command -v sha256sum >/dev/null 2>&1; then
-    hash=$(printf '%s' "$CLAUDE_SETTINGS_DIR" | sha256sum) || return 1
-  elif command -v shasum >/dev/null 2>&1; then
-    hash=$(printf '%s' "$CLAUDE_SETTINGS_DIR" | shasum -a 256) || return 1
-  else
-    return 1
-  fi
-  hash=${hash%% *}
-  case "$hash" in ''|*[!0-9a-f]*) return 1 ;; esac
-  [ "${#hash}" -eq 64 ] || return 1
-  printf '%s/accounts/%s\n' "$SHARED_CACHE_DIR" "$hash"
-}
