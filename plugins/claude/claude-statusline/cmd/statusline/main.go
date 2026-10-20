@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/silee-tools/claude-statusline/internal/agentstatus"
-	"github.com/silee-tools/claude-statusline/internal/costcache"
 	"github.com/silee-tools/claude-statusline/internal/gitinfo"
 	"github.com/silee-tools/claude-statusline/internal/input"
 	"github.com/silee-tools/claude-statusline/internal/ratelimit"
@@ -110,14 +109,13 @@ func main() {
 		fmt.Print(render.Compact(view, now.Unix()))
 		return
 	}
-	// The path, the account row and the cost are read only for the full layout.
+	// The path and the account row are read only for the full layout.
 	view.Path = shorten.Path(status.CWD, home)
 	for _, s := range []string{segments.ClaudeAccount(paths.OAuthDir, paths.AccountCache), gh, aws} {
 		if s != "" {
 			view.Meta = append(view.Meta, s)
 		}
 	}
-	view.Cost = costLine(paths.AccountCache, now)
 	fmt.Print(render.Full(view, now.Unix()))
 }
 
@@ -146,21 +144,6 @@ func gauge(s ratelimit.Sample, window int64) render.Gauge {
 		HasReset: s.HasReset,
 		Window:   window,
 	}
-}
-
-// costLine is the full layout's cost row.
-func costLine(cacheDir string, now time.Time) render.CostLine {
-	c := costcache.Load(cacheDir)
-	line := render.CostLine{
-		Available: c.Available,
-		Weekly:    c.Weekly,
-		Monthly:   c.Monthly,
-		MonthDays: costcache.MonthDays(now),
-	}
-	for _, seg := range c.DailySegments() {
-		line.Daily = append(line.Daily, theme.Label(seg.Label)+" $"+seg.Amount)
-	}
-	return line
 }
 
 func xdg(name, fallback string) string {

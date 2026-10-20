@@ -9,7 +9,7 @@ them in its own section.
 
 A width-aware statusline HUD for [Claude Code](https://code.claude.com). It
 shows location, accounts, session state, context usage, rate limits, reasoning
-effort, and cost without forcing the same layout onto every terminal.
+effort without forcing the same layout onto every terminal.
 
 At 80 columns or fewer, the compact layout uses up to two rows, each within
 the detected width:
@@ -19,15 +19,14 @@ feature/PROJ-123-post-editor gh@personal
 ctx 68% Opus 4.8 ● 5h 47% ↺2h30m 7d 83%▲ ↺3d16h
 ```
 
-At 81 columns or more, the full layout uses up to seven rows:
+At 81 columns or more, the full layout uses up to six rows:
 
 ```text
 17:14 ~/↪1/webapp/↪1/src feature/PROJ-123-post-editor
 dev@example.com gh@personal aws:✓
- ctx █████████████░░░░░░░ 68% Opus 4.8 ●
-  5h █████████░░░░░░░░░░░ 47% ↺2h30m
-  7d ████████████████▓░░░ 83% ↺3d16h
-cost 24h Opus $12 / 7d $42 / 31d $105
+ctx █████████████░░░░░░░ 68% Opus 4.8 ●
+ 5h █████████░░░░░░░░░░░ 47% ↺2h30m
+ 7d ████████████████▓░░░ 83% ↺3d16h
 v3.1.0 ⧉ 11111111-2222-3333-4444-555555555555
 ```
 
@@ -69,7 +68,7 @@ are never split.
 
 The full layout adds the clock, the path, the Claude account, the version, and
 the full session id, shows every `aws:` state, gives `ctx`, `5h`, and `7d`
-separate 20-cell gauge rows, and restores the cost row. Its first row is not
+separate 20-cell gauge rows. Its first row is not
 truncated. Widths from 81 through 85 can therefore wrap when both the shortened
 path and branch are long.
 
@@ -77,7 +76,7 @@ The path collapses `$HOME` to `~`, preserves repository and current-directory
 names, and marks skipped segments as `↪N`. The branch and session glyphs need a
 Nerd Font; without one they may render as placeholder boxes.
 
-## Gauges and cost
+## Gauges
 
 Context usage turns yellow at 40% and red at 70%. Rate usage turns yellow at
 80% and red at 90%, and on the `5h` and `7d` rows that color reaches the
@@ -113,10 +112,6 @@ sample carries no observation time to be judged against. The file is drawn only
 for a window the payload leaves out, and a window whose reset time has passed is
 not drawn at all, because its usage no longer describes the current window.
 
-Cost is displayed only in the full layout. The background cost cache is
-refreshed for both layouts, so switching widths does not require new
-collection.
-
 ## Reasoning effort
 
 Effort is shown with the same circle glyphs Claude Code uses in its session
@@ -129,14 +124,7 @@ header, plus a warm-gauge color: `low ○` (green) · `medium ◐` (lime) ·
 Requires [Claude Code](https://code.claude.com), a POSIX `sh`, `awk`, and
 [Go](https://go.dev) 1.26 or newer. Go builds the render binary once on this
 machine — see [First run](#first-run) below. `git` powers the branch display.
-`ps` provides automatic terminal-width detection. `curl` is optional: it
-refreshes the model pricing
-table once a day from the public
-[LiteLLM price table](https://github.com/BerriAI/litellm); without it (or if
-the fetch fails), a built-in price table is used. The full layout displays a
-per-model cost tally (`24h` / `7d` / month) computed directly from local Claude
-Code session logs
-(`<config>/projects/**/*.jsonl`) and stored in the account cache described below.
+`ps` provides automatic terminal-width detection.
 
 ```shell
 claude plugin marketplace add silee-tools/claude-statusline
@@ -145,13 +133,12 @@ claude   # restart
 ```
 
 On restart, the plugin's `SessionStart` hook wires `statusLine` in
-`<config>/settings.json` automatically and refreshes the cost cache in the
-background — no manual `settings.json` edit is needed.
+`<config>/settings.json` automatically — no manual `settings.json` edit is needed.
 
 ### 계정별 설정과 캐시
 
 `CLAUDE_CONFIG_DIR`가 비어 있거나 없으면 설정 디렉터리는 `$HOME/.claude`입니다.
-지정하면 해당 경로의 `settings.json`과 `projects/`만 사용합니다. 상대경로는
+지정하면 해당 경로의 `settings.json`을 사용합니다. 상대경로는
 현재 작업 디렉터리 기준 절대경로로 만들고, 중복 `/`, `.`, `..`와 끝의 `/`를
 정리합니다. 심볼릭 링크는 해석하지 않습니다. 기본 경로를 명시해도 기본 계정으로
 취급합니다. 계정마다 같은 환경변수를 사용해 설치하고 실행합니다.
@@ -165,13 +152,11 @@ CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude
 
 기본 계정은 `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/`의 기존 캐시를
 유지합니다. custom 계정은 그 아래 `accounts/<정규화한 config 경로의 SHA-256 전체>/`를
-사용합니다. `cc-account.env`, `rate-limits.env`, `cost-cache.env`와 비용 집계의
-lock·기준 시각·임시 파일이 분리됩니다. 기존 공유 캐시는 복사하거나 삭제하지 않습니다.
-셸 비용 집계에는 GNU `sha256sum` 또는 macOS `shasum -a 256`이 필요하며, hash를
-계산하지 못하면 공유 캐시에 쓰지 않고 집계를 건너뜁니다. Go 렌더러는 표준 라이브러리로
+사용합니다. `cc-account.env`와 `rate-limits.env`가 분리됩니다.
+기존 공유 캐시는 복사하거나 삭제하지 않습니다. Go 렌더러는 표준 라이브러리로
 같은 hash를 계산합니다.
 
-GitHub·AWS·가격·Git·터미널 폭 캐시와 렌더 바이너리·포인터는 공용입니다.
+GitHub·AWS·Git·터미널 폭 캐시와 렌더 바이너리·포인터는 공용입니다.
 다른 계정 설치와 진행 중인 빌드를 보호하기 위해 바이너리는 자동 삭제하지 않습니다.
 따라서 사용하지 않는 판본의 바이너리가 남을 수 있습니다. 5.5.0 이하의 기존 빌드
 스크립트는 공용 바이너리를 삭제할 수 있으므로 여러 계정에서 사용할 때는 각 계정의
@@ -200,10 +185,9 @@ needs no network.
 |---|---|---|
 | `go` 1.26+ | required | building the render binary once per plugin version |
 | `sh` (POSIX) | required | the statusline shim, the session hook, and the background jobs |
-| `awk` | required | parsing the hook JSON and aggregating the background cost cache |
+| `awk` | required | parsing the hook JSON |
 | `git` | required | the branch indicator |
 | `ps` | optional | automatic terminal-width detection (falls back to the full layout) |
-| `curl` | optional | daily model-pricing refresh (falls back to a built-in table) |
 | `aws` (AWS CLI 2.32+) | optional | `aws login`'s session cache, read for the `aws:` session indicator: a cache whose `idToken` was refreshed within 15 minutes is `✓`; any other cache, including one without an `idToken` (newer AWS CLI), is settled by a background `aws sts get-caller-identity`, at most every 10 minutes (`✓` on success, `expired` on failure) |
 
 ## Configuration

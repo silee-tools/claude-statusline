@@ -64,7 +64,6 @@ auto_setup() {
   fi
 }
 
-run_background refresh-cost.sh
 # 렌더 바이너리는 hooks.json 의 5초 제한에 걸리지 않도록 배경에서 최초 1회 빌드한다.
 run_background build-binary.sh
 auto_setup

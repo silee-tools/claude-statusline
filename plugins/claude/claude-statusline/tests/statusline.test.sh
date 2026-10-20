@@ -2,7 +2,7 @@
 # statusline.sh 렌더링 회귀 테스트
 # 격리된 임시 PLUGIN_ROOT 에서 실제 소스 statusline.sh 를 실행하고,
 # stdin JSON(rate_limits·effort 포함/미포함) fixture 로
-# 80열 이하 압축 2행과 81열 이상 7행 레이아웃 출력을 함께 검증한다.
+# 80열 이하 압축 2행과 81열 이상 6행 레이아웃 출력을 함께 검증한다.
 #
 # 압축 레이아웃(위→아래, 값 없는 행은 생략):
 #   행1  브랜치 gh@계정 [aws 이상·불명]
@@ -124,7 +124,7 @@ ACCOUNT_HASH=$(printf '%s' "$TMPROOT" | { if command -v sha256sum >/dev/null 2>&
 ACCOUNT_CACHE="$TMPROOT/cache/claude-statusline/accounts/$ACCOUNT_HASH"
 mkdir -p "$ACCOUNT_CACHE"
 
-# 비용 fixture: 오늘 Opus $12, 주간 $605, 월간 $605
+# 이전 판본의 비용 캐시가 있어도 두 레이아웃은 이를 무시한다.
 cat > "$ACCOUNT_CACHE/cost-cache.env" <<'ENV'
 available=true
 dailyOpus=12
@@ -134,7 +134,6 @@ weekly=605
 monthly=605
 cachedAt=1784000000
 ENV
-rm -f "$ACCOUNT_CACHE/cost-cache.json"
 
 NOW=$(date +%s)
 FIVE_RESET=$((NOW + 9000))    # 2h30m 뒤
@@ -189,7 +188,7 @@ RATE_CACHE="$ACCOUNT_CACHE/rate-limits.env"
 seed_rate_cache() { printf 'fivePct=%s\nfiveReset=%s\nweekPct=%s\nweekReset=%s\n' "$1" "$2" "$3" "$4" > "$RATE_CACHE"; }
 
 # 색 코드 제거한 출력. XDG_CONFIG_HOME·XDG_CACHE_HOME 을 TMPROOT 로, AWS_LOGIN_CACHE_DIR
-# 을 위 fixture 로 고정해 gh 계정·매핑·비용 캐시·AWS 세션 표시를 모두 결정론화한다.
+# 을 위 fixture 로 고정해 gh 계정·매핑·AWS 세션 표시를 모두 결정론화한다.
 _render() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_LOGIN_CACHE_DIR="$AWS_LOGIN_CACHE_FIXTURE" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
 # 색 코드 포함 원본 출력
 _render_raw() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_LOGIN_CACHE_DIR="$AWS_LOGIN_CACHE_FIXTURE" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null; }
@@ -289,19 +288,19 @@ assert_equals()       { if [ "$3" = "$2" ]; then ok "$1"; else bad "$1 (expected
 # 폭 80 이하는 압축 레이아웃, 81 이상은 전체 레이아웃을 렌더한다.
 # =====================================================================
 
-# --- T46: 경계값에서 레이아웃이 갈리고 전체 레이아웃에만 비용이 나온다 ---
+# --- T46: 경계값에서 레이아웃이 갈리고 이전 비용 캐시를 무시한다 ---
 OUT80=$(run "$(json_with)" 80)
 OUT81=$(run "$(json_with)" 81)
 assert_equals     "T46 폭 80 저장소 밖은 게이지 1행(1행 생략)" "1" "$(nlines "$OUT80")"
 assert_equals     "T46 폭 80 저장소 안은 압축 2행" "2" "$(nlines "$(run "$(json_with_gh)" 80)")"
-assert_equals     "T46 폭 81은 전체 7행" "7" "$(nlines "$OUT81")"
+assert_equals     "T46 폭 81은 전체 6행" "6" "$(nlines "$OUT81")"
 assert_not_contains "T46 압축 레이아웃은 비용 없음" "cost" "$OUT80"
-assert_contains     "T46 전체 레이아웃은 비용 표시" "cost" "$OUT81"
+assert_not_contains "T46 전체 레이아웃은 비용 없음" "cost" "$OUT81"
 
-# --- T47: 전체 레이아웃은 막대·비용·전체 세션 ID를 보존한다 ---
+# --- T47: 전체 레이아웃은 막대·전체 세션 ID를 보존한다 ---
 FULL=$(run "$(json_with)" 81)
 assert_equals "T47 전체 레이아웃 5h 막대는 20칸" "20" "$(count_char '[█░]' "$(nth_line 4 "$FULL")")"
-assert_contains "T47 전체 레이아웃 비용 금액" '$605' "$FULL"
+assert_not_contains "T47 이전 비용 캐시 금액 없음" '$605' "$FULL"
 # 예산은 10칸(경과 9000s / 창 18000s)이고 소진율 70% 는 14칸이므로 11번째 칸부터 끝까지가
 # 초과 구간이다. 초과는 3칸을 넘어 빨강이고, 그 앞 열 칸은 회색으로 남는다.
 PACE_ROW=$(nth_line 4 "$(run_raw "$(json_pct 70 10)" 81)")
@@ -311,13 +310,13 @@ assert_contains "T47 전체 레이아웃 예산 경계는 회색 다음이 빨�
 assert_not_contains "T47 전체 레이아웃은 압축 페이스 기호 없음" "▲" "$PACE_ROW"
 if [ "$HAVE_GIT" = 1 ]; then
   FULL_SESSION=$(run "$(json_branch)" 81)
-  assert_contains "T47 전체 레이아웃 푸터에 전체 세션 ID" "$KNOWN_SESSION" "$(nth_line 7 "$FULL_SESSION")"
+  assert_contains "T47 전체 레이아웃 푸터에 전체 세션 ID" "$KNOWN_SESSION" "$(nth_line 6 "$FULL_SESSION")"
 fi
 
 # --- T48: 폭을 못 재면 COLUMNS 값과 무관하게 전체 레이아웃을 쓴다 ---
 AUTO=$(run_auto "$(json_with)")
-assert_equals "T48 폭 판정 불가 시 전체 7행" "7" "$(nlines "$AUTO")"
-assert_contains "T48 오래된 COLUMNS=40을 무시하고 비용 표시" "cost" "$AUTO"
+assert_equals "T48 폭 판정 불가 시 전체 6행" "6" "$(nlines "$AUTO")"
+assert_contains "T48 오래된 COLUMNS=40을 무시하고 전체 막대 표시" "█" "$AUTO"
 
 # --- T1: rate_limits 있으면 5h/7d 라벨과 소진율이 나온다 ---
 OUT=$(run "$(json_with)" 80)

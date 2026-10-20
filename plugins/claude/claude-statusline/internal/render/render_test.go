@@ -23,17 +23,16 @@ func sample() View {
 		Model: "Opus 4.8", Effort: "●", CtxPct: 20,
 		Five:    Gauge{Present: true, Pct: 24, ResetsAt: 2_000_000_000, HasReset: true, Window: 18000},
 		Week:    Gauge{Present: true, Pct: 41, ResetsAt: 2_000_600_000, HasReset: true, Window: 604800},
-		Cost:    CostLine{Available: true, Daily: []string{"Opus $12"}, Weekly: "605", Monthly: "915", MonthDays: "31"},
 		Version: "2.1.11", Session: session, Width: 120,
 	}
 }
 
 func TestFullLayoutRowOrder(t *testing.T) {
 	rows := strings.Split(plain(Full(sample(), 1_999_000_000)), "\n")
-	if len(rows) != 7 {
-		t.Fatalf("전체 레이아웃은 7행이다: %d행 — %q", len(rows), rows)
+	if len(rows) != 6 {
+		t.Fatalf("전체 레이아웃은 6행이다: %d행 — %q", len(rows), rows)
 	}
-	want := []string{"08:06", "gh@personal", "ctx", "5h", "7d", "cost", "v2.1.11"}
+	want := []string{"08:06", "gh@personal", "ctx", "5h", "7d", "v2.1.11"}
 	for i, w := range want {
 		if !strings.Contains(rows[i], w) {
 			t.Errorf("행%d 에 %q 가 없다: %q", i+1, w, rows[i])
@@ -42,10 +41,10 @@ func TestFullLayoutRowOrder(t *testing.T) {
 }
 
 func TestFullLayoutRightAlignsTheGaugeLabels(t *testing.T) {
-	// ctx·5h·7d·cost 는 같은 라벨 폭으로 세로 정렬한다. 정렬이 깨지면 네 행의 막대 시작
+	// ctx·5h·7d 는 같은 라벨 폭으로 세로 정렬한다. 정렬이 깨지면 세 행의 막대 시작
 	// 열이 어긋나 전체 레이아웃의 읽는 방식이 달라진다.
 	rows := strings.Split(plain(Full(sample(), 1_999_000_000)), "\n")
-	for i, want := range map[int]string{2: " ctx ", 3: "  5h ", 4: "  7d ", 5: "cost "} {
+	for i, want := range map[int]string{2: "ctx ", 3: " 5h ", 4: " 7d "} {
 		if !strings.HasPrefix(rows[i], want) {
 			t.Errorf("행%d 라벨 = %q, want prefix %q", i+1, rows[i], want)
 		}
@@ -116,32 +115,6 @@ func TestFullLayoutKeepsTheWholeSessionID(t *testing.T) {
 	// 전체 ID 를 남기는 이유는 사용자가 그것을 복사해 쓰기 때문이다.
 	if !strings.Contains(plain(Full(sample(), 1_999_000_000)), session) {
 		t.Fatal("전체 레이아웃은 세션 식별자를 자르지 않는다")
-	}
-}
-
-func TestFullLayoutCostRow(t *testing.T) {
-	got := plain(Full(sample(), 1_999_000_000))
-	row := strings.Split(got, "\n")[5]
-	if want := "cost 24h Opus $12 / 7d $605 / 31d $915"; row != want {
-		t.Errorf("비용 행 = %q, want %q", row, want)
-	}
-}
-
-func TestFullLayoutCostRowWithoutData(t *testing.T) {
-	v := sample()
-	v.Cost = CostLine{MonthDays: "30"}
-	row := strings.Split(plain(Full(v, 1_999_000_000)), "\n")[5]
-	if want := "cost 24h $-- / 7d $-- / 30d $--"; row != want {
-		t.Errorf("비용 부재 행 = %q, want %q", row, want)
-	}
-}
-
-func TestFullLayoutCostRowWithNoModelOverADollar(t *testing.T) {
-	v := sample()
-	v.Cost = CostLine{Available: true, Weekly: "5", Monthly: "9", MonthDays: "31"}
-	row := strings.Split(plain(Full(v, 1_999_000_000)), "\n")[5]
-	if want := "cost 24h $0 / 7d $5 / 31d $9"; row != want {
-		t.Errorf("모델 부재 행 = %q, want %q", row, want)
 	}
 }
 
@@ -433,8 +406,8 @@ func TestAbsentGaugesDropTheirRows(t *testing.T) {
 	v.Five = Gauge{}
 	v.Week = Gauge{}
 	rows := strings.Split(plain(Full(v, 1_999_000_000)), "\n")
-	if len(rows) != 5 {
-		t.Fatalf("5h·7d 가 없으면 5행이다: %d행 — %q", len(rows), rows)
+	if len(rows) != 4 {
+		t.Fatalf("5h·7d 가 없으면 4행이다: %d행 — %q", len(rows), rows)
 	}
 	compact := plain(Compact(v, 1_999_000_000))
 	if strings.Contains(compact, "5h") || strings.Contains(compact, "7d") {
