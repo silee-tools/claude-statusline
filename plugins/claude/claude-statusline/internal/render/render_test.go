@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/silee-tools/claude-statusline/internal/shorten"
 	"github.com/silee-tools/claude-statusline/internal/theme"
 	"github.com/silee-tools/claude-statusline/internal/width"
 )
@@ -53,44 +54,53 @@ func longHeader() View {
 	return v
 }
 
-// headerGroups 는 첫 줄에 올 세 묶음(위치, 계정, 버전·세션)의 표시 문자열을 입력 값에서 직접
-// 만든다. 렌더 결과에서 읽으면 경계 계산이 검증 대상에 기대게 된다.
-func headerGroups(v View) (loc, meta, foot string) {
-	loc = v.Clock + " " + plain(v.Path)
-	if v.Branch != "" {
-		loc += " " + theme.BranchGlyph + v.Branch
+// inset 은 Claude Code 가 상태줄 양쪽에 남기는 칸(왼쪽 들여쓰기 2 + 오른쪽 비움 2)이다. 구현의
+// statusInset 을 가져다 쓰지 않고 따로 선언하므로, 구현의 값이 바뀌면 이 시험이 잡는다.
+const inset = 4
+
+// spaced 는 두 묶음을 공백 두 칸으로 잇고 빈 묶음은 건너뛴다.
+func spaced(a, b string) string {
+	if a == "" || b == "" {
+		return a + b
 	}
-	meta = strings.Join(v.Meta, " ")
+	return a + "  " + b
+}
+
+// header 는 첫 줄의 두 덩어리를 이루는 묶음이다. 왼쪽 덩어리는 foot 과 meta, 오른쪽 덩어리는
+// place 와 clock 이다.
+type header struct{ foot, meta, place, clock string }
+
+func (h header) left() string  { return spaced(h.foot, h.meta) }
+func (h header) right() string { return spaced(h.place, h.clock) }
+
+// headerGroups 는 첫 줄의 묶음을 입력 값에서 직접 만든다. 렌더 결과에서 읽으면 경계 계산이 검증
+// 대상에 기대게 된다.
+func headerGroups(v View) header {
+	h := header{meta: strings.Join(v.Meta, " "), place: plain(v.Path), clock: v.Clock}
+	if v.Branch != "" {
+		h.place += " " + theme.BranchGlyph + v.Branch
+	}
 	if v.Version != "" {
-		foot = "v" + v.Version
+		h.foot = "v" + v.Version
 	}
 	if v.Session != "" {
-		if foot != "" {
-			foot += " "
+		if h.foot != "" {
+			h.foot += " "
 		}
-		foot += theme.SessionGlyph + " " + v.Session
+		h.foot += theme.SessionGlyph + " " + v.Session
 	}
-	return loc, meta, foot
+	return h
 }
 
-// glyphAllowance 는 폭 판정이 브랜치 글리프에 더하는 칸이다. Visible 은 글리프를 1열로 세지만
-// 터미널에 따라 2열로 그려지므로 브랜치가 있으면 한 칸을 더 잡는다.
-func glyphAllowance(v View) int {
-	if v.Branch != "" {
-		return 1
-	}
-	return 0
-}
-
-func TestFullMergesHeaderRowsIntoFirstRow(t *testing.T) {
+func TestFullWithoutWidthJoinsInTheNewOrder(t *testing.T) {
 	v := sample()
 	v.Width = 0
 	rows := strings.Split(plain(Full(v, 1_999_000_000)), "\n")
 	if len(rows) != 4 {
-		t.Fatalf("폭을 모르면 위치·계정·버전을 첫 줄로 합쳐 4행이다: %d행 — %q", len(rows), rows)
+		t.Fatalf("폭을 모르면 첫 줄을 정렬 없이 이어 붙여 4행이다: %d행 — %q", len(rows), rows)
 	}
-	loc, meta, foot := headerGroups(v)
-	if want := loc + "  " + meta + "  " + foot; rows[0] != want {
+	h := headerGroups(v)
+	if want := h.foot + "  " + h.meta + "  " + h.place + "  " + h.clock; rows[0] != want {
 		t.Errorf("첫 줄 = %q, want %q", rows[0], want)
 	}
 	for i, want := range map[int]string{1: "ctx ", 2: " 5h ", 3: " 7d "} {
@@ -100,49 +110,151 @@ func TestFullMergesHeaderRowsIntoFirstRow(t *testing.T) {
 	}
 }
 
+func TestFullSkipsInvisiblePathBeforeJoiningGroups(t *testing.T) {
+	v := sample()
+	v.Path = shorten.Path("", "/Users/test")
+	v.Branch = ""
+	v.Meta = []string{"user@example.com", "aws:✓"}
+	v.Width = 81
+	if got := width.Visible(v.Path); got != 0 {
+		t.Fatalf("빈 CWD 경로는 표시 폭 0이어야 한다: %d — %q", got, v.Path)
+	}
+
+	h := headerGroups(v)
+	for _, tc := range []struct {
+		name  string
+		width int
+		gap   int
+	}{
+		{"폭 81의 경계", 81, 81 - inset - width.Visible(h.left()) - width.Visible(h.clock)},
+		{"폭을 모름", 0, 2},
+	} {
+		v.Width = tc.width
+		rows := strings.Split(plain(Full(v, 1_999_000_000)), "\n")
+		if len(rows) != 4 {
+			t.Errorf("%s: 헤더와 게이지가 4행이어야 한다: %d행 — %q", tc.name, len(rows), rows)
+			continue
+		}
+		want := h.left() + strings.Repeat(" ", tc.gap) + h.clock
+		if rows[0] != want {
+			t.Errorf("%s: 첫 줄 = %q, want %q", tc.name, rows[0], want)
+		}
+		if tc.width > 0 && width.Visible(rows[0]) != tc.width-inset {
+			t.Errorf("%s: 첫 줄 폭 = %d, want %d", tc.name, width.Visible(rows[0]), tc.width-inset)
+		}
+	}
+}
+
+func TestFullFirstRowOrder(t *testing.T) {
+	// 자주 바뀌지 않는 것(버전·세션, 계정)이 왼쪽에, 자주 바뀌는 것(경로·브랜치, 시각)이 오른쪽에 온다.
+	v := longHeader()
+	v.Width = 216
+	rows := strings.Split(plain(Full(v, 1_999_000_000)), "\n")
+	if len(rows) != 4 {
+		t.Fatalf("폭 216 은 4행이다: %d행 — %q", len(rows), rows)
+	}
+	h := headerGroups(v)
+	first, at := rows[0], -1
+	for _, piece := range []string{h.foot, h.meta, h.place, h.clock} {
+		i := strings.Index(first, piece)
+		if i <= at {
+			t.Errorf("첫 줄에서 %q 의 자리 %d 가 앞 묶음(%d) 뒤가 아니다: %q", piece, i, at, first)
+		}
+		at = i
+	}
+	if !strings.HasPrefix(first, h.foot) || !strings.HasSuffix(first, h.clock) {
+		t.Errorf("첫 줄은 버전으로 시작해 시각으로 끝나야 한다: %q", first)
+	}
+}
+
+func TestFullJustifiesToTheStatusLineWidth(t *testing.T) {
+	// 두 덩어리가 들어가는 폭에서는 첫 줄이 Claude Code 가 쓰는 폭(칸 수 − 4)을 정확히 채우고,
+	// 왼쪽 덩어리로 시작해 오른쪽 덩어리로 끝나며 그 사이는 공백 두 칸 이상이다.
+	now := int64(1_999_000_000)
+	for name, base := range map[string]View{"짧은 경로": sample(), "긴 경로": longHeader()} {
+		for _, withBranch := range []bool{true, false} {
+			for _, w := range []int{81, 100, 120, 216, 400} {
+				v := base
+				if !withBranch {
+					v.Branch = ""
+				}
+				v.Width = w
+				h := headerGroups(v)
+				left, right := h.left(), h.right()
+				fits := width.Visible(left)+2+width.Visible(right)+inset <= w
+				if w >= 216 && !fits {
+					t.Fatalf("%s 브랜치 %v 폭 %d: 양성 대조 — 이 입력은 1단계에 들어가야 한다", name, withBranch, w)
+				}
+				rows := strings.Split(plain(Full(v, now)), "\n")
+				if (len(rows) == 4) != fits {
+					t.Errorf("%s 브랜치 %v 폭 %d: 두 덩어리가 들면 %v, %d행 — %q", name, withBranch, w, fits, len(rows), rows)
+					continue
+				}
+				if !fits {
+					continue
+				}
+				first := rows[0]
+				if got := width.Visible(first); got != w-inset {
+					t.Errorf("%s 브랜치 %v 폭 %d: 첫 줄 폭 %d, want %d — %q", name, withBranch, w, got, w-inset, first)
+				}
+				if !strings.HasPrefix(first, left) || !strings.HasSuffix(first, right) || len(first) < len(left)+len(right) {
+					t.Errorf("%s 브랜치 %v 폭 %d: 첫 줄이 %q 로 시작해 %q 로 끝나야 한다 — %q", name, withBranch, w, left, right, first)
+					continue
+				}
+				if gap := first[len(left) : len(first)-len(right)]; len(gap) < 2 || strings.Trim(gap, " ") != "" {
+					t.Errorf("%s 브랜치 %v 폭 %d: 두 덩어리 사이가 공백 두 칸 이상이어야 한다 — %q", name, withBranch, w, gap)
+				}
+			}
+		}
+	}
+}
+
 func TestFullRetreatsOneStageAtATimeAsWidthShrinks(t *testing.T) {
-	// 합친 줄의 가시 폭(+글리프 보정)이 정확히 Width 이면 전부 합치고, 한 칸 모자라면 푸터를
-	// 마지막 줄로 내린다. 위치+계정 줄이 한 칸 모자라면 기존 여섯 줄이다.
+	// 두 덩어리가 칸 수 − 4 안에 정확히 들면 4행, 한 칸 모자라면 푸터(버전·세션)를 마지막 줄로 내린
+	// 5행이다. 계정 덩어리와 오른쪽 덩어리가 정확히 들면 5행이고 한 칸 모자라면 위치·계정·게이지·푸터의 6행이다.
 	now := int64(1_999_000_000)
 	for name, branch := range map[string]string{"브랜치 있음": "feature/PROJ-123-post-editor", "브랜치 없음": ""} {
 		v := longHeader()
 		v.Branch = branch
-		loc, meta, foot := headerGroups(v)
-		all, head := loc+"  "+meta+"  "+foot, loc+"  "+meta
-		needAll := width.Visible(all) + glyphAllowance(v)
-		needHead := width.Visible(head) + glyphAllowance(v)
+		h := headerGroups(v)
+		right := h.right()
+		needAll := width.Visible(h.left()) + 2 + width.Visible(right) + inset
+		needHead := width.Visible(h.meta) + 2 + width.Visible(right) + inset
 		rowsAt := func(w int) []string {
 			v.Width = w
 			return strings.Split(plain(Full(v, now)), "\n")
 		}
-		gauges := rowsAt(needAll)[1:4]
+		gauges := strings.Join(rowsAt(needAll)[1:4], "\n")
 
 		rows := rowsAt(needAll)
-		if len(rows) != 4 || rows[0] != all {
-			t.Errorf("%s 폭 %d: 전부 합친 4행이어야 한다 — %q", name, needAll, rows)
+		if len(rows) != 4 || rows[0] != h.left()+"  "+right {
+			t.Errorf("%s 폭 %d: 두 덩어리를 공백 두 칸으로 맞춘 4행이어야 한다 — %q", name, needAll, rows)
 		}
-		for _, w := range []int{needAll - 1, needHead} {
-			rows = rowsAt(w)
-			if len(rows) != 5 || rows[0] != head || rows[4] != foot || strings.Join(rows[1:4], "\n") != strings.Join(gauges, "\n") {
-				t.Errorf("%s 폭 %d: 위치+계정 첫 줄, 게이지, 푸터의 5행이어야 한다 — %q", name, w, rows)
-			}
+		wide := rowsAt(needAll - 1)
+		wantWide := h.meta + strings.Repeat(" ", needAll-1-inset-width.Visible(h.meta)-width.Visible(right)) + right
+		if len(wide) != 5 || wide[0] != wantWide || wide[4] != h.foot || strings.Join(wide[1:4], "\n") != gauges {
+			t.Errorf("%s 폭 %d: 계정+오른쪽 덩어리 첫 줄, 게이지, 푸터의 5행이어야 한다 — %q", name, needAll-1, wide)
+		}
+		rows = rowsAt(needHead)
+		if len(rows) != 5 || rows[0] != h.meta+"  "+right || rows[4] != h.foot || strings.Join(rows[1:4], "\n") != gauges {
+			t.Errorf("%s 폭 %d: 계정+오른쪽 덩어리를 공백 두 칸으로 맞춘 5행이어야 한다 — %q", name, needHead, rows)
 		}
 		rows = rowsAt(needHead - 1)
-		want := append(append([]string{loc, meta}, gauges...), foot)
-		if strings.Join(rows, "\n") != strings.Join(want, "\n") {
-			t.Errorf("%s 폭 %d: 기존 여섯 줄이어야 한다 — %q, want %q", name, needHead-1, rows, want)
+		want := strings.Join([]string{right, h.meta, gauges, h.foot}, "\n")
+		if strings.Join(rows, "\n") != want {
+			t.Errorf("%s 폭 %d: 위치, 계정, 게이지, 푸터의 6행이어야 한다 — %q, want %q", name, needHead-1, rows, want)
 		}
 	}
 }
 
 func TestFullFirstRowNeverOverflowsAndRetreatsOnlyAsFarAsNeeded(t *testing.T) {
-	// 81~220열을 돌며 폭 안에 드는 가장 합쳐진 단계가 쓰이는지 본다. 세 단계가 모두 나타나야
+	// 81~220열을 돌며 칸 수 − 4 안에 드는 가장 합쳐진 단계가 쓰이는지 본다. 세 단계가 모두 나타나야
 	// 이 구간이 단계 전환을 실제로 지나간다는 양성 대조가 선다.
 	now := int64(1_999_000_000)
 	v := longHeader()
-	loc, meta, foot := headerGroups(v)
-	needAll := width.Visible(loc+"  "+meta+"  "+foot) + glyphAllowance(v)
-	needHead := width.Visible(loc+"  "+meta) + glyphAllowance(v)
+	h := headerGroups(v)
+	needAll := width.Visible(h.left()) + 2 + width.Visible(h.right()) + inset
+	needHead := width.Visible(h.meta) + 2 + width.Visible(h.right()) + inset
 	stages := map[int]int{}
 	for w := 81; w <= 220; w++ {
 		v.Width = w
@@ -160,11 +272,11 @@ func TestFullFirstRowNeverOverflowsAndRetreatsOnlyAsFarAsNeeded(t *testing.T) {
 			t.Errorf("폭 %d: %d행, want %d행 — %q", w, len(rows), wantRows, rows)
 		}
 		if len(rows) < 6 {
-			if got := width.Visible(rows[0]) + glyphAllowance(v); got > w {
-				t.Errorf("폭 %d: 합친 첫 줄 폭 %d 가 폭을 넘는다 — %q", w, got, rows[0])
+			if got := width.Visible(rows[0]); got != w-inset {
+				t.Errorf("폭 %d: 정렬한 첫 줄 폭 %d, want %d — %q", w, got, w-inset, rows[0])
 			}
 		}
-		for _, piece := range []string{loc, meta, foot} {
+		for _, piece := range []string{h.foot, h.meta, h.place, h.clock} {
 			if !strings.Contains(out, piece) {
 				t.Errorf("폭 %d: 표시 항목 %q 가 사라졌다", w, piece)
 			}
@@ -178,25 +290,28 @@ func TestFullFirstRowNeverOverflowsAndRetreatsOnlyAsFarAsNeeded(t *testing.T) {
 }
 
 func TestFullSkipsEmptyHeaderGroupsWithoutGaps(t *testing.T) {
+	// 빈 묶음은 건너뛰어 어긋난 공백을 남기지 않는다. 폭이 있으면 첫 줄은 두 덩어리 사이만 비우고,
+	// 한쪽 덩어리만 남으면 정렬하지 않는다.
 	now := int64(1_999_000_000)
+	wideGap := regexp.MustCompile(` {3,}`)
 	for _, tc := range []struct {
 		name   string
 		mutate func(*View)
-		first  func(loc, meta, foot string) string
-		rows   int
+		first  func(h header) string // 폭 0 의 첫 줄
+		spread bool                  // 왼쪽 덩어리가 남아 있어 폭이 있으면 양끝으로 벌린다
 	}{
-		{"계정 없음", func(v *View) { v.Meta = nil }, func(l, m, f string) string { return l + "  " + f }, 4},
-		{"버전·세션 없음", func(v *View) { v.Version, v.Session = "", "" }, func(l, m, f string) string { return l + "  " + m }, 4},
-		{"세션 없음(버전만 남음)", func(v *View) { v.Session = "" }, func(l, m, f string) string { return l + "  " + m + "  " + f }, 4},
-		{"계정·버전·세션 없음", func(v *View) { v.Meta, v.Version, v.Session = nil, "", "" }, func(l, m, f string) string { return l }, 4},
+		{"계정 없음", func(v *View) { v.Meta = nil }, func(h header) string { return h.foot + "  " + h.right() }, true},
+		{"버전·세션 없음", func(v *View) { v.Version, v.Session = "", "" }, func(h header) string { return h.meta + "  " + h.right() }, true},
+		{"세션 없음(버전만 남음)", func(v *View) { v.Session = "" }, func(h header) string { return h.foot + "  " + h.meta + "  " + h.right() }, true},
+		{"계정·버전·세션 없음", func(v *View) { v.Meta, v.Version, v.Session = nil, "", "" }, func(h header) string { return h.right() }, false},
 	} {
 		v := longHeader()
 		tc.mutate(&v)
-		loc, meta, foot := headerGroups(v)
+		h := headerGroups(v)
 		v.Width = 0
 		rows := strings.Split(plain(Full(v, now)), "\n")
-		if want := tc.first(loc, meta, foot); len(rows) != tc.rows || rows[0] != want {
-			t.Errorf("%s 폭 0: 첫 줄 %q (%d행), want %q (%d행)", tc.name, rows[0], len(rows), want, tc.rows)
+		if want := tc.first(h); len(rows) != 4 || rows[0] != want {
+			t.Errorf("%s 폭 0: 첫 줄 %q (%d행), want %q (4행)", tc.name, rows[0], len(rows), want)
 		}
 		for _, w := range []int{0, 81, 90, 100, 120, 140, 220} {
 			v.Width = w
@@ -204,10 +319,76 @@ func TestFullSkipsEmptyHeaderGroupsWithoutGaps(t *testing.T) {
 				if strings.ContainsAny(row, "█░") {
 					continue // 게이지 행은 라벨을 오른쪽 정렬하므로 공백 규칙이 다르다
 				}
-				if row == "" || row != strings.TrimSpace(row) || strings.Contains(row, "   ") {
-					t.Errorf("%s 폭 %d 행%d 에 빈 줄이나 어긋난 공백이 있다: %q", tc.name, w, i+1, row)
+				if row == "" || row != strings.TrimSpace(row) {
+					t.Errorf("%s 폭 %d 행%d 에 빈 줄이나 가장자리 공백이 있다: %q", tc.name, w, i+1, row)
+				}
+				gaps := wideGap.FindAllString(row, -1)
+				if len(gaps) > 0 && (!tc.spread || i != 0 || len(gaps) != 1 || !strings.HasSuffix(row, h.right())) {
+					t.Errorf("%s 폭 %d 행%d 에 두 덩어리 사이가 아닌 넓은 공백이 있다: %q", tc.name, w, i+1, row)
+				}
+				if !tc.spread && i == 0 && row != h.right() {
+					t.Errorf("%s 폭 %d: 한쪽 덩어리만 남으면 정렬하지 않고 왼쪽에서 시작한다 — %q, want %q", tc.name, w, row, h.right())
 				}
 			}
+		}
+		// 양성 대조: 넓은 폭에서 두 덩어리를 가진 입력은 실제로 벌어진다.
+		v.Width = 220
+		first := strings.Split(plain(Full(v, now)), "\n")[0]
+		if tc.spread != wideGap.MatchString(first) {
+			t.Errorf("%s 폭 220: 첫 줄이 벌어졌는가 = %v, want %v — %q", tc.name, wideGap.MatchString(first), tc.spread, first)
+		}
+	}
+}
+
+func TestFullGaugeRowsDoNotDependOnWidth(t *testing.T) {
+	// 폭은 첫 줄의 배치만 정한다. 게이지 세 줄(색 코드 포함)은 어느 단계에서도 같다.
+	now := int64(1_999_000_000)
+	gaugeRows := func(w int) string {
+		v := longHeader()
+		v.Width = w
+		var kept []string
+		for _, row := range strings.Split(Full(v, now), "\n") {
+			if strings.ContainsAny(row, "█░") {
+				kept = append(kept, row)
+			}
+		}
+		return strings.Join(kept, "\n")
+	}
+	want := gaugeRows(0)
+	if n := strings.Count(want, "\n"); n != 2 {
+		t.Fatalf("양성 대조: 게이지 행이 세 줄이어야 한다: %q", want)
+	}
+	for _, w := range []int{81, 100, 105, 120, 153, 216, 400} {
+		if got := gaugeRows(w); got != want {
+			t.Errorf("폭 %d 의 게이지 행이 폭 0 과 다르다: %q, want %q", w, got, want)
+		}
+	}
+}
+
+func TestSpreadFitsGroupsIntoTheStatusLineWidth(t *testing.T) {
+	// 사용 폭은 칸 수 − 4 이다. 두 덩어리는 사이가 두 칸 이상이어야 들어가고, 남는 칸은 사이를 채운다.
+	// 한쪽만 있으면 정렬하지 않고 폭 안에 드는지만 본다. 한쪽 덩어리의 경계는 Full 의 출력에 드러나지
+	// 않으므로(어느 쪽이든 같은 행이 나온다) 여기서 직접 확인한다.
+	for _, tc := range []struct {
+		name        string
+		width       int
+		left, right string
+		want        string
+		ok          bool
+	}{
+		{"폭을 모르면 이어 붙임", 0, "ab", "cd", "ab  cd", true},
+		{"사이가 정확히 두 칸", 10 + inset, "abcd", "wxyz", "abcd  wxyz", true},
+		{"사이가 한 칸이면 들지 않음", 9 + inset, "abcd", "wxyz", "", false},
+		{"남는 칸은 사이를 채움", 14 + inset, "abcd", "wxyz", "abcd      wxyz", true},
+		{"왼쪽만 정확히 듦", 4 + inset, "abcd", "", "abcd", true},
+		{"왼쪽만 한 칸 넘침", 3 + inset, "abcd", "", "", false},
+		{"오른쪽만 정확히 듦", 4 + inset, "", "wxyz", "wxyz", true},
+		{"오른쪽만 한 칸 넘침", 3 + inset, "", "wxyz", "", false},
+		{"오른쪽만 있으면 폭이 남아도 정렬하지 않음", 40, "", "wxyz", "wxyz", true},
+	} {
+		got, ok := spread(View{Width: tc.width}, tc.left, tc.right)
+		if ok != tc.ok || (ok && got != tc.want) {
+			t.Errorf("%s: spread(폭 %d, %q, %q) = %q, %v; want %q, %v", tc.name, tc.width, tc.left, tc.right, got, ok, tc.want, tc.ok)
 		}
 	}
 }

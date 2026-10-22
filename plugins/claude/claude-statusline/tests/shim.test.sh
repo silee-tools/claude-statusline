@@ -17,6 +17,9 @@ TMPROOT=$(mktemp -d)
 # 종료코드 0 으로 보고된다. 정본은 AGENTS.md 의 Testing 절이다.
 completed=0
 trap 'rc=$?; rm -rf "$TMPROOT"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
+# 세션이 export 한 CLAUDE_CONFIG_DIR 는 HOME 보다 우선하므로, 격리를 빠뜨린 호출이 hook-handler.sh 로 실제
+# settings.json 을 고치지 않게 스위트 기본값을 TMPROOT 안으로 돌린다.
+CLAUDE_CONFIG_DIR="$TMPROOT/claude-config"; export CLAUDE_CONFIG_DIR
 CACHE="$TMPROOT/cache"
 # 포인터는 플러그인 루트 디렉터리 이름으로 갈린다. 스위트는 저장소에서 직접 돌므로 그
 # 이름이 곧 키다 — 설치본이라면 여기에 버전이 온다.
@@ -273,7 +276,7 @@ cp "$SRC/scripts/config-paths.sh" "$SRC/scripts/hook-handler.sh" "$SRC/scripts/j
 printf '%s\n' '{"permissions":{"allow":["Read"]}}' > "$SETUP_HOME/.claude/settings.json"
 chmod 600 "$SETUP_HOME/.claude/settings.json"
 OUT=$(printf '%s' '{"hook_event_name":"SessionStart"}' | \
-  env HOME="$SETUP_HOME" XDG_CACHE_HOME="$TMPROOT/setup-cache" CLAUDE_PLUGIN_ROOT="$SETUP_ROOT" \
+  env HOME="$SETUP_HOME" CLAUDE_CONFIG_DIR="$SETUP_HOME/.claude" XDG_CACHE_HOME="$TMPROOT/setup-cache" CLAUDE_PLUGIN_ROOT="$SETUP_ROOT" \
   sh "$SETUP_ROOT/scripts/hook-handler.sh"); RC=$?
 assert_equals "T13 공백 설치 경로 자동 설정 종료코드 0" "0" "$RC"
 SETUP_CMD=$(awk -f "$SETUP_ROOT/scripts/json.awk" "$SETUP_HOME/.claude/settings.json" \
@@ -301,7 +304,7 @@ GNU_HOME="$TMPROOT/gnu-stat-home"
 mkdir -p "$GNU_HOME/.claude"
 printf '%s\n' '{"permissions":{"allow":["Read"]}}' > "$GNU_HOME/.claude/settings.json"
 chmod 600 "$GNU_HOME/.claude/settings.json"
-env HOME="$GNU_HOME" XDG_CACHE_HOME="$TMPROOT/gnu-stat-cache" CLAUDE_PLUGIN_ROOT="$SETUP_ROOT" \
+env HOME="$GNU_HOME" CLAUDE_CONFIG_DIR="$GNU_HOME/.claude" XDG_CACHE_HOME="$TMPROOT/gnu-stat-cache" CLAUDE_PLUGIN_ROOT="$SETUP_ROOT" \
   PATH="$STAT_BIN:/usr/bin:/bin" sh "$SETUP_ROOT/scripts/hook-handler.sh" \
   <<'GNUJSON'
 {"hook_event_name":"SessionStart"}
@@ -325,7 +328,7 @@ FAIL_HOME="$TMPROOT/fail-stat-home"
 mkdir -p "$FAIL_HOME/.claude"
 printf '%s\n' '{"permissions":{"allow":["Read"]}}' > "$FAIL_HOME/.claude/settings.json"
 chmod 600 "$FAIL_HOME/.claude/settings.json"
-env HOME="$FAIL_HOME" XDG_CACHE_HOME="$TMPROOT/fail-stat-cache" CLAUDE_PLUGIN_ROOT="$SETUP_ROOT" \
+env HOME="$FAIL_HOME" CLAUDE_CONFIG_DIR="$FAIL_HOME/.claude" XDG_CACHE_HOME="$TMPROOT/fail-stat-cache" CLAUDE_PLUGIN_ROOT="$SETUP_ROOT" \
   PATH="$FAIL_STAT_BIN:/usr/bin:/bin" sh "$SETUP_ROOT/scripts/hook-handler.sh" \
   2>"$TMPROOT/fail-stat.err" \
   <<'FAILJSON'
