@@ -19,19 +19,19 @@ feature/PROJ-123-post-editor gh@personal
 ctx 68% Opus 4.8 ● 5h 47% ↺2h30m 7d 83%▲ ↺3d16h
 ```
 
-At 81 columns or more, the full layout puts the version, the session id, and the
-accounts at the left end of the first row and the location and the clock at the
-right end, followed by the three gauge rows:
+At 81 columns or more, the full layout puts the version, the clock, the Claude
+account, the session id, the location, and the gh and aws indicators on one first
+row, followed by the three gauge rows:
 
 ```text
-v3.1.0 ⧉ 11111111-2222-3333-4444-555555555555  dev@example.com gh@personal aws:✓           ~/↪1/webapp/↪1/src feature/PROJ-123-post-editor  17:14
+v3.1.0 17:14 dev@example.com ⧉ 11111111-2222-3333-4444-555555555555 ~/↪1/webapp/↪1/src feature/PROJ-123-post-editor gh@personal aws:✓
 ctx █████████████░░░░░░░ 68% Opus 4.8 ●
  5h █████████░░░░░░░░░░░ 47% ↺2h30m
  7d ████████████████▓░░░ 83% ↺3d16h
 ```
 
-When the two ends do not fit on one row, the full layout splits it, down to six
-rows (see [Layouts](#layouts)).
+When that row does not fit, the full layout breaks it before the path, down to
+six rows (see [Layouts](#layouts)).
 
 Rows with no data are omitted in either layout.
 
@@ -47,12 +47,12 @@ value can stay stale after a resize.
 Claude Code indents the status line by 2 columns and leaves the last 2 empty
 (measured on 2.1.307 with `statusLine.padding` unset), so the widest row it shows
 whole is the column count minus 4. A wider row is cut with `…`, not wrapped. The
-full layout spreads its first row across that width.
+full layout breaks its first row to fit that width.
 
 The full layout is selected when width detection fails. This fallback keeps
 all information visible when the available width is uncertain; with no width to
-measure, the first row joins its groups without alignment, and Claude Code cuts it
-with `…` if it is wider than the window.
+measure, the first row is never broken, and Claude Code cuts it with `…` if it is
+wider than the window.
 
 Two cases leave the first row cut at its right end. `statusLine.padding` narrows
 the usable width by 2 columns per unit, which the layout does not know. And Claude
@@ -84,17 +84,15 @@ are never split.
 
 The full layout adds the clock, the path, the Claude account, the version, and
 the full session id, shows every `aws:` state, and gives `ctx`, `5h`, and `7d`
-separate 20-cell gauge rows. Its first row has two ends with blank columns
-between them: the version with the session id and the accounts (Claude account,
-gh, aws) on the left, the location (path, branch) and the clock on the right.
-Groups within an end are separated by two spaces, and a group with nothing to
-show is skipped. The row spans the usable width (see
-[Width selection](#width-selection)) when at least two columns remain between the
-ends. Otherwise the version and session id move to a last row; when the accounts
-and the right end alone are still too wide, the location with the clock and the
-accounts take a row each, which makes six rows in all. An end left alone is not
-spread. A row of that last stage can still be wider than the window, and Claude
-Code then cuts it with `…`.
+separate 20-cell gauge rows. Its first row lists the version, the clock, the
+Claude account, the session id, the path, the branch, gh, and aws in that order,
+one space apart, and an item with nothing to show is skipped. When the row is
+wider than the usable width (see [Width selection](#width-selection)), it breaks
+before the path: the version through the session id stay on the first row and
+the path, branch, gh, and aws take a second. When that second row is still too
+wide, the path with the branch and the gh and aws indicators take a row each,
+which makes six rows in all. A row of that last stage can still be wider than the
+window, and Claude Code then cuts it with `…`.
 
 The path collapses `$HOME` to `~`, preserves repository and current-directory
 names, and marks skipped segments as `↪N`. The branch and session glyphs need a
