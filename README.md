@@ -19,16 +19,18 @@ feature/PROJ-123-post-editor gh@personal
 ctx 68% Opus 4.8 ● 5h 47% ↺2h30m 7d 83%▲ ↺3d16h
 ```
 
-At 81 columns or more, the full layout uses up to six rows:
+At 81 columns or more, the full layout puts the location, the accounts, and the
+version on one first row, followed by the three gauge rows:
 
 ```text
-17:14 ~/↪1/webapp/↪1/src feature/PROJ-123-post-editor
-dev@example.com gh@personal aws:✓
+17:14 ~/↪1/webapp/↪1/src feature/PROJ-123-post-editor  dev@example.com gh@personal aws:✓  v3.1.0 ⧉ 11111111-2222-3333-4444-555555555555
 ctx █████████████░░░░░░░ 68% Opus 4.8 ●
  5h █████████░░░░░░░░░░░ 47% ↺2h30m
  7d ████████████████▓░░░ 83% ↺3d16h
-v3.1.0 ⧉ 11111111-2222-3333-4444-555555555555
 ```
+
+When that first row is wider than the terminal, the full layout splits it, down
+to six rows (see [Layouts](#layouts)).
 
 Rows with no data are omitted in either layout.
 
@@ -42,7 +44,8 @@ effect on the next update. `COLUMNS` is intentionally ignored because an exporte
 value can stay stale after a resize.
 
 The full layout is selected when width detection fails. This fallback keeps
-all information visible when the available width is uncertain.
+all information visible when the available width is uncertain; with no width to
+measure, the first row stays merged and a narrow terminal may wrap it.
 
 ## Layouts
 
@@ -67,10 +70,15 @@ ANSI color codes count as zero width, and wide characters such as Hangul and CJK
 are never split.
 
 The full layout adds the clock, the path, the Claude account, the version, and
-the full session id, shows every `aws:` state, gives `ctx`, `5h`, and `7d`
-separate 20-cell gauge rows. Its first row is not
-truncated. Widths from 81 through 85 can therefore wrap when both the shortened
-path and branch are long.
+the full session id, shows every `aws:` state, and gives `ctx`, `5h`, and `7d`
+separate 20-cell gauge rows. It puts three groups on the first row, separated by
+two spaces: the location (clock, path, branch), the accounts (Claude account, gh,
+aws), and the version with the session id. A group with nothing to show is
+skipped. When the row is wider than the detected width, the version and session
+id move to a last row; when the location and the accounts alone are still too
+wide, each takes its own row, which makes six rows in all. No row is cut, so
+widths from 81 through 85 can still wrap the location row when both the
+shortened path and branch are long.
 
 The path collapses `$HOME` to `~`, preserves repository and current-directory
 names, and marks skipped segments as `↪N`. The branch and session glyphs need a
