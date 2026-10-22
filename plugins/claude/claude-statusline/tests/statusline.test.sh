@@ -8,9 +8,10 @@
 #   행1  브랜치 gh@계정 [aws 이상·불명]
 #   행2  ctx <소진율>% <모델> <effort 글리프> 5h <소진율>%[▲] ↺리셋 7d <소진율>%[▲] ↺리셋
 #
-# 전체 레이아웃: 첫 줄에 위치(시각 경로 브랜치), 계정(Claude gh aws), 버전·세션을 두 칸 간격으로
-# 합치고 그 아래에 ctx, 5h, 7d 를 둔다. 합친 줄이 폭을 넘으면 푸터를 마지막 줄로 내리고(5행),
-# 위치+계정 줄도 넘으면 위치와 계정을 각자 줄에 두는 6행이다. 폭 판정 불가는 항상 합친다.
+# 전체 레이아웃: 첫 줄은 왼쪽에 버전·세션과 계정(Claude gh aws), 오른쪽에 위치(경로 브랜치)와 시각을
+# 두고 사이를 빈칸으로 채워 칸 수 − 4 칸(Claude Code 가 상태줄에 쓰는 폭)을 채운다. 그 아래에 ctx, 5h,
+# 7d 를 둔다. 두 덩어리가 한 줄에 들지 않으면 푸터를 마지막 줄로 내리고(5행), 계정+위치 줄도 넘으면
+# 위치와 계정을 각자 줄에 두는 6행이다. 폭 판정 불가는 정렬 없이 항상 이어 붙인다.
 set -eu
 
 SRC=$(cd "$(dirname "$0")/.." && pwd)
@@ -297,9 +298,10 @@ OUT80=$(run "$(json_with)" 80)
 OUT81=$(run "$(json_with)" 81)
 assert_equals     "T46 폭 80 저장소 밖은 게이지 1행(1행 생략)" "1" "$(nlines "$OUT80")"
 assert_equals     "T46 폭 80 저장소 안은 압축 2행" "2" "$(nlines "$(run "$(json_with_gh)" 80)")"
-# 이 fixture 는 경로 /tmp·브랜치 없음이라 합친 첫 줄이 81열 안에 든다.
-assert_equals     "T46 폭 81은 전체 4행(첫 줄에 위치·계정·버전을 합침)" "4" "$(nlines "$OUT81")"
-assert_contains   "T46 폭 81 첫 줄에 위치·계정·버전을 이 순서로" "/tmp  octocat@example.com aws:✓  v2.1.11" "$(first_line "$OUT81")"
+# 이 fixture 는 경로 /tmp·브랜치 없음이라 두 덩어리가 81열(사용 폭 77칸) 안에 든다.
+assert_equals     "T46 폭 81은 전체 4행(두 덩어리를 첫 줄 양끝에 둠)" "4" "$(nlines "$OUT81")"
+assert_match      "T46 폭 81 첫 줄은 버전·계정으로 시작해 경로·시각으로 끝남" '^v2\.1\.11  octocat@example\.com aws:✓ +/tmp  [0-9][0-9]:[0-9][0-9]$' "$(first_line "$OUT81")"
+assert_equals     "T46 폭 81 첫 줄은 폭 − 4 칸" "77" "$(vwidth_of "$(first_line "$OUT81")")"
 assert_not_contains "T46 압축 레이아웃은 비용 없음" "cost" "$OUT80"
 assert_not_contains "T46 전체 레이아웃은 비용 없음" "cost" "$OUT81"
 
@@ -320,15 +322,15 @@ if [ "$HAVE_GIT" = 1 ]; then
   assert_contains "T47 전체 레이아웃에 전체 세션 ID" "⧉ $KNOWN_SESSION" "$FULL_SESSION"
 fi
 
-# --- T48: 폭을 못 재면 COLUMNS 값과 무관하게 전체 레이아웃을 쓰고, 첫 줄은 폭과 무관하게 합친다 ---
+# --- T48: 폭을 못 재면 COLUMNS 값과 무관하게 전체 레이아웃을 쓰고, 첫 줄은 정렬 없이 이어 붙인다 ---
 AUTO=$(run_auto "$(json_with)")
 assert_equals "T48 폭 판정 불가 시 전체 4행" "4" "$(nlines "$AUTO")"
 assert_contains "T48 오래된 COLUMNS=40을 무시하고 전체 막대 표시" "█" "$AUTO"
-assert_contains "T48 폭 판정 불가는 첫 줄에 위치·계정·버전을 합침" "/tmp  octocat@example.com aws:✓  v2.1.11" "$(first_line "$AUTO")"
+assert_match "T48 폭 판정 불가는 첫 줄을 버전·계정·경로·시각 순으로 정렬 없이 이어 붙임" '^v2\.1\.11  octocat@example\.com aws:✓  /tmp  [0-9][0-9]:[0-9][0-9]$' "$(first_line "$AUTO")"
 
-# --- T61: 합친 첫 줄이 폭을 넘으면 푸터를 마지막 줄로 내리고, 위치+계정 줄도 넘으면 줄을 나눈다 ---
-#    긴 경로·긴 브랜치 저장소를 HOME=TMPROOT 로 렌더해 단계 경계를 만든다. 경계 폭은 렌더한 줄의
-#    표시 폭(vwidth_of)에서 구하고, 폭 판정이 브랜치 글리프(U+E0A0)를 한 칸 더 잡는 만큼 1 을 더한다.
+# --- T61: 두 덩어리가 칸 수 − 4 안에 들지 않으면 푸터를 마지막 줄로 내리고, 계정+위치 줄도 넘으면 줄을 나눈다 ---
+#    긴 경로·긴 브랜치 저장소를 HOME=TMPROOT 로 렌더해 단계 경계를 만든다. 경계 폭은 정렬하지 않은 줄의
+#    표시 폭(vwidth_of)에서 구하고, Claude Code 가 상태줄 양쪽에 남기는 4칸을 더한다.
 if [ "$HAVE_GIT" = "1" ]; then
   STAGE_REPO="$TMPROOT/stage/webapp/very-long-project-directory-name"
   mkdir -p "$STAGE_REPO"
@@ -342,36 +344,45 @@ if [ "$HAVE_GIT" = "1" ]; then
     json_stage() { json_branch | sed "s#$GITREPO#$STAGE_REPO#"; }
     stage_out() { HOME="$TMPROOT" run "$(json_stage)" "$1"; }
 
-    ALL=$(stage_out 200)
-    ALL_WIDTH=$(( $(vwidth_of "$(first_line "$ALL")") + 1 ))
-    assert_equals   "T61 넉넉한 폭은 전체 4행" "4" "$(nlines "$ALL")"
-    assert_contains "T61 첫 줄에 위치·계정·버전·세션이 모두 있다" "octocat@example.com gh@personal aws:✓  v2.1.11 ⧉ $KNOWN_SESSION" "$(first_line "$ALL")"
-    assert_equals   "T61 합친 줄 폭이 정확히 폭이면 4행" "4" "$(nlines "$(stage_out "$ALL_WIDTH")")"
+    # 폭을 모르면 두 덩어리를 정렬 없이 잇는다. 그 줄의 폭이 곧 1단계가 요구하는 폭이다.
+    ALL_WIDTH=$(( $(vwidth_of "$(first_line "$(HOME="$TMPROOT" run_auto "$(json_stage)")")") + 4 ))
+    # 81열은 위치·계정·게이지·푸터의 6행이다. 그 위치 줄과 계정 줄에서 2단계가 요구하는 폭을 구한다.
+    NARROW=$(stage_out 81)
+    assert_equals "T61 폭 81 은 6행(경계 폭 계산의 전제)" "6" "$(nlines "$NARROW")"
+    HEAD_WIDTH=$(( $(vwidth_of "$(nth_line 2 "$NARROW")") + 2 + $(vwidth_of "$(first_line "$NARROW")") + 4 ))
+
+    WIDE=$(stage_out 400)
+    assert_equals   "T61 넉넉한 폭은 전체 4행" "4" "$(nlines "$WIDE")"
+    assert_match    "T61 첫 줄은 버전·세션, 계정으로 시작해 위치, 시각으로 끝남" "^v2\.1\.11 ⧉ ${KNOWN_SESSION}  octocat@example\.com gh@personal aws:✓ +.*feature/PROJ-123-post-editor  [0-9][0-9]:[0-9][0-9]\$" "$(first_line "$WIDE")"
+    assert_equals   "T61 넉넉한 폭의 첫 줄은 폭 − 4 칸" "396" "$(vwidth_of "$(first_line "$WIDE")")"
+    ALL_OUT=$(stage_out "$ALL_WIDTH")
+    assert_equals   "T61 두 덩어리가 정확히 들면 4행" "4" "$(nlines "$ALL_OUT")"
+    assert_match    "T61 정확히 든 폭에서 두 덩어리 사이는 공백 두 칸" 'aws:✓  [^ ]' "$(first_line "$ALL_OUT")"
 
     HEAD_OUT=$(stage_out $((ALL_WIDTH - 1)))
-    HEAD_WIDTH=$(( $(vwidth_of "$(first_line "$HEAD_OUT")") + 1 ))
     assert_equals       "T61 한 칸 모자라면 푸터를 내린 5행" "5" "$(nlines "$HEAD_OUT")"
-    assert_contains     "T61 5행 첫 줄에 위치+계정" "feature/PROJ-123-post-editor  octocat@example.com gh@personal aws:✓" "$(first_line "$HEAD_OUT")"
+    assert_match        "T61 5행 첫 줄은 계정으로 시작해 위치, 시각으로 끝남" '^octocat@example\.com gh@personal aws:✓ +.*feature/PROJ-123-post-editor  [0-9][0-9]:[0-9][0-9]$' "$(first_line "$HEAD_OUT")"
+    assert_equals       "T61 5행 첫 줄은 폭 − 4 칸" "$((ALL_WIDTH - 1 - 4))" "$(vwidth_of "$(first_line "$HEAD_OUT")")"
     assert_not_contains "T61 5행 첫 줄에 푸터 없음" "⧉" "$(first_line "$HEAD_OUT")"
     assert_contains     "T61 5행 마지막 줄이 푸터(버전+세션)" "v2.1.11 ⧉ $KNOWN_SESSION" "$(last_line "$HEAD_OUT")"
-    assert_equals       "T61 위치+계정 줄 폭이 정확히 폭이면 5행" "5" "$(nlines "$(stage_out "$HEAD_WIDTH")")"
+    assert_equals       "T61 계정+위치 줄 폭이 정확히 폭이면 5행" "5" "$(nlines "$(stage_out "$HEAD_WIDTH")")"
 
     SPLIT_OUT=$(stage_out $((HEAD_WIDTH - 1)))
-    assert_equals       "T61 위치+계정도 넘으면 기존 6행" "6" "$(nlines "$SPLIT_OUT")"
-    assert_contains     "T61 6행 첫 줄은 위치만" "feature/PROJ-123-post-editor" "$(first_line "$SPLIT_OUT")"
+    assert_equals       "T61 계정+위치도 넘으면 6행" "6" "$(nlines "$SPLIT_OUT")"
+    assert_match        "T61 6행 첫 줄은 위치와 시각" '^.*feature/PROJ-123-post-editor  [0-9][0-9]:[0-9][0-9]$' "$(first_line "$SPLIT_OUT")"
     assert_not_contains "T61 6행 첫 줄에 계정 없음" "octocat@example.com" "$(first_line "$SPLIT_OUT")"
     assert_contains     "T61 6행 둘째 줄이 계정" "octocat@example.com gh@personal aws:✓" "$(nth_line 2 "$SPLIT_OUT")"
     assert_contains     "T61 6행 마지막 줄이 푸터" "v2.1.11 ⧉ $KNOWN_SESSION" "$(last_line "$SPLIT_OUT")"
 
-    for _w in 100 110 120 130 140 160; do
+    for _w in 100 110 120 130 140 160 200; do
       _out=$(stage_out "$_w")
       _first=$(first_line "$_out")
       if [ "$(nlines "$_out")" -lt 6 ]; then
-        assert_equals "T61 ${_w}열에서 합친 첫 줄이 폭 안" "yes" "$([ $(( $(vwidth_of "$_first") + 1 )) -le "$_w" ] && echo yes || echo no)"
+        assert_equals "T61 ${_w}열에서 정렬한 첫 줄이 폭 − 4 칸" "$((_w - 4))" "$(vwidth_of "$_first")"
       fi
       assert_contains "T61 ${_w}열에서도 세션 ID 를 자르지 않음" "$KNOWN_SESSION" "$_out"
     done
-    assert_equals "T61 폭 판정 불가는 넘쳐도 4행으로 합침" "4" "$(nlines "$(HOME="$TMPROOT" run_auto "$(json_stage)")")"
+    assert_equals "T61 폭 판정 불가는 넘쳐도 4행으로 이어 붙임" "4" "$(nlines "$(HOME="$TMPROOT" run_auto "$(json_stage)")")"
   else
     echo "warn: 긴 브랜치 fixture 생성 실패 — T61 을 건너뜁니다" >&2
   fi
@@ -542,7 +553,7 @@ else
 fi
 
 # --- T26: Claude Code 계정 이메일이 전체 레이아웃 첫 줄에 나온다 (.claude.json 의 oauthAccount.emailAddress) ---
-#    라벨 접두 없이 이메일 그대로, coral(173) 색으로 렌더한다. cwd=/tmp 라 브랜치 없이 위치 뒤에 계정이 온다.
+#    라벨 접두 없이 이메일 그대로, coral(173) 색으로 렌더한다. cwd=/tmp 라 브랜치가 없고 계정은 첫 줄 왼쪽 덩어리에 온다.
 OUT=$(run "$(json_without)" 81)
 assert_contains "T26 전체 레이아웃 첫 줄에 Claude 계정 이메일" "octocat@example.com" "$(first_line "$OUT")"
 assert_not_contains "T26 이메일 앞 cc: 접두 없음" "cc:octocat" "$OUT"
