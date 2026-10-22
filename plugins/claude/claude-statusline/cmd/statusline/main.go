@@ -109,9 +109,10 @@ func main() {
 		fmt.Print(render.Compact(view, now.Unix()))
 		return
 	}
-	// The path and the account row are read only for the full layout.
+	// The path and the account are read only for the full layout.
 	view.Path = shorten.Path(status.CWD, home)
-	for _, s := range []string{segments.ClaudeAccount(paths.OAuthDir, paths.AccountCache), gh, aws} {
+	view.Account = segments.ClaudeAccount(paths.OAuthDir, paths.AccountCache)
+	for _, s := range []string{gh, aws} {
 		if s != "" {
 			view.Meta = append(view.Meta, s)
 		}
