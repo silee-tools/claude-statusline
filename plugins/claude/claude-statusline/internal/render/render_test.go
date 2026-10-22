@@ -29,13 +29,185 @@ func sample() View {
 
 func TestFullLayoutRowOrder(t *testing.T) {
 	rows := strings.Split(plain(Full(sample(), 1_999_000_000)), "\n")
-	if len(rows) != 6 {
-		t.Fatalf("전체 레이아웃은 6행이다: %d행 — %q", len(rows), rows)
+	if len(rows) != 4 {
+		t.Fatalf("폭 안에 들면 전체 레이아웃은 4행이다: %d행 — %q", len(rows), rows)
 	}
-	want := []string{"08:06", "gh@personal", "ctx", "5h", "7d", "v2.1.11"}
+	want := []string{"08:06", "ctx", "5h", "7d"}
 	for i, w := range want {
 		if !strings.Contains(rows[i], w) {
 			t.Errorf("행%d 에 %q 가 없다: %q", i+1, w, rows[i])
+		}
+	}
+	for _, w := range []string{"gh@personal", "v2.1.11"} {
+		if !strings.Contains(rows[0], w) {
+			t.Errorf("첫 줄에 %q 가 없다: %q", w, rows[0])
+		}
+	}
+}
+
+// longHeader 는 경로와 브랜치를 길게 잡아 81~220열 안에서 세 단계가 모두 나오게 하는 입력이다.
+func longHeader() View {
+	v := sample()
+	v.Path = "~/webapp/packages/app/src"
+	v.Branch = "feature/PROJ-123-post-editor"
+	return v
+}
+
+// headerGroups 는 첫 줄에 올 세 묶음(위치, 계정, 버전·세션)의 표시 문자열을 입력 값에서 직접
+// 만든다. 렌더 결과에서 읽으면 경계 계산이 검증 대상에 기대게 된다.
+func headerGroups(v View) (loc, meta, foot string) {
+	loc = v.Clock + " " + plain(v.Path)
+	if v.Branch != "" {
+		loc += " " + theme.BranchGlyph + v.Branch
+	}
+	meta = strings.Join(v.Meta, " ")
+	if v.Version != "" {
+		foot = "v" + v.Version
+	}
+	if v.Session != "" {
+		if foot != "" {
+			foot += " "
+		}
+		foot += theme.SessionGlyph + " " + v.Session
+	}
+	return loc, meta, foot
+}
+
+// glyphAllowance 는 폭 판정이 브랜치 글리프에 더하는 칸이다. Visible 은 글리프를 1열로 세지만
+// 터미널에 따라 2열로 그려지므로 브랜치가 있으면 한 칸을 더 잡는다.
+func glyphAllowance(v View) int {
+	if v.Branch != "" {
+		return 1
+	}
+	return 0
+}
+
+func TestFullMergesHeaderRowsIntoFirstRow(t *testing.T) {
+	v := sample()
+	v.Width = 0
+	rows := strings.Split(plain(Full(v, 1_999_000_000)), "\n")
+	if len(rows) != 4 {
+		t.Fatalf("폭을 모르면 위치·계정·버전을 첫 줄로 합쳐 4행이다: %d행 — %q", len(rows), rows)
+	}
+	loc, meta, foot := headerGroups(v)
+	if want := loc + "  " + meta + "  " + foot; rows[0] != want {
+		t.Errorf("첫 줄 = %q, want %q", rows[0], want)
+	}
+	for i, want := range map[int]string{1: "ctx ", 2: " 5h ", 3: " 7d "} {
+		if !strings.HasPrefix(rows[i], want) {
+			t.Errorf("행%d 라벨 = %q, want prefix %q", i+1, rows[i], want)
+		}
+	}
+}
+
+func TestFullRetreatsOneStageAtATimeAsWidthShrinks(t *testing.T) {
+	// 합친 줄의 가시 폭(+글리프 보정)이 정확히 Width 이면 전부 합치고, 한 칸 모자라면 푸터를
+	// 마지막 줄로 내린다. 위치+계정 줄이 한 칸 모자라면 기존 여섯 줄이다.
+	now := int64(1_999_000_000)
+	for name, branch := range map[string]string{"브랜치 있음": "feature/PROJ-123-post-editor", "브랜치 없음": ""} {
+		v := longHeader()
+		v.Branch = branch
+		loc, meta, foot := headerGroups(v)
+		all, head := loc+"  "+meta+"  "+foot, loc+"  "+meta
+		needAll := width.Visible(all) + glyphAllowance(v)
+		needHead := width.Visible(head) + glyphAllowance(v)
+		rowsAt := func(w int) []string {
+			v.Width = w
+			return strings.Split(plain(Full(v, now)), "\n")
+		}
+		gauges := rowsAt(needAll)[1:4]
+
+		rows := rowsAt(needAll)
+		if len(rows) != 4 || rows[0] != all {
+			t.Errorf("%s 폭 %d: 전부 합친 4행이어야 한다 — %q", name, needAll, rows)
+		}
+		for _, w := range []int{needAll - 1, needHead} {
+			rows = rowsAt(w)
+			if len(rows) != 5 || rows[0] != head || rows[4] != foot || strings.Join(rows[1:4], "\n") != strings.Join(gauges, "\n") {
+				t.Errorf("%s 폭 %d: 위치+계정 첫 줄, 게이지, 푸터의 5행이어야 한다 — %q", name, w, rows)
+			}
+		}
+		rows = rowsAt(needHead - 1)
+		want := append(append([]string{loc, meta}, gauges...), foot)
+		if strings.Join(rows, "\n") != strings.Join(want, "\n") {
+			t.Errorf("%s 폭 %d: 기존 여섯 줄이어야 한다 — %q, want %q", name, needHead-1, rows, want)
+		}
+	}
+}
+
+func TestFullFirstRowNeverOverflowsAndRetreatsOnlyAsFarAsNeeded(t *testing.T) {
+	// 81~220열을 돌며 폭 안에 드는 가장 합쳐진 단계가 쓰이는지 본다. 세 단계가 모두 나타나야
+	// 이 구간이 단계 전환을 실제로 지나간다는 양성 대조가 선다.
+	now := int64(1_999_000_000)
+	v := longHeader()
+	loc, meta, foot := headerGroups(v)
+	needAll := width.Visible(loc+"  "+meta+"  "+foot) + glyphAllowance(v)
+	needHead := width.Visible(loc+"  "+meta) + glyphAllowance(v)
+	stages := map[int]int{}
+	for w := 81; w <= 220; w++ {
+		v.Width = w
+		out := plain(Full(v, now))
+		rows := strings.Split(out, "\n")
+		stages[len(rows)]++
+		wantRows := 6
+		switch {
+		case w >= needAll:
+			wantRows = 4
+		case w >= needHead:
+			wantRows = 5
+		}
+		if len(rows) != wantRows {
+			t.Errorf("폭 %d: %d행, want %d행 — %q", w, len(rows), wantRows, rows)
+		}
+		if len(rows) < 6 {
+			if got := width.Visible(rows[0]) + glyphAllowance(v); got > w {
+				t.Errorf("폭 %d: 합친 첫 줄 폭 %d 가 폭을 넘는다 — %q", w, got, rows[0])
+			}
+		}
+		for _, piece := range []string{loc, meta, foot} {
+			if !strings.Contains(out, piece) {
+				t.Errorf("폭 %d: 표시 항목 %q 가 사라졌다", w, piece)
+			}
+		}
+	}
+	for _, n := range []int{4, 5, 6} {
+		if stages[n] == 0 {
+			t.Errorf("81~220열에 %d행 단계가 한 번도 나오지 않았다: %v", n, stages)
+		}
+	}
+}
+
+func TestFullSkipsEmptyHeaderGroupsWithoutGaps(t *testing.T) {
+	now := int64(1_999_000_000)
+	for _, tc := range []struct {
+		name   string
+		mutate func(*View)
+		first  func(loc, meta, foot string) string
+		rows   int
+	}{
+		{"계정 없음", func(v *View) { v.Meta = nil }, func(l, m, f string) string { return l + "  " + f }, 4},
+		{"버전·세션 없음", func(v *View) { v.Version, v.Session = "", "" }, func(l, m, f string) string { return l + "  " + m }, 4},
+		{"세션 없음(버전만 남음)", func(v *View) { v.Session = "" }, func(l, m, f string) string { return l + "  " + m + "  " + f }, 4},
+		{"계정·버전·세션 없음", func(v *View) { v.Meta, v.Version, v.Session = nil, "", "" }, func(l, m, f string) string { return l }, 4},
+	} {
+		v := longHeader()
+		tc.mutate(&v)
+		loc, meta, foot := headerGroups(v)
+		v.Width = 0
+		rows := strings.Split(plain(Full(v, now)), "\n")
+		if want := tc.first(loc, meta, foot); len(rows) != tc.rows || rows[0] != want {
+			t.Errorf("%s 폭 0: 첫 줄 %q (%d행), want %q (%d행)", tc.name, rows[0], len(rows), want, tc.rows)
+		}
+		for _, w := range []int{0, 81, 90, 100, 120, 140, 220} {
+			v.Width = w
+			for i, row := range strings.Split(plain(Full(v, now)), "\n") {
+				if strings.ContainsAny(row, "█░") {
+					continue // 게이지 행은 라벨을 오른쪽 정렬하므로 공백 규칙이 다르다
+				}
+				if row == "" || row != strings.TrimSpace(row) || strings.Contains(row, "   ") {
+					t.Errorf("%s 폭 %d 행%d 에 빈 줄이나 어긋난 공백이 있다: %q", tc.name, w, i+1, row)
+				}
+			}
 		}
 	}
 }
@@ -44,7 +216,7 @@ func TestFullLayoutRightAlignsTheGaugeLabels(t *testing.T) {
 	// ctx·5h·7d 는 같은 라벨 폭으로 세로 정렬한다. 정렬이 깨지면 세 행의 막대 시작
 	// 열이 어긋나 전체 레이아웃의 읽는 방식이 달라진다.
 	rows := strings.Split(plain(Full(sample(), 1_999_000_000)), "\n")
-	for i, want := range map[int]string{2: "ctx ", 3: " 5h ", 4: " 7d "} {
+	for i, want := range map[int]string{1: "ctx ", 2: " 5h ", 3: " 7d "} {
 		if !strings.HasPrefix(rows[i], want) {
 			t.Errorf("행%d 라벨 = %q, want prefix %q", i+1, rows[i], want)
 		}
@@ -53,7 +225,7 @@ func TestFullLayoutRightAlignsTheGaugeLabels(t *testing.T) {
 
 func TestFullLayoutDrawsTwentyCellBars(t *testing.T) {
 	rows := strings.Split(plain(Full(sample(), 1_999_000_000)), "\n")
-	for i := 2; i <= 4; i++ {
+	for i := 1; i <= 3; i++ {
 		if n := strings.Count(rows[i], "█") + strings.Count(rows[i], "░"); n != 20 {
 			t.Errorf("행%d 막대 칸수 %d, want 20 — %q", i+1, n, rows[i])
 		}
@@ -66,14 +238,14 @@ func TestFullLayoutMarksPaceOvershootInTheBar(t *testing.T) {
 	v := sample()
 	v.Five = Gauge{Present: true, Pct: 70, ResetsAt: 2_000_000_000, HasReset: true, Window: 18000}
 	rows := strings.Split(Full(v, 2_000_000_000-9000), "\n")
-	if n := strings.Count(rows[3], theme.Red); n != 10 {
-		t.Errorf("초과 구간 칸 %d, want 10 — %q", n, rows[3])
+	if n := strings.Count(rows[2], theme.Red); n != 10 {
+		t.Errorf("초과 구간 칸 %d, want 10 — %q", n, rows[2])
 	}
-	if n := strings.Count(rows[3], theme.Grey240); n != 10 {
-		t.Errorf("예산 이내 칸 %d, want 10 — %q", n, rows[3])
+	if n := strings.Count(rows[2], theme.Grey240); n != 10 {
+		t.Errorf("예산 이내 칸 %d, want 10 — %q", n, rows[2])
 	}
-	if strings.Contains(plain(rows[3]), "▲") {
-		t.Errorf("전체 레이아웃은 압축 페이스 기호를 쓰지 않는다: %q", rows[3])
+	if strings.Contains(plain(rows[2]), "▲") {
+		t.Errorf("전체 레이아웃은 압축 페이스 기호를 쓰지 않는다: %q", rows[2])
 	}
 }
 
@@ -84,13 +256,13 @@ func TestBarStaysGreyWhileUsageKeepsPace(t *testing.T) {
 	v := sample()
 	v.Five = Gauge{Present: true, Pct: 92, ResetsAt: 2_000_000_000, HasReset: true, Window: 18000}
 	rows := strings.Split(Full(v, 2_000_000_000-900), "\n")
-	if n := strings.Count(rows[3], theme.Grey240); n != 20 {
-		t.Errorf("페이스 이내면 20칸이 모두 회색이다: %d — %q", n, rows[3])
+	if n := strings.Count(rows[2], theme.Grey240); n != 20 {
+		t.Errorf("페이스 이내면 20칸이 모두 회색이다: %d — %q", n, rows[2])
 	}
 	for _, color := range []string{theme.Yellow, theme.Red} {
 		for _, cell := range []string{"█", "░"} {
-			if strings.Contains(rows[3], color+cell) {
-				t.Errorf("페이스 이내인데 막대 칸에 경고색이 붙었다: %q", rows[3])
+			if strings.Contains(rows[2], color+cell) {
+				t.Errorf("페이스 이내인데 막대 칸에 경고색이 붙었다: %q", rows[2])
 			}
 		}
 	}
@@ -103,18 +275,23 @@ func TestHighUsageKeepsTheOvershootBoundaryVisible(t *testing.T) {
 	v := sample()
 	v.Five = Gauge{Present: true, Pct: 95, ResetsAt: 2_000_000_000, HasReset: true, Window: 18000}
 	rows := strings.Split(Full(v, 2_000_000_000-14400), "\n")
-	if n := strings.Count(rows[3], theme.Grey240); n != 4 {
-		t.Errorf("예산 이내 칸 %d, want 4 — %q", n, rows[3])
+	if n := strings.Count(rows[2], theme.Grey240); n != 4 {
+		t.Errorf("예산 이내 칸 %d, want 4 — %q", n, rows[2])
 	}
-	if n := strings.Count(rows[3], theme.Red+"█") + strings.Count(rows[3], theme.Red+"░"); n != 16 {
-		t.Errorf("초과 구간 칸 %d, want 16 — %q", n, rows[3])
+	if n := strings.Count(rows[2], theme.Red+"█") + strings.Count(rows[2], theme.Red+"░"); n != 16 {
+		t.Errorf("초과 구간 칸 %d, want 16 — %q", n, rows[2])
 	}
 }
 
 func TestFullLayoutKeepsTheWholeSessionID(t *testing.T) {
-	// 전체 ID 를 남기는 이유는 사용자가 그것을 복사해 쓰기 때문이다.
-	if !strings.Contains(plain(Full(sample(), 1_999_000_000)), session) {
-		t.Fatal("전체 레이아웃은 세션 식별자를 자르지 않는다")
+	// 전체 ID 를 남기는 이유는 사용자가 그것을 복사해 쓰기 때문이다. 첫 줄에 합치든(폭 0)
+	// 마지막 줄로 내리든(130) 여섯 줄로 나누든(100) 같다.
+	v := longHeader()
+	for _, w := range []int{0, 130, 100} {
+		v.Width = w
+		if !strings.Contains(plain(Full(v, 1_999_000_000)), session) {
+			t.Fatalf("폭 %d: 전체 레이아웃은 세션 식별자를 자르지 않는다", w)
+		}
 	}
 }
 
@@ -355,12 +532,12 @@ func TestGaugeWithoutResetOmitsTheResetToken(t *testing.T) {
 	v := sample()
 	v.Five = Gauge{Present: true, Pct: 24, Window: 18000}
 	rows := strings.Split(Full(v, 1_999_000_000), "\n")
-	if strings.Contains(plain(rows[3]), "↺") {
-		t.Fatalf("리셋 시각이 없으면 ↺ 를 그리지 않는다: %q", rows[3])
+	if strings.Contains(plain(rows[2]), "↺") {
+		t.Fatalf("리셋 시각이 없으면 ↺ 를 그리지 않는다: %q", rows[2])
 	}
 	for _, color := range []string{theme.Yellow, theme.Red} {
-		if strings.Contains(rows[3], color) {
-			t.Fatalf("리셋 시각이 없으면 예산도 없어 초과 표시를 하지 않는다: %q", rows[3])
+		if strings.Contains(rows[2], color) {
+			t.Fatalf("리셋 시각이 없으면 예산도 없어 초과 표시를 하지 않는다: %q", rows[2])
 		}
 	}
 }
@@ -406,8 +583,8 @@ func TestAbsentGaugesDropTheirRows(t *testing.T) {
 	v.Five = Gauge{}
 	v.Week = Gauge{}
 	rows := strings.Split(plain(Full(v, 1_999_000_000)), "\n")
-	if len(rows) != 4 {
-		t.Fatalf("5h·7d 가 없으면 4행이다: %d행 — %q", len(rows), rows)
+	if len(rows) != 2 || !strings.HasPrefix(rows[1], "ctx ") {
+		t.Fatalf("5h·7d 가 없으면 합친 첫 줄과 ctx 의 2행이다: %d행 — %q", len(rows), rows)
 	}
 	compact := plain(Compact(v, 1_999_000_000))
 	if strings.Contains(compact, "5h") || strings.Contains(compact, "7d") {
@@ -428,7 +605,7 @@ func TestContextColorThresholds(t *testing.T) {
 		v := sample()
 		v.CtxPct = c.pct
 		v.Five, v.Week = Gauge{}, Gauge{}
-		row := strings.Split(Full(v, 1_999_000_000), "\n")[2]
+		row := strings.Split(Full(v, 1_999_000_000), "\n")[1]
 		if c.want == "" {
 			if strings.Contains(row, theme.Yellow) || strings.Contains(row, theme.Red) {
 				t.Errorf("ctx %d%% 에 경고색이 붙었다: %q", c.pct, row)

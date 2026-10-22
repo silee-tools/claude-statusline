@@ -31,7 +31,7 @@ type View struct {
 	Week    Gauge
 	Version string
 	Session string // full session id
-	Width   int    // detected columns; the compact layout fits its rows to it, 0 means no cut
+	Width   int    // detected columns; the compact layout cuts its rows to it and the full layout splits its first row by it, 0 means neither
 }
 
 // Gauge is one rate-limit window. Window is its length in seconds — 18000 for five
@@ -45,13 +45,16 @@ type Gauge struct {
 	Window   int64
 }
 
-// Full is the six-row layout, used above 80 columns and whenever the width could
-// not be determined. Its first row is not truncated.
+// Full is the layout used above 80 columns and whenever the width could not be
+// determined. The location, the accounts and the version with the session id share the
+// first row; one wider than Width sheds the version and session id to a last row, then
+// the accounts to a row of their own. No row is cut, and a Width of 0 or less merges all.
 func Full(v View, now int64) string {
 	loc := theme.Green + v.Clock + theme.Reset + " " + v.Path
 	if v.Branch != "" {
 		loc += " " + theme.Magenta + theme.BranchGlyph + v.Branch + theme.Reset
 	}
+	meta := strings.Join(v.Meta, " ")
 
 	ctx := theme.Label(ralign("ctx")) + " " +
 		theme.Bar(v.CtxPct, theme.NoBudget, contextColor(v.CtxPct), "") +
@@ -69,8 +72,35 @@ func Full(v View, now int64) string {
 		foot += theme.Grey240 + theme.SessionGlyph + " " + v.Session + theme.Reset
 	}
 
-	return emit(loc, strings.Join(v.Meta, " "), ctx,
-		fullGauge(ralign("5h"), v.Five, now), fullGauge(ralign("7d"), v.Week, now), foot)
+	five, week := fullGauge(ralign("5h"), v.Five, now), fullGauge(ralign("7d"), v.Week, now)
+
+	head := joinGroups(loc, meta)
+	if all := joinGroups(head, foot); fitsWidth(v, all) {
+		return emit(all, ctx, five, week)
+	}
+	if fitsWidth(v, head) {
+		return emit(head, ctx, five, week, foot)
+	}
+	return emit(loc, meta, ctx, five, week, foot)
+}
+
+// joinGroups puts two groups on one row, skipping an empty one so no gap is left.
+func joinGroups(a, b string) string {
+	if a == "" || b == "" {
+		return a + b
+	}
+	return a + "  " + b
+}
+
+// fitsWidth reports whether row stays within Width, which is how the compact layout
+// judges a row too: the branch glyph is budgeted at branchGlyphCells though Visible
+// counts one cell. A Width of 0 or less fits everything.
+func fitsWidth(v View, row string) bool {
+	cells := width.Visible(row)
+	if v.Branch != "" {
+		cells += branchGlyphCells - 1
+	}
+	return v.Width <= 0 || cells <= v.Width
 }
 
 // Compact is the layout for 80 columns or fewer: at most two rows, each within Width.
