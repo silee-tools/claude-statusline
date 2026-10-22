@@ -22,7 +22,8 @@ type View struct {
 	Clock   string   // current time, already formatted as "15:04"
 	Path    string   // shortened path, already colored
 	Branch  string   // shortened branch, empty when there is none
-	Meta    []string // full layout: account and auth indicators; the caller dropped the empty ones
+	Account string   // full layout: the Claude login, empty when unknown
+	Meta    []string // full layout: the gh and aws indicators; the caller dropped the empty ones
 	Status  []string // compact layout: gh always, aws only when not healthy
 	Model   string   // tidied model name such as "Opus 4.8"
 	Effort  string   // effort glyph, empty when the model has no effort level
@@ -31,7 +32,7 @@ type View struct {
 	Week    Gauge
 	Version string
 	Session string // full session id
-	Width   int    // detected columns; the compact layout cuts its rows to it and the full layout spreads its first row across it less statusInset, 0 means neither
+	Width   int    // detected columns; the compact layout cuts its rows to it and the full layout breaks its first row to fit it less statusInset, 0 means neither
 }
 
 // Gauge is one rate-limit window. Window is its length in seconds — 18000 for five
@@ -51,10 +52,11 @@ type Gauge struct {
 const statusInset = 4
 
 // Full is the layout used above 80 columns and whenever the width could not be
-// determined. The first row holds the version, session id and accounts at its left end and
-// the location and clock at its right end, spread across Width less statusInset. One that
-// does not fit sheds the version and session id to a last row, then the accounts to a row
-// of their own. A Width of 0 or less joins the groups without spreading them.
+// determined. Its first row is the version, the clock, the Claude account, the session id,
+// the path, the branch, gh and aws, one space apart. A row wider than Width less statusInset
+// breaks before the path and moves the path, branch, gh and aws to a second row; when that
+// is still too wide the location and the indicators take a row each. A Width of 0 or less
+// never breaks, and no row is cut.
 func Full(v View, now int64) string {
 	place := v.Path
 	if v.Branch != "" {
@@ -63,63 +65,50 @@ func Full(v View, now int64) string {
 	if width.Visible(place) == 0 {
 		place = ""
 	}
-	meta := strings.Join(v.Meta, " ")
+	status := strings.Join(v.Meta, " ")
 
 	ctx := theme.Label(ralign("ctx")) + " " +
 		theme.Bar(v.CtxPct, theme.NoBudget, contextColor(v.CtxPct), "") +
 		" " + contextColor(v.CtxPct) + strconv.Itoa(v.CtxPct) + "%" + theme.Reset
 	ctx += modelAndEffort(v)
 
-	foot := ""
+	version, session := "", ""
 	if v.Version != "" {
-		foot = theme.Label("v" + v.Version)
+		version = theme.Label("v" + v.Version)
 	}
 	if v.Session != "" {
-		if foot != "" {
-			foot += " "
-		}
-		foot += theme.Grey240 + theme.SessionGlyph + " " + v.Session + theme.Reset
+		session = theme.Grey240 + theme.SessionGlyph + " " + v.Session + theme.Reset
 	}
+	head := joinGroups(version, theme.Green+v.Clock+theme.Reset, v.Account, session)
 
 	five, week := fullGauge(ralign("5h"), v.Five, now), fullGauge(ralign("7d"), v.Week, now)
 
-	right := joinGroups(place, theme.Green+v.Clock+theme.Reset)
-	if row, ok := spread(v, joinGroups(foot, meta), right); ok {
+	tail := joinGroups(place, status)
+	if row := joinGroups(head, tail); fits(v, row) {
 		return emit(row, ctx, five, week)
 	}
-	if row, ok := spread(v, meta, right); ok {
-		return emit(row, ctx, five, week, foot)
+	if fits(v, tail) {
+		return emit(head, tail, ctx, five, week)
 	}
-	return emit(right, meta, ctx, five, week, foot)
+	return emit(head, place, status, ctx, five, week)
 }
 
-// joinGroups puts two groups on one row, skipping an empty one so no gap is left.
-func joinGroups(a, b string) string {
-	if a == "" || b == "" {
-		return a + b
+// joinGroups puts groups on one row a space apart, skipping an empty one so no gap is left.
+func joinGroups(groups ...string) string {
+	kept := make([]string, 0, len(groups))
+	for _, g := range groups {
+		if g != "" {
+			kept = append(kept, g)
+		}
 	}
-	return a + "  " + b
+	return strings.Join(kept, " ")
 }
 
-// spread puts left at the start of a row and right at its end, filling the gap so the row
-// spans Width less statusInset, and reports whether both fit with at least two columns
-// between them. A single group is not spread, and a Width of 0 or less joins without
-// measuring. Visible counts the branch glyph as one column; a terminal that draws it as two
+// fits reports whether row stays within Width less statusInset. A Width of 0 or less fits
+// everything. Visible counts the branch glyph as one column; a terminal that draws it as two
 // spends one of the columns Claude Code leaves empty.
-func spread(v View, left, right string) (string, bool) {
-	row := joinGroups(left, right)
-	if v.Width <= 0 {
-		return row, true
-	}
-	limit := v.Width - statusInset
-	if left == "" || right == "" {
-		return row, width.Visible(row) <= limit
-	}
-	gap := limit - width.Visible(left) - width.Visible(right)
-	if gap >= 2 {
-		return left + strings.Repeat(" ", gap) + right, true
-	}
-	return row, false
+func fits(v View, row string) bool {
+	return v.Width <= 0 || width.Visible(row) <= v.Width-statusInset
 }
 
 // Compact is the layout for 80 columns or fewer: at most two rows, each within Width.
