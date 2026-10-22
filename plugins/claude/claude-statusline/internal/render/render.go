@@ -31,7 +31,7 @@ type View struct {
 	Week    Gauge
 	Version string
 	Session string // full session id
-	Width   int    // detected columns; the compact layout cuts its rows to it and the full layout splits its first row by it, 0 means neither
+	Width   int    // detected columns; the compact layout cuts its rows to it and the full layout spreads its first row across it less statusInset, 0 means neither
 }
 
 // Gauge is one rate-limit window. Window is its length in seconds — 18000 for five
@@ -45,14 +45,23 @@ type Gauge struct {
 	Window   int64
 }
 
+// statusInset is what Claude Code takes from the terminal's columns when statusLine.padding
+// is unset: a left indent of 2 and 2 columns left empty on the right. Measured on 2.1.307
+// in windows of 90 to 240 columns; a wider row is cut with an ellipsis, not wrapped.
+const statusInset = 4
+
 // Full is the layout used above 80 columns and whenever the width could not be
-// determined. The location, the accounts and the version with the session id share the
-// first row; one wider than Width sheds the version and session id to a last row, then
-// the accounts to a row of their own. No row is cut, and a Width of 0 or less merges all.
+// determined. The first row holds the version, session id and accounts at its left end and
+// the location and clock at its right end, spread across Width less statusInset. One that
+// does not fit sheds the version and session id to a last row, then the accounts to a row
+// of their own. A Width of 0 or less joins the groups without spreading them.
 func Full(v View, now int64) string {
-	loc := theme.Green + v.Clock + theme.Reset + " " + v.Path
+	place := v.Path
 	if v.Branch != "" {
-		loc += " " + theme.Magenta + theme.BranchGlyph + v.Branch + theme.Reset
+		place += " " + theme.Magenta + theme.BranchGlyph + v.Branch + theme.Reset
+	}
+	if width.Visible(place) == 0 {
+		place = ""
 	}
 	meta := strings.Join(v.Meta, " ")
 
@@ -74,14 +83,14 @@ func Full(v View, now int64) string {
 
 	five, week := fullGauge(ralign("5h"), v.Five, now), fullGauge(ralign("7d"), v.Week, now)
 
-	head := joinGroups(loc, meta)
-	if all := joinGroups(head, foot); fitsWidth(v, all) {
-		return emit(all, ctx, five, week)
+	right := joinGroups(place, theme.Green+v.Clock+theme.Reset)
+	if row, ok := spread(v, joinGroups(foot, meta), right); ok {
+		return emit(row, ctx, five, week)
 	}
-	if fitsWidth(v, head) {
-		return emit(head, ctx, five, week, foot)
+	if row, ok := spread(v, meta, right); ok {
+		return emit(row, ctx, five, week, foot)
 	}
-	return emit(loc, meta, ctx, five, week, foot)
+	return emit(right, meta, ctx, five, week, foot)
 }
 
 // joinGroups puts two groups on one row, skipping an empty one so no gap is left.
@@ -92,15 +101,25 @@ func joinGroups(a, b string) string {
 	return a + "  " + b
 }
 
-// fitsWidth reports whether row stays within Width, which is how the compact layout
-// judges a row too: the branch glyph is budgeted at branchGlyphCells though Visible
-// counts one cell. A Width of 0 or less fits everything.
-func fitsWidth(v View, row string) bool {
-	cells := width.Visible(row)
-	if v.Branch != "" {
-		cells += branchGlyphCells - 1
+// spread puts left at the start of a row and right at its end, filling the gap so the row
+// spans Width less statusInset, and reports whether both fit with at least two columns
+// between them. A single group is not spread, and a Width of 0 or less joins without
+// measuring. Visible counts the branch glyph as one column; a terminal that draws it as two
+// spends one of the columns Claude Code leaves empty.
+func spread(v View, left, right string) (string, bool) {
+	row := joinGroups(left, right)
+	if v.Width <= 0 {
+		return row, true
 	}
-	return v.Width <= 0 || cells <= v.Width
+	limit := v.Width - statusInset
+	if left == "" || right == "" {
+		return row, width.Visible(row) <= limit
+	}
+	gap := limit - width.Visible(left) - width.Visible(right)
+	if gap >= 2 {
+		return left + strings.Repeat(" ", gap) + right, true
+	}
+	return row, false
 }
 
 // Compact is the layout for 80 columns or fewer: at most two rows, each within Width.

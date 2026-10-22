@@ -58,6 +58,13 @@ Two properties keep the port worth its while, so hold them when editing:
   lets a second boundary fall between two of them and move a pace budget by a
   cell.
 
+`statusInset` in `internal/render` is Claude Code's value: with `statusLine.padding`
+unset it indents the status line by 2 and leaves the last 2 columns empty. Measure
+it again when the Claude Code version changes: start `claude --settings
+'{"statusLine":{...}}'` in a detached tmux window under an isolated `HOME` and
+`CLAUDE_CONFIG_DIR`, have the command print an L-column ruler at several widths, and
+read the widest ruler shown without `…`. 2.1.307: columns − 4, padding unset.
+
 ## Shell scripts: POSIX sh
 
 Every remaining shell script is POSIX `sh` (`#!/bin/sh`). Executable entrypoints
@@ -95,6 +102,12 @@ Each such suite sets `completed=0` before registering the trap, sets
 `completed=1` immediately before its final `[ "$fail" -eq 0 ]`, and forces a
 non-zero status in the trap when the flag never reached one. A new suite that
 registers a cleanup trap without that flag silently opts out of the gate.
+
+A suite that runs `hook-handler.sh` sets `CLAUDE_CONFIG_DIR` to a temporary path
+along with `HOME`. A Claude Code session exports that variable and it wins over
+`HOME`, so a `SessionStart` run that isolates only `HOME` rewrites the real
+`settings.json`. `shim.test.sh` also defaults it to its temp root, so a call that
+forgets the override cannot reach the real file.
 
 `statusline.test.sh` builds the binary, points the shim at it, and asserts both
 layouts, gauges, colors, and indicators against fixture JSON. It fails outright
