@@ -69,6 +69,31 @@ import Testing
     }
 }
 
+@Test func retiredResumingActivityIsRejectedAndLegacyResumeProgressIsIgnored() throws {
+    func document(activity: String, extra: String = "") -> Data {
+        Data(
+            #"{"schemaVersion":1,"provider":"claude","sessionID":"session-123","workspace":"/tmp/example-project","activity":"\#(activity)","usageWindows":[],\#(extra)"observedAt":100}"#.utf8
+        )
+    }
+
+    #expect(throws: DecodingError.self) {
+        try JSONDecoder().decode(SessionSnapshot.self, from: document(activity: "resuming"))
+    }
+
+    let legacy = try JSONDecoder().decode(
+        SessionSnapshot.self,
+        from: document(
+            activity: "rateLimited",
+            extra: #""resumeProgress":{"cause":"rateLimit","attempt":1,"nextAttemptAt":110,"deadlineAt":200},"#
+        )
+    )
+    #expect(legacy.activity == .rateLimited)
+    let object = try #require(
+        JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any]
+    )
+    #expect(object["resumeProgress"] == nil)
+}
+
 @Test func usagePercentAcceptsBoundariesAndRejectsValuesOutsideThem() throws {
     #expect(try UsageWindow(id: "low", label: "Low", usedPercent: 0, resetsAt: 10).usedPercent == 0)
     #expect(try UsageWindow(id: "high", label: "High", usedPercent: 100, resetsAt: 20).usedPercent == 100)
