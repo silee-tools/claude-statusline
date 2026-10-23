@@ -9,7 +9,7 @@
 - 시각은 UTC 기준 Unix epoch seconds 정수다. ISO 8601 문자열이나 milliseconds를 쓰지 않는다.
 - optional 값이 없으면 해당 필드를 생략한다. consumer는 생략과 JSON `null`을 모두 값 없음으로 처리한다.
 - `schemaVersion`이 `1`이 아니거나 필수 필드가 없거나 열거값을 알 수 없으면 문서 전체를 거부한다.
-- snapshot 배열을 읽는 consumer는 항목마다 같은 규칙을 적용하고, 거부한 항목만 버린 채 나머지를 쓴다.
+- snapshot 배열을 읽는 consumer는 항목마다 같은 규칙을 적용하고, 거부한 항목만 버린 채 나머지를 쓴다. 항목이 하나라도 있는데 모두 거부되면 배열 전체를 읽기 실패로 보며, 빈 배열만 세션 없음이다.
 
 ## Session snapshot
 

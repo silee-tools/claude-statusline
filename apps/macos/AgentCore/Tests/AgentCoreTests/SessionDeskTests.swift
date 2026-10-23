@@ -211,11 +211,13 @@ import Testing
         }
         #expect(ready.map(\.sessionID) == ["session-a", "session-b"])
 
-        try Data("[\(retiredEntry(sessionID: "session-retired"))]".utf8).write(to: fileURL)
+        try Data("[]".utf8).write(to: fileURL)
         #expect(store.load() == .empty)
 
-        try Data(retiredEntry(sessionID: "session-retired").utf8).write(to: fileURL)
-        #expect(store.load() == .failed)
+        for rejected in ["[\(retiredEntry(sessionID: "session-retired"))]", "[7]", "[{}]", retiredEntry(sessionID: "session-retired")] {
+            try Data(rejected.utf8).write(to: fileURL)
+            #expect(store.load() == .failed, "\(rejected)")
+        }
     }
 }
 

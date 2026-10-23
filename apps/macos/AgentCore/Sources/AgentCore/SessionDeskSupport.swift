@@ -113,9 +113,16 @@ public struct SharedSnapshotStore: Sendable {
         )
     }
 
-    /// 배열이 아니면 던지고, 디코드할 수 없는 항목(앱이 이전 판본에서 쓴 폐기된 값 포함)은 그 항목만 버린다.
+    /// 배열이 아니거나 항목이 있는데 하나도 디코드하지 못하면 던지고, 일부만 못 읽으면(앱이 이전 판본에서 쓴 폐기된 값 포함) 그 항목만 버린다.
     public func read() throws -> [SessionSnapshot] {
-        try JSONDecoder().decode([Entry].self, from: Data(contentsOf: fileURL)).compactMap(\.snapshot)
+        let entries = try JSONDecoder().decode([Entry].self, from: Data(contentsOf: fileURL))
+        let snapshots = entries.compactMap(\.snapshot)
+        if snapshots.isEmpty, !entries.isEmpty {
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: [], debugDescription: "No snapshot entry could be decoded")
+            )
+        }
+        return snapshots
     }
 
     private struct Entry: Decodable {
