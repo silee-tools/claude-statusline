@@ -1,28 +1,18 @@
 package main
 
 import (
-	"crypto/sha256"
-	"fmt"
 	"os"
 	"path/filepath"
 )
 
-type claudePaths struct {
-	OAuthDir, AccountCache string
-}
-
-func resolveClaudePaths(home, cache string) claudePaths {
+// resolveConfigDir is the Claude config directory: CLAUDE_CONFIG_DIR, or ~/.claude when
+// it is empty. It is made absolute and cleaned the way the shell scripts do it
+// (scripts/config-paths.sh), without resolving symlinks.
+func resolveConfigDir(home string) string {
 	config := os.Getenv("CLAUDE_CONFIG_DIR")
 	if config == "" {
 		config = filepath.Join(home, ".claude")
 	}
 	config, _ = filepath.Abs(config)
-	base, _ := filepath.Abs(filepath.Join(home, ".claude"))
-	p := claudePaths{OAuthDir: config, AccountCache: cache}
-	if config == base {
-		p.OAuthDir = home
-	} else {
-		p.AccountCache = filepath.Join(cache, "accounts", fmt.Sprintf("%x", sha256.Sum256([]byte(config))))
-	}
-	return p
+	return config
 }

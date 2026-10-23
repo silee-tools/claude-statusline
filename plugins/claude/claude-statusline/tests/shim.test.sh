@@ -20,6 +20,15 @@ trap 'rc=$?; rm -rf "$TMPROOT"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
 # 세션이 export 한 CLAUDE_CONFIG_DIR 는 HOME 보다 우선하므로, 격리를 빠뜨린 호출이 hook-handler.sh 로 실제
 # settings.json 을 고치지 않게 스위트 기본값을 TMPROOT 안으로 돌린다.
 CLAUDE_CONFIG_DIR="$TMPROOT/claude-config"; export CLAUDE_CONFIG_DIR
+# 상태·데이터·캐시·설정도 같은 이유로 TMPROOT 안에 둔다. 호출마다 지정하지 않은 경로가 호출자의 값(실제 홈의
+# 수신기 게시 경로나 상태 폴더)으로 새지 않게 하고, 어긋나 있으면 시작하지 않는다.
+HOME="$TMPROOT/home"; XDG_DATA_HOME="$TMPROOT/data"; XDG_STATE_HOME="$TMPROOT/state"
+XDG_CACHE_HOME="$TMPROOT/cache"; XDG_CONFIG_HOME="$TMPROOT/config"
+export HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME XDG_CONFIG_HOME
+for _v in "$HOME" "$CLAUDE_CONFIG_DIR" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME"; do
+  case "$_v" in "$TMPROOT"*) ;; *) echo "FATAL: 격리되지 않은 경로 $_v" >&2; exit 1;; esac
+done
+mkdir -p "$HOME"
 CACHE="$TMPROOT/cache"
 # 포인터는 플러그인 루트 디렉터리 이름으로 갈린다. 스위트는 저장소에서 직접 돌므로 그
 # 이름이 곧 키다 — 설치본이라면 여기에 버전이 온다.
@@ -33,8 +42,8 @@ JSON='{"workspace":{"current_dir":"/tmp"},"version":"9.9.9"}'
 # 그 실행이 쓸 캐시 디렉터리이고 나머지가 실행할 명령이다.
 iso() {
   _cache="$1"; shift
-  env HOME="$TMPROOT" XDG_CACHE_HOME="$_cache" XDG_DATA_HOME="$TMPROOT" \
-      XDG_CONFIG_HOME="$TMPROOT" CLAUDE_CONFIG_DIR="$TMPROOT" \
+  env HOME="$TMPROOT" XDG_CACHE_HOME="$_cache" XDG_DATA_HOME="$TMPROOT/data" \
+      XDG_STATE_HOME="$TMPROOT/state" XDG_CONFIG_HOME="$TMPROOT" CLAUDE_CONFIG_DIR="$TMPROOT" \
       AWS_LOGIN_CACHE_DIR="$TMPROOT/no-aws-cache" "$@"
 }
 run_shim() { printf '%s' "$JSON" | iso "$CACHE" sh "$SRC/scripts/statusline.sh"; }
@@ -135,6 +144,7 @@ done
 multi_build() {
   root="$MULTI/$1/$2"
   env PATH="$MULTI/tools:$PATH" HOME="$TMPROOT" XDG_CACHE_HOME="$MULTI/cache" \
+    XDG_DATA_HOME="$MULTI/data" XDG_STATE_HOME="$MULTI/state" \
     CLAUDE_CONFIG_DIR="$MULTI/$1" CLAUDE_PLUGIN_ROOT="$root" sh "$root/scripts/build-binary.sh"
 }
 multi_build account-a 5.5.1
@@ -152,6 +162,94 @@ rm -f "$A_BIN"
 multi_build account-a 5.5.1
 assert_equals "T14 반대 순서에서도 다른 계정 binary 보존" yes "$([ -x "$B_BIN" ] && echo yes || echo no)"
 
+# --- T16: 수신기 바이너리는 렌더 바이너리와 같은 방식으로 빌드하고 공용 경로에 복사+rename 으로 게시한다 ---
+#     LaunchAgent 는 판본이 들어간 캐시 경로를 따라갈 수 없으므로 고정 경로가 필요하다. 게시는 설치된
+#     판본(.version)보다 같거나 높을 때만 하고, 같은 판본이 이미 게시돼 있으면 건드리지 않는다 — 수신기는
+#     자기 실행 파일이 바뀌면 재시작하므로 쓸데없는 교체가 곧 재시작이다.
+PUB_DIR="$MULTI/data/claude-statusline/bin"
+PUB="$PUB_DIR/claude-statusline-otlp"
+PUB_VER="$PUB.version"
+file_id()  { ls -i "$1" | awk '{print $1}'; }
+file_mode(){ stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
+CACHE_BIN="$MULTI/cache/claude-statusline/bin"
+assert_equals "T16 가장 높은 판본이 고정 경로에 실행 가능한 파일로 게시됨" yes "$([ -x "$PUB" ] && echo yes || echo no)"
+assert_equals "T16 게시된 판본 파일은 가장 높은 판본" "5.5.2" "$(cat "$PUB_VER" 2>/dev/null)"
+assert_equals "T16 게시 파일 mode 755" "755" "$(file_mode "$PUB")"
+assert_equals "T16 캐시 쪽에도 판본이 들어간 수신기 바이너리" yes "$([ -x "$CACHE_BIN/claude-statusline-otlp-5.5.1-fixture-arch" ] && echo yes || echo no)"
+assert_equals "T16 게시 파일은 가장 높은 판본(5.5.2)의 빌드와 같다" "$(cksum < "$CACHE_BIN/claude-statusline-otlp-5.5.2-fixture-arch")" "$(cksum < "$PUB")"
+assert_equals "T16 게시 폴더에 임시 파일이 남지 않음" "claude-statusline-otlp claude-statusline-otlp.version" "$(ls "$PUB_DIR" | tr '\n' ' ' | sed 's/ $//')"
+
+PUB_ID=$(file_id "$PUB")
+multi_build account-b 5.5.2
+assert_equals "T16 같은 판본 재실행은 게시 파일을 교체하지 않음(멱등)" "$PUB_ID" "$(file_id "$PUB")"
+
+multi_build account-a 5.5.1
+assert_equals "T16 낮은 판본은 게시하지 않음" "5.5.2" "$(cat "$PUB_VER")"
+assert_equals "T16 낮은 판본은 게시 파일을 건드리지 않음" "$PUB_ID" "$(file_id "$PUB")"
+
+rm -f "$PUB"
+multi_build account-b 5.5.2
+assert_equals "T16 게시 파일이 지워졌으면 같은 판본도 다시 게시" yes "$([ -x "$PUB" ] && echo yes || echo no)"
+
+for v in 5.9.0 5.10.0; do
+  mkdir -p "$MULTI/account-c/$v/.claude-plugin" "$MULTI/account-c/$v/scripts"
+  printf '{"version":"%s"}\n' "$v" > "$MULTI/account-c/$v/.claude-plugin/plugin.json"
+  cp "$BUILD" "$MULTI/account-c/$v/scripts/build-binary.sh"
+done
+multi_build account-c 5.9.0
+assert_equals "T16 높은 판본(5.9.0)이 낮은 판본(5.5.2)을 교체" "5.9.0" "$(cat "$PUB_VER")"
+OLD_ID=$(file_id "$PUB")
+multi_build account-c 5.10.0
+assert_equals "T16 판본은 숫자로 비교(5.10.0 > 5.9.0)" "5.10.0" "$(cat "$PUB_VER")"
+assert_equals "T16 높은 판본을 게시하면 파일이 교체됨" "no" "$([ "$OLD_ID" = "$(file_id "$PUB")" ] && echo yes || echo no)"
+multi_build account-c 5.9.0
+assert_equals "T16 숫자 비교로 5.9.0 은 5.10.0 을 되돌리지 못함" "5.10.0" "$(cat "$PUB_VER")"
+
+assert_equals "T16 빌드 스크립트는 LaunchAgent 를 다루지 않음" "0" \
+  "$(grep -c 'launchctl\|kr\.silee\|LaunchAgent' "$BUILD" || true)"
+
+# 수신기 빌드나 게시가 실패해도 세션 시작은 막히지 않고 렌더 바이너리는 그대로 준비된다.
+FAILGO="$MULTI/failtools"
+mkdir -p "$FAILGO"
+cat > "$FAILGO/go" <<'GOEOF'
+#!/bin/sh
+if [ "$1" = env ]; then
+  case "$2" in GOOS) echo fixture ;; GOARCH) echo arch ;; esac
+  exit 0
+fi
+for last; do :; done
+[ "$last" = ./cmd/claude-statusline-otlp ] && exit 1
+while [ "$1" != -o ]; do shift; done
+shift
+printf '#!/bin/sh\nexit 0\n' > "$1"
+chmod +x "$1"
+GOEOF
+chmod +x "$FAILGO/go"
+mkdir -p "$MULTI/account-d/6.0.0/.claude-plugin" "$MULTI/account-d/6.0.0/scripts"
+printf '{"version":"6.0.0"}\n' > "$MULTI/account-d/6.0.0/.claude-plugin/plugin.json"
+cp "$BUILD" "$MULTI/account-d/6.0.0/scripts/build-binary.sh"
+set +e
+env PATH="$FAILGO:$PATH" HOME="$TMPROOT" XDG_CACHE_HOME="$MULTI/fail-cache" XDG_DATA_HOME="$MULTI/fail-data" \
+  XDG_STATE_HOME="$MULTI/fail-state" CLAUDE_CONFIG_DIR="$MULTI/account-d" CLAUDE_PLUGIN_ROOT="$MULTI/account-d/6.0.0" \
+  sh "$MULTI/account-d/6.0.0/scripts/build-binary.sh" 2>"$TMPROOT/otlp-fail-err"
+RC=$?
+set -e
+assert_equals   "T16 수신기 빌드 실패에도 종료코드 0" "0" "$RC"
+assert_equals   "T16 수신기 빌드가 실패해도 렌더 바이너리 포인터는 준비됨" yes "$([ -x "$(cat "$MULTI/fail-cache/claude-statusline/binary-path-6.0.0" 2>/dev/null)" ] && echo yes || echo no)"
+assert_equals   "T16 수신기 빌드가 실패하면 게시하지 않음" no "$([ -e "$MULTI/fail-data/claude-statusline/bin/claude-statusline-otlp" ] && echo yes || echo no)"
+assert_contains "T16 수신기 빌드 실패를 stderr 로 알림" "claude-statusline-otlp" "$(cat "$TMPROOT/otlp-fail-err")"
+
+# 게시 폴더를 만들 수 없어도(데이터 홈이 일반 파일) 종료코드 0 이다.
+printf 'x' > "$MULTI/data-is-a-file"
+set +e
+env PATH="$MULTI/tools:$PATH" HOME="$TMPROOT" XDG_CACHE_HOME="$MULTI/pubfail-cache" XDG_DATA_HOME="$MULTI/data-is-a-file" \
+  XDG_STATE_HOME="$MULTI/pubfail-state" CLAUDE_CONFIG_DIR="$MULTI/account-d" CLAUDE_PLUGIN_ROOT="$MULTI/account-d/6.0.0" \
+  sh "$MULTI/account-d/6.0.0/scripts/build-binary.sh" 2>"$TMPROOT/pub-fail-err"
+RC=$?
+set -e
+assert_equals "T16 게시 폴더를 만들 수 없어도 종료코드 0" "0" "$RC"
+assert_equals "T16 게시 실패에도 렌더 바이너리 포인터는 준비됨" yes "$([ -x "$(cat "$MULTI/pubfail-cache/claude-statusline/binary-path-6.0.0" 2>/dev/null)" ] && echo yes || echo no)"
+
 BC="$TMPROOT/build-cache"
 if command -v go >/dev/null 2>&1; then
   # --- T6: 빌드 성공 뒤 포인터에 절대경로 한 줄을 남긴다 ---
@@ -162,6 +260,13 @@ if command -v go >/dev/null 2>&1; then
   assert_contains "T6 포인터가 절대경로" "/" "$BINPATH"
   assert_equals   "T6 포인터가 실행 가능한 파일을 가리킴" "yes" "$([ -x "$BINPATH" ] && echo yes || echo no)"
   assert_contains "T6 바이너리 이름에 플러그인 버전" "$PLUGIN_VERSION" "$BINPATH"
+  REAL_PUB="$TMPROOT/data/claude-statusline/bin/claude-statusline-otlp"
+  assert_equals   "T6 수신기가 고정 경로에 게시됨" "yes" "$([ -x "$REAL_PUB" ] && echo yes || echo no)"
+  assert_equals   "T6 게시 판본 파일이 플러그인 판본" "$PLUGIN_VERSION" "$(cat "$REAL_PUB.version" 2>/dev/null)"
+  # 게시된 것이 진짜 수신기다: loopback 이 아닌 주소는 종료코드 1 로 거부한다.
+  set +e; "$REAL_PUB" -addr 192.0.2.1:0 2>"$TMPROOT/real-pub.err"; RC=$?; set -e
+  assert_equals   "T6 게시된 수신기는 loopback 아닌 주소를 거부(종료코드 1)" "1" "$RC"
+  assert_contains "T6 게시된 수신기는 loopback 검사로 거부한다고 알림" "loopback" "$(cat "$TMPROOT/real-pub.err")"
 
   # --- T7: 이미 있는 바이너리를 다시 빌드하지 않는다(mtime 불변) ---
   BEFORE=$(stat -f '%m' "$BINPATH" 2>/dev/null || stat -c '%Y' "$BINPATH")
@@ -253,12 +358,14 @@ for c in sed rm mv mkdir cat head dirname; do
   ln -sf "$real" "$EMPTYBIN/$c"
 done
 set +e
-iso "$NOGO" env CLAUDE_PLUGIN_ROOT="$SRC" PATH="$EMPTYBIN" /bin/sh "$BUILD" >/dev/null 2>&1
+iso "$NOGO" env CLAUDE_PLUGIN_ROOT="$SRC" XDG_DATA_HOME="$NOGO/data" PATH="$EMPTYBIN" /bin/sh "$BUILD" >/dev/null 2>&1
 RC=$?
 set -e
 assert_equals "T10 go 부재에도 종료코드 0" "0" "$RC"
 assert_equals "T10 go 부재면 포인터를 만들지 않음" "no" \
   "$([ -f "$NOGO/claude-statusline/binary-path-$KEY" ] && echo yes || echo no)"
+assert_equals "T10 go 부재면 수신기도 게시하지 않음" "no" \
+  "$([ -e "$NOGO/data/claude-statusline/bin/claude-statusline-otlp" ] && echo yes || echo no)"
 
 # --- T11: 지원하는 모든 Claude event가 같은 handler에 등록돼 있다 ---
 HOOKS=$(awk -f "$SRC/scripts/json.awk" "$SRC/hooks/hooks.json")

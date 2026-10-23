@@ -262,103 +262,44 @@ func TestGitHubAccountOutsideARepositoryReadsTheNonGitRecord(t *testing.T) {
 	}
 }
 
-func ccFixture(t *testing.T, email string) (configDir, cacheDir string) {
-	t.Helper()
-	configDir, cacheDir = t.TempDir(), t.TempDir()
-	if err := os.WriteFile(filepath.Join(configDir, ".claude.json"),
-		[]byte(`{"oauthAccount":{"emailAddress":"`+email+`"}}`), 0o600); err != nil {
-		t.Fatal(err)
+func TestAccountIsEmptyWhenTheReceiverIsNotInstalled(t *testing.T) {
+	// 수신기를 설치하지 않은 기계에서 칸에 ? 만 영원히 남지 않는다.
+	if got := Account(false, "", false); got != "" {
+		t.Errorf("미설치: %q", got)
 	}
-	return configDir, cacheDir
-}
-
-func TestClaudeAccountReadsAndCachesTheEmail(t *testing.T) {
-	configDir, cacheDir := ccFixture(t, "octocat@example.com")
-	got := ClaudeAccount(configDir, cacheDir)
-	if plain(got) != "octocat@example.com" {
-		t.Fatalf("ClaudeAccount = %q", got)
-	}
-	if !strings.HasPrefix(got, theme.Coral173) {
-		t.Errorf("coral(173) 색이 아니다: %q", got)
-	}
-	b, err := os.ReadFile(filepath.Join(cacheDir, "cc-account.env"))
-	if err != nil || strings.TrimSpace(string(b)) != "email=octocat@example.com" {
-		t.Errorf("캐시 파일 = %q (%v)", b, err)
+	if got := Account(false, "octocat@example.com", true); got != "" {
+		t.Errorf("미설치는 값이 있어도 칸을 비운다: %q", got)
 	}
 }
 
-func TestClaudeAccountUsesCacheUntilConfigIsNewer(t *testing.T) {
-	// .claude.json 이 캐시보다 새 것이 아니면 캐시된 이메일을 쓴다. 이 파일은 수백 KB 라 매 렌더 스캔하면 느리다.
-	configDir, cacheDir := ccFixture(t, "octocat@example.com")
-	ClaudeAccount(configDir, cacheDir)
-
-	cf := filepath.Join(configDir, ".claude.json")
-	// 내용만 바꾸고 mtime 을 캐시보다 과거로 되돌리면 캐시가 이겨야 한다.
-	if err := os.WriteFile(cf, []byte(`{"oauthAccount":{"emailAddress":"changed@example.com"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	old := time.Now().Add(-time.Hour)
-	if err := os.Chtimes(cf, old, old); err != nil {
-		t.Fatal(err)
-	}
-	if got := plain(ClaudeAccount(configDir, cacheDir)); got != "octocat@example.com" {
-		t.Errorf("캐시가 이겨야 한다: %q", got)
-	}
-
-	// 원본이 캐시보다 새 것이 되면 다시 스캔한다.
-	future := time.Now().Add(time.Hour)
-	if err := os.Chtimes(cf, future, future); err != nil {
-		t.Fatal(err)
-	}
-	if got := plain(ClaudeAccount(configDir, cacheDir)); got != "changed@example.com" {
-		t.Errorf("원본이 새 것이면 재스캔해야 한다: %q", got)
+func TestAccountShowsAGreyQuestionMarkWhenTheEmailIsUnknown(t *testing.T) {
+	got := Account(true, "", false)
+	if plain(got) != "?" || !strings.HasPrefix(got, theme.Dim) {
+		t.Errorf("모름 = %q, 흐린 ? 여야 한다", got)
 	}
 }
 
-func TestClaudeAccountNeverWritesConfig(t *testing.T) {
-	// .claude.json 은 Claude Code 런타임 상태다. 읽기만 하는지 mtime 과 내용으로 확인한다.
-	configDir, cacheDir := ccFixture(t, "octocat@example.com")
-	cf := filepath.Join(configDir, ".claude.json")
-	before, err := os.Stat(cf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantBody, err := os.ReadFile(cf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ClaudeAccount(configDir, cacheDir)
-	ClaudeAccount(configDir, cacheDir)
-	after, err := os.Stat(cf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !after.ModTime().Equal(before.ModTime()) || after.Size() != before.Size() {
-		t.Errorf("설정 파일이 바뀌었다: %v -> %v", before.ModTime(), after.ModTime())
-	}
-	gotBody, err := os.ReadFile(cf)
-	if err != nil || string(gotBody) != string(wantBody) {
-		t.Errorf("설정 파일 내용이 바뀌었다")
+func TestAccountShowsTheEmailInCoral(t *testing.T) {
+	got := Account(true, "octocat@example.com", false)
+	if plain(got) != "octocat@example.com" || !strings.HasPrefix(got, theme.Coral173) {
+		t.Errorf("Account = %q", got)
 	}
 }
 
-func TestClaudeAccountScansOnlyInsideTheOAuthBlock(t *testing.T) {
-	// projects 키가 파일 경로라 이 파일은 통째로 파싱하지 않는다. oauthAccount 블록에
-	// 들어간 뒤 첫 emailAddress 한 줄만 뽑으므로, 블록 앞의 다른 emailAddress 는 무시한다.
-	configDir, cacheDir := t.TempDir(), t.TempDir()
-	body := "{\n  \"projects\": {\"/a.b/c\": {\"emailAddress\": \"wrong@example.com\"}},\n" +
-		"  \"oauthAccount\": {\n    \"emailAddress\": \"right@example.com\"\n  }\n}\n"
-	if err := os.WriteFile(filepath.Join(configDir, ".claude.json"), []byte(body), 0o600); err != nil {
-		t.Fatal(err)
+func TestAccountMarksASuspectEmailWithAQuestionMark(t *testing.T) {
+	got := Account(true, "octocat@example.com", true)
+	if plain(got) != "octocat@example.com?" {
+		t.Errorf("의심 = %q", plain(got))
 	}
-	if got := plain(ClaudeAccount(configDir, cacheDir)); got != "right@example.com" {
-		t.Errorf("ClaudeAccount = %q, want right@example.com", got)
+	if !strings.HasPrefix(got, theme.Coral173+"octocat@example.com") {
+		t.Errorf("이메일은 coral 이어야 한다: %q", got)
 	}
 }
 
-func TestClaudeAccountMissingFileRendersNothing(t *testing.T) {
-	if got := ClaudeAccount(t.TempDir(), t.TempDir()); got != "" {
-		t.Errorf("설정 파일 부재: %q", got)
+func TestAccountDropsControlCharacters(t *testing.T) {
+	got := Account(true, "a@example.com\x1b]0;x\x07", false)
+	if strings.ContainsAny(plain(got), "\x1b\x07") {
+		t.Errorf("제어 문자가 남았다: %q", got)
 	}
 }
 

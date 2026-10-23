@@ -1,5 +1,6 @@
-// Package ratelimit shares the five-hour and seven-day usage windows between sessions
-// through one file in the cache directory.
+// Package ratelimit keeps the five-hour and seven-day usage windows a session last saw,
+// in one file per session in the cache directory, and watches those windows for a sign
+// that the session's account changed.
 //
 // The payload wins over the file whenever it carries a window. It is the only value that
 // describes the account as it is right now, and a stored sample says nothing about how
@@ -8,6 +9,10 @@
 // does. Ranking two samples by those numbers therefore lets a stale one outlive the live
 // one, which froze the display at a value hours old. The file only supplies a window the
 // payload left out, which is a render before any response header has reached the session.
+//
+// The file is the session's own. A file shared by every session of a config directory
+// drew another session's window, and so another account's, on a session that had not
+// received one yet.
 package ratelimit
 
 import (
@@ -16,6 +21,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/silee-tools/claude-statusline/internal/statefile"
 )
 
 // Sample is one observation of one window. Present says a percentage arrived; HasReset
@@ -33,13 +41,29 @@ type Pair struct{ Five, Week Sample }
 // Complete reports whether the sample can be judged for expiry.
 func (s Sample) Complete() bool { return s.Present && s.HasReset }
 
-const fileName = "rate-limits.env"
+// cacheMaxAge is how long a session's file is kept after its last write.
+const cacheMaxAge = 2 * 24 * time.Hour
 
-// Load reads <cacheDir>/rate-limits.env. A missing or unreadable file yields two absent
-// samples, and a damaged window drops on its own without taking the other one with it.
-func Load(cacheDir string) Pair {
+// validID accepts the characters a session id can carry and nothing that could leave the
+// directory.
+func validID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// Load reads one session file. A missing or unreadable file yields two absent samples, and
+// a damaged window drops on its own without taking the other one with it.
+func Load(file string) Pair {
 	var p Pair
-	b, err := os.ReadFile(filepath.Join(cacheDir, fileName))
+	b, err := os.ReadFile(file)
 	if err != nil {
 		return p
 	}
@@ -79,10 +103,7 @@ func parse(pct, reset string) Sample {
 }
 
 // Store replaces the file with p, keeping only the windows that carry a reset time.
-func Store(cacheDir string, p Pair) error {
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return err
-	}
+func Store(file string, p Pair) error {
 	var b strings.Builder
 	if p.Five.Complete() {
 		fmt.Fprintf(&b, "fivePct=%d\nfiveReset=%d\n", p.Five.Pct, p.Five.ResetsAt)
@@ -90,30 +111,30 @@ func Store(cacheDir string, p Pair) error {
 	if p.Week.Complete() {
 		fmt.Fprintf(&b, "weekPct=%d\nweekReset=%d\n", p.Week.Pct, p.Week.ResetsAt)
 	}
-	final := filepath.Join(cacheDir, fileName)
-	// The temporary name carries the process id so two renderers never write the same
-	// one, and it sits in the destination directory because rename cannot cross a
-	// filesystem.
-	tmp := final + ".tmp." + strconv.Itoa(os.Getpid())
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, final); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
+	return statefile.Write(file, []byte(b.String()))
 }
 
 // Resolve returns what to draw for both windows and leaves what this session observed
-// behind for the next session to read. It writes only when that differs from what the
-// file already holds, so a render that observes nothing new costs one read.
-func Resolve(cacheDir string, live Pair, now int64) Pair {
-	cached := Load(cacheDir)
+// behind for its next render to read, in <cacheDir>/rate-limits/<sessionID>.env. It writes
+// only when that differs from what the file already holds, so a render that observes
+// nothing new costs one read, and a write also removes the files of sessions idle for
+// more than two days. A session id that is not a plain identifier gets no file: what the
+// payload carries is drawn and nothing is remembered.
+func Resolve(cacheDir, sessionID string, live Pair, now int64) Pair {
+	if !validID(sessionID) {
+		show5, _ := resolveWindow(live.Five, Sample{}, now)
+		show7, _ := resolveWindow(live.Week, Sample{}, now)
+		return Pair{Five: show5, Week: show7}
+	}
+	dir := filepath.Join(cacheDir, "rate-limits")
+	file := filepath.Join(dir, sessionID+".env")
+	cached := Load(file)
 	showFive, keepFive := resolveWindow(live.Five, cached.Five, now)
 	showWeek, keepWeek := resolveWindow(live.Week, cached.Week, now)
 	if merged := (Pair{Five: keepFive, Week: keepWeek}); merged != cached {
-		_ = Store(cacheDir, merged)
+		if Store(file, merged) == nil {
+			statefile.Prune(dir, time.Unix(now, 0), cacheMaxAge, 0)
+		}
 	}
 	return Pair{Five: showFive, Week: showWeek}
 }

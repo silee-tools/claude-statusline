@@ -48,6 +48,16 @@ hook overwriting the line the pinned shim reads. 계정마다 설치 경로가 �
 The `SessionStart` hook detaches that build into the
 background because the hook's timeout is 5 seconds and a cold build lands on it.
 
+`cmd/claude-statusline-otlp` is the second binary: the receiver of Claude Code's
+OpenTelemetry log events that gives each session's account to the statusline, with
+the anchor rules in `internal/anchor`. `build-binary.sh` builds it beside the render
+binary and publishes it by copy and rename to
+`${XDG_DATA_HOME:-$HOME/.local/share}/claude-statusline/bin/claude-statusline-otlp`,
+only when the version recorded there is lower. An equal version is left alone because
+the receiver exits 75 when its file is replaced, so a needless replacement is a
+restart. The script names no service: starting and restarting the receiver is the
+supervisor's job, which keeps the source publishable.
+
 Two properties keep the port worth its while, so hold them when editing:
 
 - The shim starts no child process. Computing the path per render with `uname`,
@@ -97,17 +107,23 @@ Each such suite sets `completed=0` before registering the trap, sets
 non-zero status in the trap when the flag never reached one. A new suite that
 registers a cleanup trap without that flag silently opts out of the gate.
 
-A suite that runs `hook-handler.sh` sets `CLAUDE_CONFIG_DIR` to a temporary path
-along with `HOME`. A Claude Code session exports that variable and it wins over
-`HOME`, so a `SessionStart` run that isolates only `HOME` rewrites the real
-`settings.json`. `shim.test.sh` also defaults it to its temp root, so a call that
-forgets the override cannot reach the real file.
+A suite that touches state, data, cache or the publish path sets `HOME`,
+`CLAUDE_CONFIG_DIR`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` and
+`XDG_CONFIG_HOME` to temporary paths, and refuses to start when one lies outside its
+temp root. A Claude Code session exports `CLAUDE_CONFIG_DIR` and it wins over `HOME`,
+so a `SessionStart` run that isolates only `HOME` rewrites the real `settings.json`;
+a shell setup can export `XDG_DATA_HOME` and `XDG_STATE_HOME`, so isolating only
+`HOME` would let a build publish over the live receiver and a render write the real
+anchors. A call that forgets an override still lands in the temp root.
 
 `statusline.test.sh` builds the binary, points the shim at it, and asserts both
 layouts, gauges, colors, and indicators against fixture JSON. It fails outright
 when that build fails, because a skipped build would report zero checks as a
 pass. `shim.test.sh` asserts what the shim does with and without a binary and
 that `build-binary.sh` is idempotent and never blocks session start.
+`otlp.test.sh` starts the receiver on `127.0.0.1:0`, never a fixed port, posts
+requests with `curl`, reads the account slot back through the shim, and stops the
+receiver by the pid it recorded.
 `json.test.sh` and `settings.test.sh` cover the awk parser and rewriter the
 `SessionStart` hook still uses.
 

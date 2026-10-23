@@ -123,14 +123,16 @@ The `7d` pace budget advances continuously during local Monday-to-Friday
 calendar days and pauses on Saturday and Sunday. The reset countdown remains
 wall-clock based, and the `5h` pace budget continues to use elapsed time.
 
-The `5h` and `7d` windows are shared between sessions of the same account through
-`rate-limits.env` in the account cache described below. Whichever
-session observes a window leaves it there, so a session that has just opened
-shows both windows from its first render. The payload always wins over that
-file: it is the only value that describes the account right now, and a stored
-sample carries no observation time to be judged against. The file is drawn only
-for a window the payload leaves out, and a window whose reset time has passed is
-not drawn at all, because its usage no longer describes the current window.
+Each session keeps the `5h` and `7d` windows it last saw in its own file,
+`${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/rate-limits/<session_id>.env`.
+The payload always wins over that file: it is the only value that describes the
+account right now, and a stored sample carries no observation time to be judged
+against. The file is drawn only for a window the payload leaves out, and a window
+whose reset time has passed is not drawn at all, because its usage no longer
+describes the current window. A session never draws another session's window,
+since sessions of one config directory can run on different accounts; a session
+shows no window until Claude Code sends one. A write removes the files of
+sessions idle for two days.
 
 ## Reasoning effort
 
@@ -170,17 +172,21 @@ CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude plugin install claude-statusline@s
 CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude
 ```
 
-기본 계정은 `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/`의 기존 캐시를
-유지합니다. custom 계정은 그 아래 `accounts/<정규화한 config 경로의 SHA-256 전체>/`를
-사용합니다. `cc-account.env`와 `rate-limits.env`가 분리됩니다.
-기존 공유 캐시는 복사하거나 삭제하지 않습니다. Go 렌더러는 표준 라이브러리로
-같은 hash를 계산합니다.
-
-GitHub·AWS·Git·터미널 폭 캐시와 렌더 바이너리·포인터는 공용입니다.
+상태줄의 계정 칸은 설정 디렉터리가 아니라 세션별로 정해집니다([Claude account indicator](#claude-account-indicator)).
+한도 캐시도 세션별 파일이고, GitHub·AWS·Git·터미널 폭 캐시와 렌더 바이너리·포인터는 공용입니다.
 다른 계정 설치와 진행 중인 빌드를 보호하기 위해 바이너리는 자동 삭제하지 않습니다.
 따라서 사용하지 않는 판본의 바이너리가 남을 수 있습니다. 5.5.0 이하의 기존 빌드
 스크립트는 공용 바이너리를 삭제할 수 있으므로 여러 계정에서 사용할 때는 각 계정의
 플러그인을 5.5.1 이상으로 갱신해야 합니다.
+
+5.10.0부터 `cc-account.env`, 공용 `rate-limits.env`, `accounts/<해시>/`를 읽거나 쓰지 않습니다.
+자동으로 지우지 않으므로 필요하면 직접 지웁니다.
+
+```shell
+rm -f "${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/cc-account.env" \
+      "${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/rate-limits.env"
+rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/accounts"
+```
 
 ### First run
 
@@ -199,6 +205,17 @@ Go and starting a new session is all that is needed.
 The build uses the standard library only and runs with `GOPROXY=off`, so it
 needs no network.
 
+The same hook builds the OTLP receiver (`claude-statusline-otlp`, see
+[Claude account indicator](#claude-account-indicator)) the same way and publishes it
+to `${XDG_DATA_HOME:-$HOME/.local/share}/claude-statusline/bin/claude-statusline-otlp`,
+a path that does not move with the plugin version. It copies the build over that
+path through a rename and records the version in `claude-statusline-otlp.version`
+beside it. A build is published only when its version is the same as or higher than
+the recorded one (compared as numbers, 5.10.0 above 5.9.0), and a version already
+published is left alone, because the receiver restarts when its file changes. A
+failed build or publication leaves the render binary working and the session start
+untouched.
+
 ### Dependencies
 
 | Tool | Required? | Used for |
@@ -208,6 +225,7 @@ needs no network.
 | `awk` | required | parsing the hook JSON |
 | `git` | required | the branch indicator |
 | `ps` | optional | automatic terminal-width detection (falls back to the full layout) |
+| a supervisor for `claude-statusline-otlp` | optional | keeping the receiver running; without it the account slot stays empty (see [Claude account indicator](#claude-account-indicator)) |
 | `aws` (AWS CLI 2.32+) | optional | `aws login`'s session cache, read for the `aws:` session indicator: a cache whose `idToken` was refreshed within 15 minutes is `✓`; any other cache, including one without an `idToken` (newer AWS CLI), is settled by a background `aws sts get-caller-identity`, at most every 10 minutes (`✓` on success, `expired` on failure) |
 
 ## Configuration
@@ -267,14 +285,94 @@ numeric.
 
 ### Claude account indicator
 
-The logged-in Claude account email is read (read-only) from the
-`oauthAccount.emailAddress` field of `$HOME/.claude.json` for the default
-configuration, or `<config>/.claude.json` for a custom configuration,
-Claude Code's own account state. Only that one field is scanned, and the result
-is cached until the file changes, so the large config file is not parsed in full
-on every render. The segment is
-omitted when the file or the field is unavailable. Nothing is written to that
-file.
+The payload carries no account, and the account in `<config>/.claude.json` is the one
+the last session wrote, not the one each session uses: sessions of one config
+directory can run on different accounts, and a `/login` in one session changes the
+file for all of them. The slot is therefore filled from Claude Code's OpenTelemetry
+log events, kept per session by a small local receiver, `claude-statusline-otlp`.
+Neither `.claude.json` nor `oauthAccount` is read.
+
+| Slot | Meaning |
+|---|---|
+| `a@example.com` | the account of this session |
+| `a@example.com?` | probably right but may have changed: the receiver's heartbeat is older than 120 seconds, so a `/login` may have gone unseen, or a rate-limit window of the session has differed from its baseline for over a minute before the baseline window ended |
+| `?` | the receiver runs but nothing says which account this session uses |
+| *(empty)* | the receiver never ran on this machine (`otel/sessions` does not exist) |
+
+The compact layout shows no account and reads none of this.
+
+**What counts.** Per session id the receiver keeps one anchor, from these events only:
+a start-only event (`managed_settings_resolved`, `plugin_loaded`) sets it when the
+session has none; a successful `auth` event with `action=login` replaces it with the
+new account; `action=logout` clears it. An event older than the stored anchor is
+dropped. Every other event is ignored, including the `user_prompt` that opens the
+session id `/clear` creates, because its email is whatever the settings file holds at
+that moment.
+
+**`/clear`.** Claude Code keeps `<config>/sessions/<pid>.json` for each running
+process, and `/clear` changes only its `sessionId`. The statusline records the anchor
+under the process (`pids/`) and the new session id takes it over, again after a
+second `/clear`, and after a `/login` that arrived between two renders.
+
+**`--resume` and `--continue`.** Their start events go out under a throwaway session
+id. Once a process is 8 seconds old, the start anchors whose event time lies within 3
+seconds of its `startedAt`, and whose id belongs to no running process of the config
+directory, are its candidates; the process takes their account only when all of them
+name the same one, and the verdict is stored. An anchor under the session's own id
+that is older than the process start belongs to an earlier process and is not used.
+
+**Limits to know.**
+- A start anchor is the account the settings file held when the session began. A
+  session that shows "Not logged in" carries it too.
+- A session that quietly takes over another session's credentials at a token refresh
+  emits no event. The only trace is a rate-limit window changing before it ends, which
+  adds `?`; the account is never corrected from it. Both the five-hour and the seven-day
+  window are watched (`fingerprintWindows` in `cmd/statusline`); a window that has ended
+  starts a new baseline.
+- A session started before the variables below are set shows `?` until it restarts.
+- The account appears at the first render after its events reach the receiver
+  (the export interval below is 1 second). `statusLine.refreshInterval` (seconds) makes
+  Claude Code rerun the command periodically, so a new session does not wait for its
+  first response.
+
+**Wiring.** Claude Code must export its log events to the receiver. Set these in its
+environment (settings `env` block or the shell):
+
+```shell
+CLAUDE_CODE_ENABLE_TELEMETRY=1
+OTEL_LOGS_EXPORTER=otlp
+OTEL_METRICS_EXPORTER=none
+OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:14318/v1/logs
+OTEL_LOGS_EXPORT_INTERVAL=1000
+```
+
+Leave the content-logging variables (`OTEL_LOG_USER_PROMPTS` and similar) and
+`OTEL_EXPORTER_OTLP_COMPRESSION` unset: the receiver answers a gzip body with 415.
+
+**The receiver.** Run the published `claude-statusline-otlp` under a supervisor that
+restarts it after a non-zero exit. It listens on `127.0.0.1:14318` only (`-addr` must be
+a loopback IP literal), serves `POST /v1/logs` with `Content-Type: application/json` and
+a body of at most 1 MiB, and answers `200 {}`. It stores no event and reads only
+`session.id`, `user.email`, `event.name`, `action`, `success` and the event time of each
+record; stderr says what happened (start, stop, failure kinds), never a value. Exit
+codes: 0 after SIGINT or SIGTERM; 75 when the file at its own path was replaced (it
+checks every 30 seconds), so the supervisor starts the new build; 1 when the address is
+not loopback, the port cannot be bound, or the state directory cannot be prepared. It
+touches the heartbeat every 30 seconds. Where stderr goes, and how long it is kept, is
+the supervisor's setting.
+
+**Files.** State files are kept 30 days with at most 2,000 files per directory, and the process that writes into a directory prunes it at each write: the receiver for `otel/sessions`, the statusline for `pids/` and `fingerprints/` (the cache and data rows below say their own).
+
+| Path | Written by | Holds | Kept |
+|---|---|---|---|
+| `${XDG_STATE_HOME:-$HOME/.local/state}/claude-statusline/otel/sessions/<session.id>.env` | receiver | email, kind, event time (0600) | 30 days, 2,000 files |
+| `.../otel/heartbeat` | receiver | its mtime | one file |
+| `.../pids/<pid>-<startedAt>.env`, `.../pids/session-<id>.ref` | statusline | the anchor a process carries, which pid file a session uses | 30 days, 2,000 files |
+| `.../fingerprints/<session_id>.env` | statusline | the baseline of the watched rate-limit window | 30 days, 2,000 files |
+| `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/rate-limits/<session_id>.env` | statusline | the windows the session last saw | 2 days after the last write, no count limit |
+| `${XDG_DATA_HOME:-$HOME/.local/share}/claude-statusline/bin/claude-statusline-otlp{,.version}` | `build-binary.sh` | the published receiver | replaced by the same or a higher version, never deleted |
+| `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/bin/claude-statusline-otlp-<version>-<os>-<arch>` | `build-binary.sh` | the built receiver | never deleted, like the render binary |
 
 ### Customizing
 
@@ -301,9 +399,15 @@ The render path is Go with no external modules; the remaining scripts are POSIX
 `sh`. `statusline.test.sh` builds the binary, points the shim at it, and asserts
 both layouts, gauges, colors, and indicators against fixture JSON.
 `shim.test.sh` asserts what the shim shows with and without a binary and that the
-build is idempotent. The Go tests cover display width and cutting,
-terminal-width decisions, path and branch shortening, the account decision
-table, and the gauge thresholds.
+build and the receiver's publication are idempotent. `otlp.test.sh` starts the receiver
+on a temporary loopback port, posts log requests with `curl`, and reads the account
+slot back through the shim. The Go tests cover display width and cutting,
+terminal-width decisions, path and branch shortening, the anchor rules, the receiver's
+handler, and the gauge thresholds.
+
+A suite that touches state, data or cache points `HOME`, `CLAUDE_CONFIG_DIR` and every
+`XDG_*` variable at a temporary directory, so it never reaches the receiver's published
+path or the state directories of the machine it runs on.
 
 ## License
 

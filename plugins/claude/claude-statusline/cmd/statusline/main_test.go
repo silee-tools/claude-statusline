@@ -1,8 +1,14 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
+	"time"
+
+	"github.com/silee-tools/claude-statusline/internal/anchor"
+	"github.com/silee-tools/claude-statusline/internal/input"
 )
 
 func TestAgentStateDirUsesOverrideOrXDGDefault(t *testing.T) {
@@ -48,5 +54,140 @@ func TestCompactStatusKeepsGHAlwaysAndAWSOnlyWhenNotHealthy(t *testing.T) {
 				t.Errorf("%s: %q, want %q", c.name, got, c.want)
 			}
 		}
+	}
+}
+
+// accountFixture is a state directory with the receiver "installed": its sessions
+// directory exists and its heartbeat is fresh.
+func accountFixture(t *testing.T, now time.Time) (stateDir, configDir string) {
+	t.Helper()
+	stateDir, configDir = t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stateDir, "otel", "sessions"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := anchor.TouchHeartbeat(stateDir, now); err != nil {
+		t.Fatal(err)
+	}
+	return stateDir, configDir
+}
+
+func startEvent(id, email string, ts int64) anchor.Event {
+	return anchor.Event{Name: "managed_settings_resolved", SessionID: id, Email: email, TS: ts}
+}
+
+func loginEvent(id, email string, ts int64) anchor.Event {
+	return anchor.Event{Name: "auth", SessionID: id, Email: email, Action: "login", Success: "true", TS: ts}
+}
+
+func slotText(t *testing.T, stateDir, configDir string, status input.Status, now time.Time) string {
+	t.Helper()
+	return ansi.ReplaceAllString(accountSlot(stateDir, configDir, status, now), "")
+}
+
+var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func TestAccountSlotFollowsTheSessionsAnchorThroughLoginAndLogout(t *testing.T) {
+	now := time.Now()
+	stateDir, configDir := accountFixture(t, now)
+	status := input.Status{SessionID: "s1"}
+	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000))
+	anchor.Apply(stateDir, startEvent("s2", "other@example.com", 1000))
+	if got := slotText(t, stateDir, configDir, status, now); got != "a@example.com" {
+		t.Fatalf("시작 앵커: %q", got)
+	}
+	anchor.Apply(stateDir, loginEvent("s1", "b@example.com", 2000))
+	if got := slotText(t, stateDir, configDir, status, now); got != "b@example.com" {
+		t.Fatalf("/login 뒤: %q", got)
+	}
+	if got := slotText(t, stateDir, configDir, input.Status{SessionID: "s2"}, now); got != "other@example.com" {
+		t.Fatalf("다른 세션은 그대로여야 한다: %q", got)
+	}
+	anchor.Apply(stateDir, anchor.Event{Name: "auth", SessionID: "s1", Action: "logout", Success: "true", TS: 3000})
+	if got := slotText(t, stateDir, configDir, status, now); got != "?" {
+		t.Fatalf("로그아웃 뒤: %q", got)
+	}
+}
+
+func TestAccountSlotIsEmptyWithoutTheReceiverAndQuestionMarkWithoutAnAnchor(t *testing.T) {
+	now := time.Now()
+	status := input.Status{SessionID: "s1"}
+	if got := slotText(t, t.TempDir(), t.TempDir(), status, now); got != "" {
+		t.Errorf("수신기 미설치: %q", got)
+	}
+	stateDir, configDir := accountFixture(t, now)
+	if got := slotText(t, stateDir, configDir, status, now); got != "?" {
+		t.Errorf("앵커 없음: %q", got)
+	}
+	if got := slotText(t, stateDir, configDir, input.Status{}, now); got != "?" {
+		t.Errorf("session_id 없음: %q", got)
+	}
+}
+
+func TestAccountSlotDoubtsAStoppedReceiver(t *testing.T) {
+	now := time.Now()
+	stateDir, configDir := accountFixture(t, now.Add(-10*time.Minute))
+	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000))
+	if got := slotText(t, stateDir, configDir, input.Status{SessionID: "s1"}, now); got != "a@example.com?" {
+		t.Errorf("하트비트 정체: %q", got)
+	}
+}
+
+func TestAccountSlotDoubtsAWindowThatChangedBeforeItEnded(t *testing.T) {
+	now := time.Now()
+	stateDir, configDir := accountFixture(t, now)
+	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000))
+	week := func(reset int64) input.Status {
+		return input.Status{SessionID: "s1", SevenDay: input.Window{Present: true, HasReset: true, Pct: 10, ResetsAt: reset}}
+	}
+	later := func(sec int) time.Time { return now.Add(time.Duration(sec) * time.Second) }
+	end := now.Unix() + 3*86400
+	if got := slotText(t, stateDir, configDir, week(end), now); got != "a@example.com" {
+		t.Fatalf("기준선: %q", got)
+	}
+	if got := slotText(t, stateDir, configDir, week(end+5000), later(10)); got != "a@example.com" {
+		t.Fatalf("바뀐 값을 처음 본 렌더: %q", got)
+	}
+	if got := slotText(t, stateDir, configDir, week(end+5000), later(80)); got != "a@example.com?" {
+		t.Fatalf("60초 넘게 다른 값: %q", got)
+	}
+	// 새 로그인은 새 기준선이다.
+	anchor.Apply(stateDir, loginEvent("s1", "b@example.com", 2000))
+	if got := slotText(t, stateDir, configDir, week(end+5000), later(90)); got != "b@example.com" {
+		t.Fatalf("로그인 뒤: %q", got)
+	}
+}
+
+func TestAccountSlotDoubtsAFiveHourWindowThatChangedBeforeItEnded(t *testing.T) {
+	now := time.Now()
+	stateDir, configDir := accountFixture(t, now)
+	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000))
+	five := func(reset int64) input.Status {
+		return input.Status{SessionID: "s1", FiveHour: input.Window{Present: true, HasReset: true, Pct: 10, ResetsAt: reset}}
+	}
+	later := func(sec int) time.Time { return now.Add(time.Duration(sec) * time.Second) }
+	end := now.Unix() + 3*3600
+	if got := slotText(t, stateDir, configDir, five(end), now); got != "a@example.com" {
+		t.Fatalf("기준선: %q", got)
+	}
+	if got := slotText(t, stateDir, configDir, five(end+900), later(10)); got != "a@example.com" {
+		t.Fatalf("바뀐 값을 처음 본 렌더: %q", got)
+	}
+	if got := slotText(t, stateDir, configDir, five(end+900), later(80)); got != "a@example.com?" {
+		t.Fatalf("5시간 창이 끝나기 전에 60초 넘게 다른 값: %q", got)
+	}
+	// 창이 끝난 뒤의 새 값은 다음 창이다. 3시간 뒤라 수신기 하트비트도 새로 찍는다.
+	anchor.TouchHeartbeat(stateDir, later(3*3600+60))
+	if got := slotText(t, stateDir, configDir, five(end+5*3600), later(3*3600+60)); got != "a@example.com" {
+		t.Fatalf("창 종료 뒤: %q", got)
+	}
+}
+
+func TestAccountSlotIgnoresPayloadWindowsWhenNoEmailIsKnown(t *testing.T) {
+	now := time.Now()
+	stateDir, configDir := accountFixture(t, now)
+	status := input.Status{SessionID: "s1", SevenDay: input.Window{Present: true, HasReset: true, ResetsAt: now.Unix() + 86400}}
+	slotText(t, stateDir, configDir, status, now)
+	if _, err := os.Stat(filepath.Join(stateDir, "fingerprints")); !os.IsNotExist(err) {
+		t.Error("계정을 모르는 세션이 지문 파일을 만들었다")
 	}
 }

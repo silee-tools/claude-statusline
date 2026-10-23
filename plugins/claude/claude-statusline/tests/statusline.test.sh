@@ -32,7 +32,16 @@ TMPROOT=$(mktemp -d)
 # 종료코드 0 으로 보고된다. 정본은 AGENTS.md 의 Testing 절이다.
 completed=0
 trap 'rc=$?; rm -rf "$TMPROOT"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
-mkdir -p "$TMPROOT/scripts" "$TMPROOT/cache/claude-statusline"
+# 이 스위트가 만들고 읽는 상태·데이터·캐시·설정은 모두 TMPROOT 안에 있다. 실제 홈의 설정 폴더, 상태 폴더,
+# 수신기 게시 경로를 건드리지 않도록 환경을 먼저 고정하고, 어긋나 있으면 시작하지 않는다.
+HOME="$TMPROOT/home"; CLAUDE_CONFIG_DIR="$TMPROOT"
+XDG_DATA_HOME="$TMPROOT/data"; XDG_CACHE_HOME="$TMPROOT/cache"; XDG_CONFIG_HOME="$TMPROOT"
+XDG_STATE_HOME="$TMPROOT/state-none"
+export HOME CLAUDE_CONFIG_DIR XDG_DATA_HOME XDG_CACHE_HOME XDG_CONFIG_HOME XDG_STATE_HOME
+for _v in "$HOME" "$CLAUDE_CONFIG_DIR" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"; do
+  case "$_v" in "$TMPROOT"*) ;; *) echo "FATAL: 격리되지 않은 경로 $_v" >&2; exit 1;; esac
+done
+mkdir -p "$HOME" "$TMPROOT/scripts" "$TMPROOT/cache/claude-statusline"
 ln -sf "$SRC/scripts/statusline.sh" "$TMPROOT/scripts/statusline.sh"
 SL="$TMPROOT/scripts/statusline.sh"
 
@@ -83,10 +92,24 @@ printf 'octocat' > "$GH_CACHE_FILE"
 mkdir -p "$TMPROOT/claude-statusline"
 printf 'octocat=personal,214\ntestwork=work,27\nbadcolor=weird,zz\n' > "$TMPROOT/claude-statusline/gh-accounts"
 
-# Claude Code 계정 fixture: 실제 ~/.claude.json 대신 CLAUDE_CONFIG_DIR 을 TMPROOT 로 지정하고
-# 그 아래 가짜 .claude.json 을 둔다. statusline 은 oauthAccount.emailAddress 를 읽는다.
+# Claude Code 계정 fixture: 계정은 OTLP 수신기가 남긴 앵커(<상태>/claude-statusline/otel/sessions/<session.id>.env)
+# 에서만 읽는다. 설정 폴더의 .claude.json 을 읽지 않는 것이 계약이므로, 다른 이메일을 담은 미끼로 둔다.
+# STATE_HOME 이 STATE_NONE 이면 수신기가 한 번도 뜬 적 없는 기계(계정 칸 없음), STATE_ACCT 이면 설치된 기계다.
 # RFC 2606 예약 도메인으로 실재 계정과 충돌을 막는다.
-printf '{"oauthAccount":{"emailAddress":"octocat@example.com"}}' > "$TMPROOT/.claude.json"
+printf '{"oauthAccount":{"emailAddress":"decoy@example.com"}}' > "$TMPROOT/.claude.json"
+STATE_NONE="$TMPROOT/state-none"
+STATE_ACCT="$TMPROOT/state-acct"
+STATE_HOME="$STATE_NONE"
+OTEL_DIR="$STATE_ACCT/claude-statusline/otel"
+mkdir -p "$STATE_NONE"
+anchor_file() { printf '%s/sessions/%s.env' "$OTEL_DIR" "$1"; }
+# seed_anchor <session.id> <email> <kind> <event time ms>
+seed_anchor() {
+  mkdir -p "$OTEL_DIR/sessions"
+  printf 'email=%s\nkind=%s\nts=%s\n' "$2" "$3" "$4" > "$(anchor_file "$1")"
+}
+beat()       { mkdir -p "$OTEL_DIR"; touch "$OTEL_DIR/heartbeat"; }
+stale_beat() { mkdir -p "$OTEL_DIR"; touch -t 200001010000 "$OTEL_DIR/heartbeat"; }
 
 # AWS 세션 fixture: AWS 세그먼트가 개발자의 실제 ~/.aws/login/cache 를 읽지 않도록 전용
 # 디렉터리에 방금 로그인한 캐시 파일 하나를 둔다. 세그먼트는 idToken 의 iat 에 12h 를 더한
@@ -125,12 +148,8 @@ else
   echo "warn: git 미설치 — T18 을 건너뜁니다" >&2
 fi
 
-ACCOUNT_HASH=$(printf '%s' "$TMPROOT" | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | awk '{print $1}')
-ACCOUNT_CACHE="$TMPROOT/cache/claude-statusline/accounts/$ACCOUNT_HASH"
-mkdir -p "$ACCOUNT_CACHE"
-
 # 이전 판본의 비용 캐시가 있어도 두 레이아웃은 이를 무시한다.
-cat > "$ACCOUNT_CACHE/cost-cache.env" <<'ENV'
+cat > "$TMPROOT/cache/claude-statusline/cost-cache.env" <<'ENV'
 available=true
 dailyOpus=12
 dailySonnet=0
@@ -186,23 +205,28 @@ json_eff() {
   printf '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":40000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.1.11","effort":{"level":"%s"}}' "$1"
 }
 
-# 세션 공유 5h·7d 캐시. 렌더가 이 파일에 쓰므로 케이스마다 지워 앞 케이스의 값이 뒤로 새지
-# 않게 한다. 캐시 디렉터리 전체를 지우면 같은 곳에 사는 binary-path-<키> 포인터까지 날아가 shim 이
-# 저하 표시를 내므로 이 파일 하나만 지운다.
-RATE_CACHE="$ACCOUNT_CACHE/rate-limits.env"
-seed_rate_cache() { printf 'fivePct=%s\nfiveReset=%s\nweekPct=%s\nweekReset=%s\n' "$1" "$2" "$3" "$4" > "$RATE_CACHE"; }
+# 세션별 5h·7d 캐시(<캐시>/rate-limits/<session_id>.env). 렌더가 이 디렉터리에 쓰므로 케이스마다 지워 앞
+# 케이스의 값이 뒤로 새지 않게 한다. 캐시 폴더 전체를 지우면 같은 곳에 사는 binary-path-<키> 포인터까지
+# 날아가 shim 이 저하 표시를 내므로 rate-limits 폴더만 지운다. session_id 가 없는 페이로드는 캐시를 쓰지
+# 않으므로, 캐시를 검증하는 케이스는 with_rl 로 이 세션 id 를 넣는다.
+RL_SESSION="rl-test-session"
+RATE_DIR="$TMPROOT/cache/claude-statusline/rate-limits"
+RATE_CACHE="$RATE_DIR/$RL_SESSION.env"
+seed_rate_cache() { mkdir -p "$RATE_DIR"; printf 'fivePct=%s\nfiveReset=%s\nweekPct=%s\nweekReset=%s\n' "$1" "$2" "$3" "$4" > "$RATE_CACHE"; }
+with_session() { printf '%s' "$2" | sed "s/^{/{\"session_id\":\"$1\",/"; }
+with_rl() { with_session "$RL_SESSION" "$1"; }
 
 # 색 코드 제거한 출력. XDG_CONFIG_HOME·XDG_CACHE_HOME 을 TMPROOT 로, AWS_LOGIN_CACHE_DIR
 # 을 위 fixture 로 고정해 gh 계정·매핑·AWS 세션 표시를 모두 결정론화한다.
-_render() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_LOGIN_CACHE_DIR="$AWS_LOGIN_CACHE_FIXTURE" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
+_render() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_STATE_HOME="$STATE_HOME" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_LOGIN_CACHE_DIR="$AWS_LOGIN_CACHE_FIXTURE" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
 # 색 코드 포함 원본 출력
-_render_raw() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_LOGIN_CACHE_DIR="$AWS_LOGIN_CACHE_FIXTURE" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null; }
+_render_raw() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_STATE_HOME="$STATE_HOME" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_LOGIN_CACHE_DIR="$AWS_LOGIN_CACHE_FIXTURE" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null; }
 # 폭 주입을 비우고 tty 장치 디렉터리를 존재하지 않는 곳으로 고정해 판정 불가 경로를 만든다.
 _render_auto() {
   (
     unset CLAUDE_STATUSLINE_WIDTH
     printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" \
-      XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" \
+      XDG_STATE_HOME="$STATE_HOME" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" \
       AWS_LOGIN_CACHE_DIR="$AWS_LOGIN_CACHE_FIXTURE" \
       CLAUDE_STATUSLINE_TTY_DIR="$TMPROOT/missing-dev" COLUMNS=40 sh "$SL" 2>/dev/null \
       | sed "s/${ESC}\[[0-9;]*m//g"
@@ -213,9 +237,9 @@ _render_auto() {
 # run_keep 을 부른다. `KEEP=1 run ...` 처럼 호출 앞에 변수를 붙이는 형태는 쓰지 않는다 — 그
 # 할당이 호출 뒤에도 남는지를 POSIX 가 정하지 않아 macOS 의 /bin/sh 에서는 남고 dash 에서는
 # 남지 않으며, 남는 쪽에서는 이후 모든 렌더가 격리를 잃은 채 스위트가 통과한다.
-run()      { rm -f "$RATE_CACHE"; _render "$@"; }
-run_raw()  { rm -f "$RATE_CACHE"; _render_raw "$@"; }
-run_auto() { rm -f "$RATE_CACHE"; _render_auto "$@"; }
+run()      { rm -rf "$RATE_DIR"; _render "$@"; }
+run_raw()  { rm -rf "$RATE_DIR"; _render_raw "$@"; }
+run_auto() { rm -rf "$RATE_DIR"; _render_auto "$@"; }
 run_keep() { _render "$@"; }
 
 # 출력 끝에 개행이 없어 명령 치환이 후행 개행을 지우므로, 한 줄을 다시 붙여 세면 정확하다.
@@ -301,7 +325,8 @@ assert_equals     "T46 폭 80 저장소 밖은 게이지 1행(1행 생략)" "1" 
 assert_equals     "T46 폭 80 저장소 안은 압축 2행" "2" "$(nlines "$(run "$(json_with_gh)" 80)")"
 # 이 fixture 는 경로 /tmp·브랜치 없음이라 이어 붙인 첫 줄이 81열(사용 폭 77칸) 안에 든다.
 assert_equals     "T46 폭 81은 전체 4행(첫 줄에 이어 붙임)" "4" "$(nlines "$OUT81")"
-assert_match      "T46 폭 81 첫 줄은 버전·시각·계정·경로·aws 순서로 한 칸씩" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] octocat@example\.com /tmp aws:✓$' "$(first_line "$OUT81")"
+assert_match      "T46 폭 81 첫 줄은 버전·시각·경로·aws 순서로 한 칸씩(수신기 미설치라 계정 칸 없음)" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] /tmp aws:✓$' "$(first_line "$OUT81")"
+assert_not_contains "T46 미설치 기계는 settings 의 .claude.json 이메일을 쓰지 않음" "decoy@example.com" "$OUT81"
 assert_not_contains "T46 압축 레이아웃은 비용 없음" "cost" "$OUT80"
 assert_not_contains "T46 전체 레이아웃은 비용 없음" "cost" "$OUT81"
 
@@ -330,12 +355,16 @@ fi
 AUTO=$(run_auto "$(json_with)")
 assert_equals "T48 폭 판정 불가 시 전체 4행" "4" "$(nlines "$AUTO")"
 assert_contains "T48 오래된 COLUMNS=40을 무시하고 전체 막대 표시" "█" "$AUTO"
-assert_match "T48 폭 판정 불가는 첫 줄을 버전·시각·계정·경로·aws 순서로 한 칸씩 이어 붙임" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] octocat@example\.com /tmp aws:✓$' "$(first_line "$AUTO")"
+assert_match "T48 폭 판정 불가는 첫 줄을 버전·시각·경로·aws 순서로 한 칸씩 이어 붙임" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] /tmp aws:✓$' "$(first_line "$AUTO")"
 
 # --- T61: 이어 붙인 첫 줄이 칸 수 − 4 안에 들지 않으면 경로 앞에서 끊어 둘째 줄로 내리고, 그 줄도 넘으면 경로·브랜치와 gh·aws 를 따로 둔다 ---
 #    긴 경로·긴 브랜치 저장소를 HOME=TMPROOT 로 렌더해 단계 경계를 만든다. 경계 폭은 폭을 모를 때 이어 붙인
 #    줄의 표시 폭(vwidth_of)에서 구하고, Claude Code 가 상태줄 양쪽에 남기는 4칸을 더한다.
 if [ "$HAVE_GIT" = "1" ]; then
+  # 계정 칸이 첫 줄의 폭에 들어가도록 수신기가 설치된 기계로 렌더한다.
+  seed_anchor "$KNOWN_SESSION" octocat@example.com start 1700000000000
+  beat
+  STATE_HOME="$STATE_ACCT"
   STAGE_REPO="$TMPROOT/stage/webapp/very-long-project-directory-name"
   mkdir -p "$STAGE_REPO"
   if ( cd "$STAGE_REPO" \
@@ -395,6 +424,7 @@ if [ "$HAVE_GIT" = "1" ]; then
   else
     echo "warn: 긴 브랜치 fixture 생성 실패 — T61 을 건너뜁니다" >&2
   fi
+  STATE_HOME="$STATE_NONE"
 else
   printf 'SKIP T61 (git fixture 미생성)\n'
 fi
@@ -489,7 +519,7 @@ assert_no_match "T13a 캐시가 비면 7d 없음" '7d [0-9]' "$OUT"
 
 # --- T13b: rate 는 없어도 유효한 캐시가 있으면 그 값을 그린다 ---
 seed_rate_cache 24 "$FIVE_RESET" 41 "$WEEK_RESET"
-OUT=$(run_keep "$(json_without)" 80)
+OUT=$(run_keep "$(with_rl "$(json_without)")" 80)
 assert_match "T13b 캐시에서 5h 공급" '5h 24%' "$OUT"
 assert_match "T13b 캐시에서 7d 공급" '7d 41%' "$OUT"
 rm -f "$RATE_CACHE"
@@ -561,14 +591,20 @@ else
   printf 'SKIP T40 (git fixture 미생성)\n'
 fi
 
-# --- T26: Claude Code 계정 이메일이 전체 레이아웃 첫 줄에 나온다 (.claude.json 의 oauthAccount.emailAddress) ---
+# --- T26: Claude Code 계정 이메일이 전체 레이아웃 첫 줄에 나온다 (수신기가 남긴 세션 앵커) ---
 #    라벨 접두 없이 이메일 그대로, coral(173) 색으로 렌더한다. cwd=/tmp 라 브랜치 없이 계정이 시각 뒤, 경로 앞에 온다.
-OUT=$(run "$(json_without)" 81)
+seed_anchor acct-a octocat@example.com start 1700000000000
+beat
+STATE_HOME="$STATE_ACCT"
+ACCT_A=$(with_session acct-a "$(json_without)")
+OUT=$(run "$ACCT_A" 81)
 assert_contains "T26 전체 레이아웃 첫 줄에 Claude 계정 이메일" "octocat@example.com" "$(first_line "$OUT")"
 assert_not_contains "T26 이메일 앞 cc: 접두 없음" "cc:octocat" "$OUT"
+assert_not_contains "T26 같은 설정 폴더의 .claude.json 이메일은 쓰지 않음" "decoy@example.com" "$OUT"
 CORAL=$(printf '\033[38;5;173m')
-RAW=$(run_raw "$(json_without)" 81)
+RAW=$(run_raw "$ACCT_A" 81)
 assert_contains "T26 계정 이메일 coral(173) 색" "${CORAL}octocat@example.com" "$RAW"
+STATE_HOME="$STATE_NONE"
 
 # --- T27: 세션 ID 는 전체 레이아웃에만 전체 값으로 나오고 압축에는 없다 ---
 #    이어 붙인 첫 줄은 한 줄에 들거나 경로 앞에서 갈라지므로(T61) 줄 위치가 아니라 마커와 ID 의 붙음을 본다.
@@ -885,7 +921,7 @@ FAKEGIT
   run_branch() {
     printf '%s' "$(json_branch)" | \
       PATH="$TMPROOT/fakebin:$PATH" CLAUDE_PLUGIN_ROOT="$TMPROOT" \
-      XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" \
+      XDG_DATA_HOME="$TMPROOT/data" XDG_STATE_HOME="$STATE_HOME" XDG_CONFIG_HOME="$TMPROOT" \
       XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" \
       AWS_LOGIN_CACHE_DIR="$AWS_LOGIN_CACHE_FIXTURE" CLAUDE_STATUSLINE_WIDTH=80 \
       sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"
@@ -968,19 +1004,75 @@ else
   echo "warn: git 미설치 — T37/T38/T39 를 건너뜁니다" >&2
 fi
 
-# --- T35: Claude 계정 이메일 캐시 ---
-rm -f "$ACCOUNT_CACHE/cc-account.env"
-OUT_A=$(run "$(json_with)" 81)
-assert_contains "T35 이메일 첫 렌더 표시" "octocat@example.com" "$OUT_A"
-assert_match    "T35 캐시 파일 생성" "email=octocat@example.com" "$(cat "$ACCOUNT_CACHE/cc-account.env" 2>/dev/null)"
+# --- T35: 계정은 세션별 앵커에서만 정해지고, 설정 파일과 공용 캐시는 읽지도 쓰지도 않는다 ---
+#    한 설정 폴더(CLAUDE_CONFIG_DIR=TMPROOT)를 쓰는 세션들이 서로 다른 계정이어도 각자 자기 계정을 보여 준다.
+STATE_HOME="$STATE_ACCT"
+seed_anchor acct-a a@example.com start 1700000000000
+seed_anchor acct-b b@example.com start 1700000001000
+beat
+SESS_A=$(with_session acct-a "$(json_without)")
+SESS_B=$(with_session acct-b "$(json_without)")
+SESS_C=$(with_session acct-c "$(json_without)")
+DECOY_SUM=$(cksum < "$TMPROOT/.claude.json")
+OUT=$(run "$SESS_A" 120); assert_contains     "T35 세션 A 는 자기 앵커의 계정" "a@example.com" "$(first_line "$OUT")"
+assert_not_contains "T35 세션 A 에 세션 B 의 계정이 섞이지 않음" "b@example.com" "$OUT"
+OUT=$(run "$SESS_B" 120); assert_contains     "T35 세션 B 는 자기 앵커의 계정" "b@example.com" "$(first_line "$OUT")"
+assert_not_contains "T35 세션 B 에 세션 A 의 계정이 섞이지 않음" "a@example.com" "$OUT"
+OUT=$(run "$SESS_C" 120)
+assert_match "T35 앵커가 없는 세션은 흐린 ? 한 글자" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] \? ⧉ acct-c /tmp aws:✓$' "$(first_line "$OUT")"
+assert_not_contains "T35 앵커가 없어도 .claude.json 의 이메일로 채우지 않음" "decoy@example.com" "$OUT"
+OUT=$(run "$(json_without)" 120)
+assert_match "T35 session_id 없는 페이로드도 ? 로 정직하게 모름" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] \? /tmp aws:✓$' "$(first_line "$OUT")"
 
-# .claude.json 을 캐시보다 새 것으로 만들고 이메일을 바꾸면 다음 렌더에 반영된다(무손실).
-sleep 1
-printf '{"oauthAccount":{"emailAddress":"newuser@example.com"}}' > "$TMPROOT/.claude.json"
-OUT_B=$(run "$(json_with)" 81)
-assert_contains "T35 파일 변경 시 새 이메일 반영" "newuser@example.com" "$OUT_B"
-# 원복
-printf '{"oauthAccount":{"emailAddress":"octocat@example.com"}}' > "$TMPROOT/.claude.json"
+# 세션 안 /login: 로그인 앵커가 그 세션만 바꾼다. 로그아웃은 ? 이다.
+seed_anchor acct-a c@example.com login 1700000009000
+OUT=$(run "$SESS_A" 120); assert_contains "T35 /login 뒤 그 세션이 새 계정을 보여 줌" "c@example.com" "$(first_line "$OUT")"
+assert_not_contains "T35 /login 뒤 옛 계정이 남지 않음" "a@example.com" "$OUT"
+OUT=$(run "$SESS_B" 120); assert_contains "T35 한 세션의 /login 은 다른 세션을 바꾸지 않음" "b@example.com" "$(first_line "$OUT")"
+seed_anchor acct-a "" logout 1700000019000
+OUT=$(run "$SESS_A" 120)
+assert_match "T35 로그아웃 뒤는 ?" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] \? ⧉ acct-a /tmp aws:✓$' "$(first_line "$OUT")"
+
+# 수신기가 멈춘 것처럼 보이면(하트비트가 120초보다 오래됨) 이메일 뒤에 ? 가 붙는다.
+stale_beat
+OUT=$(run "$SESS_B" 120); assert_contains "T35 하트비트가 정체되면 이메일 뒤 ?" "b@example.com?" "$(first_line "$OUT")"
+beat
+OUT=$(run "$SESS_B" 120); assert_not_contains "T35 하트비트가 신선하면 ? 없음" "b@example.com?" "$(first_line "$OUT")"
+
+# 압축 레이아웃은 계정을 보이지 않는다.
+OUT=$(run "$SESS_B" 80)
+assert_not_contains "T35 압축 레이아웃에는 계정이 없음" "b@example.com" "$OUT"
+assert_no_match     "T35 압축 레이아웃에는 계정 자리의 ? 도 없음" ' \? ' "$OUT"
+STATE_HOME="$STATE_NONE"
+
+# 옛 계약의 파일은 읽지도 쓰지도 않는다.
+assert_equals "T35 .claude.json 은 읽기만 했더라도 바뀌지 않음" "$DECOY_SUM" "$(cksum < "$TMPROOT/.claude.json")"
+assert_equals "T35 cc-account.env 를 만들지 않음" "no" "$([ -e "$TMPROOT/cache/claude-statusline/cc-account.env" ] && echo yes || echo no)"
+assert_equals "T35 accounts/<해시> 폴더를 만들지 않음" "no" "$([ -e "$TMPROOT/cache/claude-statusline/accounts" ] && echo yes || echo no)"
+
+# --- T62: 한도 캐시는 세션별이라 다른 세션의 창이 섞이지 않고, 공용 rate-limits.env 는 건드리지 않는다 ---
+rm -rf "$RATE_DIR"
+RL_A=$(with_session rl-sess-a "$(json_with)")
+RL_A_NONE=$(with_session rl-sess-a "$(json_without)")
+RL_B_NONE=$(with_session rl-sess-b "$(json_without)")
+run_keep "$RL_A" 120 >/dev/null
+assert_equals "T62 세션 A 의 캐시 파일은 세션 id 로 갈린다" "yes" "$([ -f "$RATE_DIR/rl-sess-a.env" ] && echo yes || echo no)"
+OUT=$(run_keep "$RL_B_NONE" 120)
+assert_no_match "T62 창을 못 받은 다른 세션에 세션 A 의 5h 가 섞이지 않음" '5h [0-9]' "$OUT"
+assert_no_match "T62 창을 못 받은 다른 세션에 세션 A 의 7d 가 섞이지 않음" '7d [0-9]' "$OUT"
+OUT=$(run_keep "$RL_A_NONE" 120)
+assert_match "T62 창을 못 받은 같은 세션은 자기 캐시에서 5h 공급" '5h .*24%' "$OUT"
+SHARED_BODY="fivePct=99
+fiveReset=$((NOW + 9000))
+weekPct=98
+weekReset=$((NOW + 200000))"
+printf '%s\n' "$SHARED_BODY" > "$TMPROOT/cache/claude-statusline/rate-limits.env"
+OUT=$(run_keep "$RL_B_NONE" 120)
+assert_no_match "T62 공용 rate-limits.env 의 5h 를 읽지 않음" '5h [0-9]' "$OUT"
+run_keep "$(with_session rl-sess-c "$(json_pct 31 32)")" 120 >/dev/null
+assert_equals "T62 공용 rate-limits.env 에 쓰지 않음" "$SHARED_BODY" "$(cat "$TMPROOT/cache/claude-statusline/rate-limits.env")"
+rm -f "$TMPROOT/cache/claude-statusline/rate-limits.env"
+rm -rf "$RATE_DIR"
 
 # --- T36: aws login 캐시 디렉터리 규칙 — 캐시가 없으면 세그먼트가 통째로 빠지고,
 #     AWS_LOGIN_CACHE_DIR 오버라이드가 실제로 반영된다. 전체 레이아웃(81)은 모든 상태를
@@ -988,7 +1080,7 @@ printf '{"oauthAccount":{"emailAddress":"octocat@example.com"}}' > "$TMPROOT/.cl
 AWS_EMPTY_CACHE="$TMPROOT/aws-login-cache-empty"
 mkdir -p "$AWS_EMPTY_CACHE"
 aws_render() { printf '%s' "$(json_with_gh)" | \
-  CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT" XDG_CONFIG_HOME="$TMPROOT" \
+  CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT/data" XDG_STATE_HOME="$STATE_HOME" XDG_CONFIG_HOME="$TMPROOT" \
   XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" \
   CLAUDE_STATUSLINE_WIDTH="${2:-81}" \
   AWS_LOGIN_CACHE_DIR="$1" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
@@ -1029,14 +1121,14 @@ assert_match  "T42 버전이 SemVer 세 자리 형태" '^[0-9]+\.[0-9]+\.[0-9]+$
 
 # --- T50: 만료된 캐시 창은 그리지 않는다. 지난 창의 소진율은 더 이상 참이 아니다 ---
 seed_rate_cache 94 "$((NOW - 60))" 41 "$WEEK_RESET"
-OUT=$(run_keep "$(json_without)" 80)
+OUT=$(run_keep "$(with_rl "$(json_without)")" 80)
 assert_no_match "T50 만료된 5h 는 감춘다" '5h [0-9]' "$OUT"
 assert_match    "T50 만료 안 된 7d 는 남는다" '7d 41%' "$OUT"
 rm -f "$RATE_CACHE"
 
 # --- T51: stdin 값이 캐시보다 새것이면 파일이 갱신된다 ---
 seed_rate_cache 24 "$FIVE_RESET" 41 "$WEEK_RESET"
-run_keep "$(json_pct 55 60)" 80 >/dev/null
+run_keep "$(with_rl "$(json_pct 55 60)")" 80 >/dev/null
 assert_contains "T51 새 소진율이 저장됨" "fivePct=55" "$(cat "$RATE_CACHE")"
 rm -f "$RATE_CACHE"
 
@@ -1044,14 +1136,14 @@ rm -f "$RATE_CACHE"
 #    페이로드는 이 세션이 방금 받은 지금의 계정 상태이고, 캐시에는 그 값이 언제 관측된
 #    것인지가 없다. 낮다는 이유로 캐시를 남기면 낡은 값이 창이 끝날 때까지 화면을 붙든다.
 seed_rate_cache 60 "$FIVE_RESET" 90 "$WEEK_RESET"
-OUT=$(run_keep "$(json_pct 24 41)" 80)
+OUT=$(run_keep "$(with_rl "$(json_pct 24 41)")" 80)
 assert_contains "T52 페이로드가 파일에 반영됨" "fivePct=24" "$(cat "$RATE_CACHE")"
 assert_match    "T52 화면도 페이로드를 따른다" '5h 24%' "$OUT"
 rm -f "$RATE_CACHE"
 
 # --- T53: 세션 최초 렌더에서도 캐시가 두 줄을 공급한다(전체 레이아웃) ---
 seed_rate_cache 24 "$FIVE_RESET" 41 "$WEEK_RESET"
-OUT=$(run_keep "$(json_without)" 120)
+OUT=$(run_keep "$(with_rl "$(json_without)")" 120)
 assert_match "T53 전체 레이아웃 5h 행" '5h .*24%' "$OUT"
 assert_match "T53 전체 레이아웃 7d 행" '7d .*41%' "$OUT"
 rm -f "$RATE_CACHE"
@@ -1060,7 +1152,7 @@ rm -f "$RATE_CACHE"
 #    캐시는 아직 만료되지 않은 옛 창(94%)을, stdin 은 새 창(3%)을 들고 있다. 캐시가 만료
 #    되기를 기다리면 이미 끝난 창의 소진율이 몇 시간 더 남는다.
 seed_rate_cache 94 "$((NOW + 100))" 41 "$WEEK_RESET"
-OUT=$(run_keep "$(json_pct 3 41)" 80)
+OUT=$(run_keep "$(with_rl "$(json_pct 3 41)")" 80)
 assert_match    "T54 새 창이 화면을 차지" '5h 3%' "$OUT"
 assert_contains "T54 새 창이 파일에도 반영" "fivePct=3" "$(cat "$RATE_CACHE")"
 rm -f "$RATE_CACHE"
