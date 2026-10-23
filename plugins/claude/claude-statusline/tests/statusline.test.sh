@@ -31,7 +31,8 @@ TMPROOT=$(mktemp -d)
 # bash 3.2 는 EXIT 트랩 진입에서 $? 를 0 으로 만든다. completed 플래그가 없으면 set -eu 중단이
 # 종료코드 0 으로 보고된다. 정본은 AGENTS.md 의 Testing 절이다.
 completed=0
-trap 'rc=$?; rm -rf "$TMPROOT"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
+LIVE_PIDS=""
+trap 'rc=$?; kill $LIVE_PIDS 2>/dev/null; rm -rf "$TMPROOT"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
 # 이 스위트가 만들고 읽는 상태·데이터·캐시·설정은 모두 TMPROOT 안에 있다. 실제 홈의 설정 폴더, 상태 폴더,
 # 수신기 게시 경로를 건드리지 않도록 환경을 먼저 고정하고, 어긋나 있으면 시작하지 않는다.
 HOME="$TMPROOT/home"; CLAUDE_CONFIG_DIR="$TMPROOT"
@@ -216,12 +217,20 @@ RATE_DIR="$TMPROOT/cache/claude-statusline/rate-limits"
 RATE_CACHE="$RATE_DIR/$RL_SESSION.env"
 # 한도 캐시는 실행 프로세스와 인증 경계별이다(anchor.Boundary). 프로세스는 <설정 폴더>/sessions/<pid>.json 으로
 # 알아내므로 캐시를 쓰는 세션마다 프로세스 파일을 둔다. 경계는 <pid>-<startedAt>-<마지막 로그인 ts 또는 0> 이다.
+# 프로세스 파일은 실행 중인 pid 만 인정하므로(죽은 프로세스가 남긴 파일은 그 프로세스가 아니다) 시험의 프로세스는
+# 살아 있는 sleep 이다.
 seed_proc() { mkdir -p "$TMPROOT/sessions"; printf '{"pid":%s,"sessionId":"%s","startedAt":1700000000000}\n' "$2" "$1" > "$TMPROOT/sessions/$2.json"; }
-RL_BOUNDARY="4001-1700000000000-0"
-seed_proc "$RL_SESSION" 4001
-seed_proc rl-sess-a 4002
-seed_proc rl-sess-b 4003
-seed_proc rl-sess-c 4004
+live_proc() { sleep 900 & eval "$1=\$!"; LIVE_PIDS="$LIVE_PIDS $!"; }
+live_proc P_RL
+live_proc P_A
+live_proc P_A2
+live_proc P_B
+live_proc P_C
+RL_BOUNDARY="$P_RL-1700000000000-0"
+seed_proc "$RL_SESSION" "$P_RL"
+seed_proc rl-sess-a "$P_A"
+seed_proc rl-sess-b "$P_B"
+seed_proc rl-sess-c "$P_C"
 seed_rate_cache() { mkdir -p "$RATE_DIR"; printf 'boundary=%s\nfivePct=%s\nfiveReset=%s\nweekPct=%s\nweekReset=%s\n' "$RL_BOUNDARY" "$1" "$2" "$3" "$4" > "$RATE_CACHE"; }
 with_session() { printf '%s' "$2" | sed "s/^{/{\"session_id\":\"$1\",/"; }
 with_rl() { with_session "$RL_SESSION" "$1"; }
@@ -1093,15 +1102,32 @@ rm -rf "$RATE_DIR"
 run_keep "$RL_A" 120 >/dev/null
 OUT=$(run_keep "$RL_A_NONE" 120)
 assert_match "T63 같은 프로세스는 자기 캐시에서 5h 공급" '5h .*24%' "$OUT"
-rm -f "$TMPROOT/sessions/4002.json"
-seed_proc rl-sess-a 4099
+rm -f "$TMPROOT/sessions/$P_A.json"
+seed_proc rl-sess-a "$P_A2"
 OUT=$(run_keep "$RL_A_NONE" 120)
 assert_no_match "T63 새 프로세스는 이전 프로세스의 5h 를 그리지 않음" '5h [0-9]' "$OUT"
 assert_no_match "T63 새 프로세스는 이전 프로세스의 7d 를 그리지 않음" '7d [0-9]' "$OUT"
-rm -f "$TMPROOT/sessions/4099.json"
-seed_proc rl-sess-a 4002
+rm -f "$TMPROOT/sessions/$P_A2.json"
+seed_proc rl-sess-a "$P_A"
 OUT=$(run_keep "$RL_A_NONE" 120)
 assert_no_match "T63 옛 프로세스로 돌아가도 지워진 창은 돌아오지 않는다" '5h [0-9]' "$(printf '%s' "$OUT" | sed -n '1p')"
+rm -rf "$RATE_DIR"
+
+# --- T64: 비정상 종료한 프로세스가 파일을 남겨도 그 프로세스의 창은 새 프로세스로 넘어가지 않는다 ---
+#    강제 종료·충돌·재부팅은 <설정 폴더>/sessions/<pid>.json 을 지우지 못한다. 그 파일은 프로세스가 아니므로,
+#    같은 대화를 --continue 한 새 프로세스는 파일 이름순으로 먼저 나오는 죽은 프로세스의 한도를 물려받지 않는다.
+live_proc P_DEAD
+live_proc P_NEW
+rm -f "$TMPROOT/sessions/$P_A.json"
+seed_proc rl-sess-a "$P_DEAD"
+run_keep "$RL_A" 120 >/dev/null
+kill "$P_DEAD"; wait "$P_DEAD" 2>/dev/null || true
+seed_proc rl-sess-a "$P_NEW"
+OUT=$(run_keep "$RL_A_NONE" 120)
+assert_no_match "T64 죽은 프로세스가 남긴 파일의 5h 를 새 프로세스가 그리지 않음" '5h [0-9]' "$OUT"
+assert_no_match "T64 죽은 프로세스가 남긴 파일의 7d 를 새 프로세스가 그리지 않음" '7d [0-9]' "$OUT"
+rm -f "$TMPROOT/sessions/$P_DEAD.json" "$TMPROOT/sessions/$P_NEW.json"
+seed_proc rl-sess-a "$P_A"
 rm -rf "$RATE_DIR"
 
 # --- T36: aws login 캐시 디렉터리 규칙 — 캐시가 없으면 세그먼트가 통째로 빠지고,

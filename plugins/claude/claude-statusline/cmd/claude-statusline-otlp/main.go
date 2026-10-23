@@ -102,25 +102,35 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 	// Apply reads the stored anchor before replacing it, so concurrent requests take turns.
 	var mu sync.Mutex
 	var degraded atomic.Bool
+	var lastFailure time.Time // guarded by mu: when an event was last lost to a failed store
 	apply := func(ev anchor.Event) error {
 		mu.Lock()
 		defer mu.Unlock()
 		_, err := anchor.Apply(cfg.StateDir, ev)
 		if err != nil {
+			lastFailure = time.Now()
 			degraded.Store(true)
-			_ = anchor.WriteGeneration(cfg.StateDir, time.Now())
+			_ = anchor.WriteGeneration(cfg.StateDir, lastFailure)
 		}
 		return err
 	}
-	// recovered says state can be written again, and starts a new generation so what was
-	// stored before the failure stays doubted.
+	// lost starts a new generation for events that were dropped without being stored.
+	lost := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		_ = anchor.WriteGeneration(cfg.StateDir, time.Now())
+	}
+	// recovered says state can be written again. The generation it writes is the time of the
+	// last failure, not the time of recovery: an anchor stored since the failure (the
+	// exporter resends a refused request) came after the loss and must not be doubted by it,
+	// while what was stored before stays doubted.
 	recovered := func(now time.Time) bool {
 		mu.Lock()
 		defer mu.Unlock()
 		if !degraded.Load() {
 			return true
 		}
-		if anchor.Writable(cfg.StateDir) != nil || anchor.WriteGeneration(cfg.StateDir, now) != nil {
+		if anchor.Writable(cfg.StateDir) != nil || anchor.WriteGeneration(cfg.StateDir, lastFailure) != nil {
 			return false
 		}
 		degraded.Store(false)
@@ -132,7 +142,12 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 		anchor.Sweep(cfg.StateDir, now)
 	}
 	srv := &http.Server{
-		Handler:           newHandler(apply, time.Now, func(kind string) { say("request failed: " + kind) }),
+		Handler: newHandler(apply, time.Now, func(kind string) {
+			say("request failed: " + kind)
+			if kind == logTooLarge { // a batch over the limit is dropped whole, its /login with it
+				lost()
+			}
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 	}

@@ -215,7 +215,9 @@ func TestWindowsDropTheCachedOnesWhenANewProcessResumesTheConversation(t *testin
 		FiveHour: input.Window{Present: true, HasReset: true, Pct: 24, ResetsAt: reset},
 		SevenDay: input.Window{Present: true, HasReset: true, Pct: 41, ResetsAt: reset + 86400}}
 
-	proc(11, now.UnixMilli()-86_400_000)
+	// Only a running process counts, so the two processes are this test process and its parent.
+	first, second := os.Getpid(), os.Getppid()
+	proc(first, now.UnixMilli()-86_400_000)
 	if got := windows(cacheDir, in, full); got.Five.Pct != 24 {
 		t.Fatalf("payload 의 창: %+v", got)
 	}
@@ -223,8 +225,8 @@ func TestWindowsDropTheCachedOnesWhenANewProcessResumesTheConversation(t *testin
 		t.Fatalf("같은 프로세스는 빠진 창을 캐시로 채운다: %+v", got)
 	}
 
-	os.Remove(filepath.Join(configDir, "sessions", "11.json"))
-	proc(31, now.UnixMilli()-1000) // claude --continue: 새 프로세스, 같은 session id
+	os.Remove(filepath.Join(configDir, "sessions", fmt.Sprintf("%d.json", first)))
+	proc(second, now.UnixMilli()-1000) // claude --continue: 새 프로세스, 같은 session id
 	if got := windows(cacheDir, in, input.Status{SessionID: "s1"}); got.Five.Present || got.Week.Present {
 		t.Fatalf("이전 프로세스의 창이 그려졌다: %+v", got)
 	}

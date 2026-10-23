@@ -3,14 +3,20 @@ package anchor
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
 
 // t0 is a process start time in unix milliseconds.
 const t0 = int64(1_700_000_000_000)
+
+// The fixtures name pids no machine is known to run, so every process is taken as running
+// unless a test says it ended (fixture.dead).
+func init() { alive = func(int) bool { return true } }
 
 type fixture struct {
 	t      *testing.T
@@ -73,6 +79,18 @@ func (f *fixture) proc(pid int, startedMs int64, sessionID string) {
 	}
 }
 
+// dead stands in for processes that ended while the files they left behind stayed.
+func (f *fixture) dead(pids ...int) {
+	f.t.Helper()
+	old := alive
+	f.t.Cleanup(func() { alive = old })
+	gone := map[int]bool{}
+	for _, p := range pids {
+		gone[p] = true
+	}
+	alive = func(pid int) bool { return !gone[pid] }
+}
+
 func (f *fixture) apply(e Event) {
 	f.t.Helper()
 	if _, err := Apply(f.state, e); err != nil {
@@ -82,6 +100,10 @@ func (f *fixture) apply(e Event) {
 
 func (f *fixture) resolve(id string, now time.Time) Result {
 	return Resolve(Input{StateDir: f.state, ConfigDir: f.config, SessionID: id, Now: now})
+}
+
+func (f *fixture) resolveAs(id string, parent int, now time.Time) Result {
+	return Resolve(Input{StateDir: f.state, ConfigDir: f.config, SessionID: id, Parent: parent, Now: now})
 }
 
 func at(ms int64) time.Time { return time.UnixMilli(ms) }
@@ -716,5 +738,95 @@ func TestTheParentProcessIsTrustedOnlyWhenItsOwnFileNamesTheSession(t *testing.T
 	os.RemoveAll(filepath.Join(f.config, "sessions"))
 	if got := f.boundary("s1", 11, now); got != "" {
 		t.Errorf("파일이 없는데 부모만 믿었다: %q", got)
+	}
+}
+
+// R15 — a sessions/<pid>.json whose process has ended (killed, crashed, rebooted) is not a
+// process. A conversation a new process resumes must not inherit that process's confirmed
+// account or rate-limit windows through it.
+
+func (f *fixture) crashedLife(id string, startedMs int64, email string) {
+	f.t.Helper()
+	f.proc(11, startedMs, id)
+	f.apply(login(id, email, startedMs+5_000))
+	got := Resolve(Input{StateDir: f.state, ConfigDir: f.config, SessionID: id, Parent: 11, Now: at(startedMs + 10_000)})
+	if got.Email != email || got.Level != Confirmed {
+		f.t.Fatalf("the process that logs in shows its account: %+v", got)
+	}
+	f.dead(11) // killed: sessions/11.json stays
+}
+
+func TestADeadProcessFileDoesNotLendItsAccountToTheProcessThatResumesTheConversation(t *testing.T) {
+	for _, parent := range []int{31, 0} { // Claude Code as the parent, and no parent at all
+		f := newFixture(t)
+		now := at(t0 + 10_000)
+		f.install(0, now)
+		f.crashedLife("real", t0-86_400_000, "a@example.com")
+		f.proc(31, t0, "real") // claude --continue: a new process, the same conversation
+		in := Input{StateDir: f.state, ConfigDir: f.config, SessionID: "real", Parent: parent, Now: now}
+		if got := Resolve(in); got.Email != "" {
+			t.Errorf("parent %d: 죽은 프로세스의 확정 계정을 물려받았다: %+v", parent, got)
+		}
+		if got := Boundary(in); !strings.HasPrefix(got, "31-") {
+			t.Errorf("parent %d: 한도 경계가 새 프로세스가 아니다: %q", parent, got)
+		}
+	}
+}
+
+func TestTheRefOfAProcessThatNoLongerRunsIsNotTrusted(t *testing.T) {
+	f := newFixture(t)
+	now := at(t0 + 10_000)
+	f.install(0, now)
+	f.crashedLife("real", t0-86_400_000, "a@example.com") // leaves session-real.ref naming process 11
+	if _, ok := readRef(f.state, "real"); !ok {
+		t.Fatal("the render did not leave a ref")
+	}
+	f.dead(11)
+	if got := f.boundary("real", 0, now); got != "" {
+		t.Errorf("죽은 프로세스의 ref 를 믿었다: %q", got)
+	}
+}
+
+func TestTheParentsOwnFileOutranksTheRefOfAnotherProcess(t *testing.T) {
+	f := newFixture(t)
+	now := at(t0 + 10_000)
+	f.install(0, now)
+	f.proc(11, t0-86_400_000, "real")
+	f.apply(login("real", "a@example.com", t0-86_400_000+5_000))
+	f.wantEmail("real", at(t0-86_400_000+10_000), "a@example.com") // ref names 11, which still runs
+	f.proc(31, t0, "real")                                         // both process files name the conversation
+	if got := f.boundary("real", 31, now); !strings.HasPrefix(got, "31-") {
+		t.Errorf("부모의 파일보다 이전 ref 를 먼저 믿었다: %q", got)
+	}
+	if got := f.resolveAs("real", 31, now); got.Email != "" {
+		t.Errorf("이전 프로세스의 로그인을 물려받았다: %+v", got)
+	}
+}
+
+func TestOfTwoLiveFilesForOneSessionTheLatestStartedProcessWins(t *testing.T) {
+	f := newFixture(t)
+	now := at(t0 + 10_000)
+	f.install(0, now)
+	f.proc(11, t0-86_400_000, "real")
+	f.proc(31, t0, "real")
+	want := "31-" + strconv.FormatInt(t0, 10) + "-0"
+	if got := f.boundary("real", 0, now); got != want {
+		t.Errorf("파일명 순서로 먼저 나온 프로세스를 골랐다: %q, want %q", got, want)
+	}
+}
+
+func TestTheLivenessCheckSeesThisProcessAndAnEndedOne(t *testing.T) {
+	if !processAlive(os.Getpid()) {
+		t.Error("이 프로세스는 살아 있다")
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=NoSuchTest")
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if processAlive(cmd.ProcessState.Pid()) {
+		t.Error("끝난 프로세스를 살아 있다고 봤다")
+	}
+	if processAlive(0) || processAlive(-1) {
+		t.Error("pid 0 과 음수는 프로세스가 아니다")
 	}
 }

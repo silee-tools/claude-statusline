@@ -266,6 +266,73 @@ assert_equals "T17 동시 게시 뒤 .version 은 가장 높은 판본" "9.7.0" 
 assert_contains "T17 동시 게시 뒤 실행 파일도 가장 높은 판본의 빌드" "-9.7.0-" "$(cat "$LPUB_DIR/claude-statusline-otlp")"
 assert_equals "T17 동시 게시 뒤 잠금을 풀어 둠" no "$([ -e "$LOCK" ] && echo yes || echo no)"
 
+# 두 게시자가 같은 낡은 잠금을 회수하는 교차: 둘째가 "낡았다"고 본 뒤 첫째가 그 잠금을 치우고 새 잠금을 잡아 복사
+# 중일 때 둘째가 움직인다. 회수가 보고 지우는 두 단계라면 둘째가 첫째의 새 잠금을 지우고 같은 구간에 함께 들어간다.
+# find 대역이 둘째의 첫 낡음 판정을 첫째가 구간 안에 들어갈 때까지 붙들고, cp 대역이 구간의 점유를 표시한다.
+RACE="$MULTI/racetools"
+mkdir -p "$RACE"
+REAL_FIND=$(command -v find)
+REAL_CP=$(command -v cp)
+cat > "$RACE/find" <<FINDEOF
+#!/bin/sh
+if [ -n "\${HOLD_FIRST_FIND:-}" ] && [ ! -e "\$HOLD_FIRST_FIND" ]; then
+  out=\$("$REAL_FIND" "\$@")
+  : > "\$HOLD_FIRST_FIND"
+  n=0
+  while [ ! -d "\$RACE_OCCUPIED" ] && [ "\$n" -lt 100 ]; do sleep 0.05; n=\$((n + 1)); done
+  [ -z "\$out" ] || printf '%s\n' "\$out"
+  exit 0
+fi
+exec "$REAL_FIND" "\$@"
+FINDEOF
+cat > "$RACE/cp" <<CPEOF
+#!/bin/sh
+if mkdir "\$RACE_OCCUPIED" 2>/dev/null; then
+  sleep 1
+  "$REAL_CP" "\$@"
+  rc=\$?
+  rmdir "\$RACE_OCCUPIED"
+  exit \$rc
+fi
+echo overlap >> "\$RACE_LOG"
+exec "$REAL_CP" "\$@"
+CPEOF
+chmod +x "$RACE/find" "$RACE/cp"
+race_build() {
+  v=$1
+  shift
+  env "$@" PATH="$RACE:$VERGO:$PATH" HOME="$TMPROOT" XDG_CACHE_HOME="$MULTI/lock-cache" XDG_DATA_HOME="$MULTI/lock-data" \
+    XDG_STATE_HOME="$MULTI/lock-state" CLAUDE_CONFIG_DIR="$MULTI/account-e" CLAUDE_PLUGIN_ROOT="$MULTI/account-e/$v" \
+    RACE_OCCUPIED="$MULTI/race-occupied" RACE_LOG="$MULTI/race.log" \
+    sh "$MULTI/account-e/$v/scripts/build-binary.sh"
+}
+mkplug 10.0.0
+mkplug 10.1.0
+rm -rf "$MULTI/race-occupied" "$MULTI/race.log" "$MULTI/race-held"
+mkdir "$LOCK"
+touch -t 200001010000 "$LOCK"
+race_build 10.1.0 HOLD_FIRST_FIND="$MULTI/race-held" &
+SECOND_PID=$!
+n=0
+while [ ! -e "$MULTI/race-held" ] && [ "$n" -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
+race_build 10.0.0 &
+FIRST_PID=$!
+wait "$FIRST_PID"
+wait "$SECOND_PID"
+assert_equals "T17 낡은 잠금을 두 게시자가 동시에 회수해도 복사 구간에 함께 들어가지 않음" no "$([ -e "$MULTI/race.log" ] && echo yes || echo no)"
+assert_equals "T17 낡은 잠금을 회수한 경합 뒤 .version 은 가장 높은 판본" "10.1.0" "$(cat "$LPUB_DIR/claude-statusline-otlp.version")"
+assert_contains "T17 낡은 잠금을 회수한 경합 뒤 실행 파일도 가장 높은 판본의 빌드" "-10.1.0-" "$(cat "$LPUB_DIR/claude-statusline-otlp")"
+assert_equals "T17 낡은 잠금을 회수한 경합 뒤 잠금을 풀어 둠" no "$([ -e "$LOCK" ] && echo yes || echo no)"
+assert_equals "T17 낡은 잠금을 회수한 경합 뒤 회수 가드를 풀어 둠" no "$([ -e "$LOCK.reclaim" ] && echo yes || echo no)"
+
+# 회수 중에 죽은 프로세스가 남긴 낡은 가드는 10분 뒤 버리고, 그 뒤에도 낡은 잠금을 치워 게시한다.
+mkplug 10.2.0
+mkdir "$LOCK" "$LOCK.reclaim"
+touch -t 200001010000 "$LOCK" "$LOCK.reclaim"
+lock_build 10.2.0
+assert_equals "T17 낡은 가드와 낡은 잠금이 함께 남아도 게시함" "10.2.0" "$(cat "$LPUB_DIR/claude-statusline-otlp.version")"
+assert_equals "T17 낡은 가드를 치운 뒤 잠금과 가드를 풀어 둠" "no no" "$([ -e "$LOCK" ] && echo yes || echo no) $([ -e "$LOCK.reclaim" ] && echo yes || echo no)"
+
 assert_equals "T16 빌드 스크립트는 LaunchAgent 를 다루지 않음" "0" \
   "$(grep -c 'launchctl\|kr\.silee\|LaunchAgent' "$BUILD" || true)"
 

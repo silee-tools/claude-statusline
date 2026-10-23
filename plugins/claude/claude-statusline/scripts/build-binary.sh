@@ -91,19 +91,37 @@ publish_receiver() {
   printf '%s\n' "$version" > "$_vtmp" && mv "$_vtmp" "$_ver"
 }
 
+# reclaim_stale_lock: 비정상 종료한 게시자가 남긴 낡은 잠금(2분 넘게 그대로)을 치운다. 낡은지 보고 지우는 두
+# 단계 사이에 다른 프로세스가 먼저 치우고 새 잠금을 잡을 수 있어, 그냥 지우거나 rename 으로 치우면 새 잠금을
+# 지운다(둘째 프로세스의 rename 이 첫째가 잡은 새 잠금에 성공한다). 그래서 회수 가드(mkdir)를 잡은 프로세스만
+# 치우고, 가드를 잡은 뒤에 다시 본다. 낡은 잠금이 자리를 차지하는 동안에는 아무도 새 잠금을 만들 수 없고 치우는 쪽은
+# 가드 보유자 하나뿐이라, 보고 지우는 사이에 잠금이 바뀌지 않는다.
+# shortcut: 2분 넘게 멈춘 살아 있는 보유자(노트북 절전 등)의 잠금도 낡은 것으로 보고 치운다, 복사 한 번이 걸리는
+# 구간이라 겹치려면 그 구간에서 멈춰야 한다. 회수 중 SIGKILL 로 죽은 가드는 10분 뒤 나이로 버린다.
+reclaim_stale_lock() {
+  [ -n "$(find "$_lock" -maxdepth 0 -mmin +2 2>/dev/null)" ] || return 0
+  if [ -n "$(find "$_guard" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then
+    rmdir "$_guard" 2>/dev/null || true
+  fi
+  mkdir "$_guard" 2>/dev/null || return 0
+  trap 'rmdir "$_guard" 2>/dev/null; exit 0' HUP INT TERM
+  if [ -n "$(find "$_lock" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then
+    rmdir "$_lock" 2>/dev/null || true
+  fi
+  trap - HUP INT TERM
+  rmdir "$_guard" 2>/dev/null || true
+}
+
 # publish_receiver_locked: publish_receiver 를 게시 폴더 단위 잠금 안에서 실행한다. 정상 보유 시간은
 # 복사 한 번이라 10초 안에 잡히지 않으면 포기하고(다음 세션 시작에 다시 시도한다), 비정상 종료한 게시자가 남긴
-# 잠금은 2분이 지나면 버린다.
-# shortcut: 낡은 잠금을 두 프로세스가 동시에 치우면 새로 잡힌 잠금을 지울 수 있다, 그 틈은 비정상 종료와
-# 동시 시작이 겹쳐야 열리고 결과도 한 번 더 게시하는 데 그친다.
+# 잠금은 2분이 지나면 reclaim_stale_lock 이 버린다.
 publish_receiver_locked() {
   _lock="$PUB_DIR/.publish.lock"
+  _guard="$_lock.reclaim"
   mkdir -p "$PUB_DIR" || return 1
   _tries=0
   while ! mkdir "$_lock" 2>/dev/null; do
-    if [ -n "$(find "$_lock" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then
-      rmdir "$_lock" 2>/dev/null || true
-    fi
+    reclaim_stale_lock
     _tries=$((_tries + 1))
     [ "$_tries" -le 50 ] || return 1
     sleep 0.2
