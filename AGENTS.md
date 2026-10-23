@@ -2,14 +2,12 @@
 
 Guidance for AI agents and contributors working in this repository.
 
-This repo holds two Claude Code plugins published through one marketplace
-catalog. `claude-statusline` is a width-aware statusline HUD with a compact
-two-row layout and a full layout of up to six rows. `stuck-resume` is a
-`StopFailure` hook that waits out a usage limit or an expired login and then
-resumes the interrupted turn. End-user documentation lives in
+This repo holds the `claude-statusline` Claude Code plugin, published through a
+marketplace catalog: a width-aware statusline HUD with a compact two-row layout
+and a full layout of up to six rows. End-user documentation lives in
 [README.md](README.md); this file covers how to change the code safely.
 
-Each plugin owns a directory under `plugins/claude` named after it, holding
+The plugin owns a directory under `plugins/claude` named after it, holding
 `.claude-plugin/plugin.json`, `hooks/hooks.json`, `scripts/`, and `tests/`.
 `hooks.json` is auto-discovered;
 do not also declare a `hooks` field in `plugin.json` (double-registration errors
@@ -81,10 +79,6 @@ caller. Avoid bashisms:
 
 `local` and `$(...)` are used and assumed available.
 
-`stuck-resume` stays POSIX `sh` permanently. It is a few dozen lines and runs
-once per failed turn, so an interpreter start-up costs nothing worth optimizing
-away.
-
 ## Testing
 
 Run every suite from the repo root; the exit code is the gate, so a suite that
@@ -115,10 +109,7 @@ when that build fails, because a skipped build would report zero checks as a
 pass. `shim.test.sh` asserts what the shim does with and without a binary and
 that `build-binary.sh` is idempotent and never blocks session start.
 `json.test.sh` and `settings.test.sh` cover the awk parser and rewriter the
-`SessionStart` hook still uses. `resume.test.sh` asserts the exit codes, the prompt
-`resume.sh` injects, the per-cause counters, and the per-cause attempt caps; it
-overrides the wait through an environment variable, and reaches a cap by seeding
-the counter file rather than running to it, so the suite stays fast.
+`SessionStart` hook still uses.
 
 The Go tests carry the boundaries the shell suite only sees through whole-output
 comparison: display width and cutting, terminal-width decisions, path and branch
