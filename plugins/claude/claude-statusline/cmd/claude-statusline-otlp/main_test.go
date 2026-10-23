@@ -208,3 +208,111 @@ func TestServeAcceptsIPv6Loopback(t *testing.T) {
 	cancel()
 	waitExit(t, exit, 3*time.Second)
 }
+
+func postLogin(t *testing.T, addr, id, email string, tsMs int64) int {
+	t.Helper()
+	body := request(record("auth", tsMs*ms, str("session.id", id), str("user.email", email), str("action", "login"), boolean("success", true)))
+	resp, err := http.Post("http://"+addr+"/v1/logs", "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+func TestServeStartsANewGenerationBeforeItListens(t *testing.T) {
+	cfg := baseConfig(t)
+	gen := filepath.Join(cfg.StateDir, "otel", "generation")
+	before := time.Now().Add(-time.Second)
+	_, exit, _, cancel := start(t, cfg)
+	defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+	info, err := os.Stat(gen)
+	if err != nil {
+		t.Fatalf("시작할 때 세대 파일이 있어야 한다: %v", err)
+	}
+	if info.ModTime().Before(before) {
+		t.Error("세대 파일이 이번 시작의 것이 아니다")
+	}
+}
+
+func TestServeSweepsStateOlderThanRetentionAtStart(t *testing.T) {
+	cfg := baseConfig(t)
+	old := filepath.Join(cfg.StateDir, "otel", "sessions", "old.env")
+	os.MkdirAll(filepath.Dir(old), 0o700)
+	os.WriteFile(old, []byte("email=a@example.com\nkind=start\nts=1\n"), 0o600)
+	stale := time.Now().Add(-31 * 24 * time.Hour)
+	os.Chtimes(old, stale, stale)
+	_, exit, _, cancel := start(t, cfg)
+	defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Error("보존 기간이 지난 앵커가 시작 때 지워지지 않았다")
+	}
+}
+
+func TestServeSweepsPeriodicallyWithoutAnyEvent(t *testing.T) {
+	cfg := baseConfig(t)
+	cfg.SweepEvery = 20 * time.Millisecond
+	_, exit, _, cancel := start(t, cfg)
+	defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+	old := filepath.Join(cfg.StateDir, "pids", "11-1.env")
+	os.MkdirAll(filepath.Dir(old), 0o700)
+	os.WriteFile(old, []byte("session=s\n"), 0o600)
+	stale := time.Now().Add(-31 * 24 * time.Hour)
+	os.Chtimes(old, stale, stale)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(old); os.IsNotExist(err) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Error("이벤트가 없어도 주기적으로 지워야 한다")
+}
+
+func TestServeAnswers503AndDoubtsItselfWhileItCannotStoreThenRecovers(t *testing.T) {
+	cfg := baseConfig(t)
+	sessions := filepath.Join(cfg.StateDir, "otel", "sessions")
+	hb := filepath.Join(cfg.StateDir, "otel", "heartbeat")
+	gen := filepath.Join(cfg.StateDir, "otel", "generation")
+	addr, exit, _, cancel := start(t, cfg)
+	defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+
+	if code := postLogin(t, addr, "s1", "a@example.com", 1_700_000_000_000); code != 200 {
+		t.Fatalf("정상 상태 %d", code)
+	}
+	genBefore, _ := os.Stat(gen)
+
+	// 앵커 디렉터리 자리에 파일을 둬서 쓰기를 실패시킨다(권한과 무관하게 실패한다).
+	os.RemoveAll(sessions)
+	os.WriteFile(sessions, []byte("x"), 0o600)
+	if code := postLogin(t, addr, "s1", "b@example.com", 1_700_000_005_000); code != http.StatusServiceUnavailable {
+		t.Fatalf("저장 실패 상태 %d, want 503", code)
+	}
+	genAfter, _ := os.Stat(gen)
+	if !genAfter.ModTime().After(genBefore.ModTime()) {
+		t.Error("저장 실패 때 세대를 올리지 않았다")
+	}
+	// 실패하는 동안에는 하트비트를 찍지 않는다.
+	failedAt, _ := os.Stat(hb)
+	time.Sleep(150 * time.Millisecond) // 수 차례 박동 주기
+	if cur, _ := os.Stat(hb); !cur.ModTime().Equal(failedAt.ModTime()) {
+		t.Error("저장하지 못하는 동안 하트비트를 찍었다")
+	}
+
+	// 저장소가 돌아오면 하트비트가 다시 뛴다.
+	os.Remove(sessions)
+	os.MkdirAll(sessions, 0o700)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if cur, _ := os.Stat(hb); cur.ModTime().After(failedAt.ModTime()) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("복구 뒤에도 하트비트가 재개되지 않았다")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if code := postLogin(t, addr, "s1", "b@example.com", 1_700_000_005_000); code != 200 {
+		t.Errorf("복구 뒤 재시도 상태 %d, want 200", code)
+	}
+}

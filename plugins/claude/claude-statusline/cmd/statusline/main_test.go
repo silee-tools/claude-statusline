@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -68,6 +69,9 @@ func accountFixture(t *testing.T, now time.Time) (stateDir, configDir string) {
 	if err := anchor.TouchHeartbeat(stateDir, now); err != nil {
 		t.Fatal(err)
 	}
+	if err := anchor.WriteGeneration(stateDir, time.UnixMilli(1)); err != nil {
+		t.Fatal(err)
+	}
 	return stateDir, configDir
 }
 
@@ -81,7 +85,8 @@ func loginEvent(id, email string, ts int64) anchor.Event {
 
 func slotText(t *testing.T, stateDir, configDir string, status input.Status, now time.Time) string {
 	t.Helper()
-	return ansi.ReplaceAllString(accountSlot(stateDir, configDir, status, now), "")
+	in := anchor.Input{StateDir: stateDir, ConfigDir: configDir, SessionID: status.SessionID, Now: now}
+	return ansi.ReplaceAllString(accountSlot(in, status), "")
 }
 
 var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -92,14 +97,14 @@ func TestAccountSlotFollowsTheSessionsAnchorThroughLoginAndLogout(t *testing.T) 
 	status := input.Status{SessionID: "s1"}
 	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000))
 	anchor.Apply(stateDir, startEvent("s2", "other@example.com", 1000))
-	if got := slotText(t, stateDir, configDir, status, now); got != "a@example.com" {
-		t.Fatalf("시작 앵커: %q", got)
+	if got := slotText(t, stateDir, configDir, status, now); got != "~a@example.com" {
+		t.Fatalf("시작 앵커는 추정이다: %q", got)
 	}
 	anchor.Apply(stateDir, loginEvent("s1", "b@example.com", 2000))
 	if got := slotText(t, stateDir, configDir, status, now); got != "b@example.com" {
 		t.Fatalf("/login 뒤: %q", got)
 	}
-	if got := slotText(t, stateDir, configDir, input.Status{SessionID: "s2"}, now); got != "other@example.com" {
+	if got := slotText(t, stateDir, configDir, input.Status{SessionID: "s2"}, now); got != "~other@example.com" {
 		t.Fatalf("다른 세션은 그대로여야 한다: %q", got)
 	}
 	anchor.Apply(stateDir, anchor.Event{Name: "auth", SessionID: "s1", Action: "logout", Success: "true", TS: 3000})
@@ -127,7 +132,7 @@ func TestAccountSlotDoubtsAStoppedReceiver(t *testing.T) {
 	now := time.Now()
 	stateDir, configDir := accountFixture(t, now.Add(-10*time.Minute))
 	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000))
-	if got := slotText(t, stateDir, configDir, input.Status{SessionID: "s1"}, now); got != "a@example.com?" {
+	if got := slotText(t, stateDir, configDir, input.Status{SessionID: "s1"}, now); got != "~a@example.com?" {
 		t.Errorf("하트비트 정체: %q", got)
 	}
 }
@@ -141,13 +146,13 @@ func TestAccountSlotDoubtsAWindowThatChangedBeforeItEnded(t *testing.T) {
 	}
 	later := func(sec int) time.Time { return now.Add(time.Duration(sec) * time.Second) }
 	end := now.Unix() + 3*86400
-	if got := slotText(t, stateDir, configDir, week(end), now); got != "a@example.com" {
+	if got := slotText(t, stateDir, configDir, week(end), now); got != "~a@example.com" {
 		t.Fatalf("기준선: %q", got)
 	}
-	if got := slotText(t, stateDir, configDir, week(end+5000), later(10)); got != "a@example.com" {
+	if got := slotText(t, stateDir, configDir, week(end+5000), later(10)); got != "~a@example.com" {
 		t.Fatalf("바뀐 값을 처음 본 렌더: %q", got)
 	}
-	if got := slotText(t, stateDir, configDir, week(end+5000), later(80)); got != "a@example.com?" {
+	if got := slotText(t, stateDir, configDir, week(end+5000), later(80)); got != "~a@example.com?" {
 		t.Fatalf("60초 넘게 다른 값: %q", got)
 	}
 	// 새 로그인은 새 기준선이다.
@@ -166,18 +171,18 @@ func TestAccountSlotDoubtsAFiveHourWindowThatChangedBeforeItEnded(t *testing.T) 
 	}
 	later := func(sec int) time.Time { return now.Add(time.Duration(sec) * time.Second) }
 	end := now.Unix() + 3*3600
-	if got := slotText(t, stateDir, configDir, five(end), now); got != "a@example.com" {
+	if got := slotText(t, stateDir, configDir, five(end), now); got != "~a@example.com" {
 		t.Fatalf("기준선: %q", got)
 	}
-	if got := slotText(t, stateDir, configDir, five(end+900), later(10)); got != "a@example.com" {
+	if got := slotText(t, stateDir, configDir, five(end+900), later(10)); got != "~a@example.com" {
 		t.Fatalf("바뀐 값을 처음 본 렌더: %q", got)
 	}
-	if got := slotText(t, stateDir, configDir, five(end+900), later(80)); got != "a@example.com?" {
+	if got := slotText(t, stateDir, configDir, five(end+900), later(80)); got != "~a@example.com?" {
 		t.Fatalf("5시간 창이 끝나기 전에 60초 넘게 다른 값: %q", got)
 	}
 	// 창이 끝난 뒤의 새 값은 다음 창이다. 3시간 뒤라 수신기 하트비트도 새로 찍는다.
 	anchor.TouchHeartbeat(stateDir, later(3*3600+60))
-	if got := slotText(t, stateDir, configDir, five(end+5*3600), later(3*3600+60)); got != "a@example.com" {
+	if got := slotText(t, stateDir, configDir, five(end+5*3600), later(3*3600+60)); got != "~a@example.com" {
 		t.Fatalf("창 종료 뒤: %q", got)
 	}
 }
@@ -189,5 +194,38 @@ func TestAccountSlotIgnoresPayloadWindowsWhenNoEmailIsKnown(t *testing.T) {
 	slotText(t, stateDir, configDir, status, now)
 	if _, err := os.Stat(filepath.Join(stateDir, "fingerprints")); !os.IsNotExist(err) {
 		t.Error("계정을 모르는 세션이 지문 파일을 만들었다")
+	}
+}
+
+func TestWindowsDropTheCachedOnesWhenANewProcessResumesTheConversation(t *testing.T) {
+	// 계정 A 의 프로세스가 남긴 한도를 계정 B 의 새 프로세스가 --continue 한 직후에 그리지 않는다.
+	now := time.Now()
+	stateDir, configDir := accountFixture(t, now)
+	cacheDir := t.TempDir()
+	proc := func(pid int, started int64) {
+		b := fmt.Sprintf(`{"pid":%d,"sessionId":"s1","startedAt":%d}`, pid, started)
+		if err := os.WriteFile(filepath.Join(configDir, "sessions", fmt.Sprintf("%d.json", pid)), []byte(b), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	os.MkdirAll(filepath.Join(configDir, "sessions"), 0o755)
+	in := anchor.Input{StateDir: stateDir, ConfigDir: configDir, SessionID: "s1", Now: now}
+	reset := now.Unix() + 3600
+	full := input.Status{SessionID: "s1",
+		FiveHour: input.Window{Present: true, HasReset: true, Pct: 24, ResetsAt: reset},
+		SevenDay: input.Window{Present: true, HasReset: true, Pct: 41, ResetsAt: reset + 86400}}
+
+	proc(11, now.UnixMilli()-86_400_000)
+	if got := windows(cacheDir, in, full); got.Five.Pct != 24 {
+		t.Fatalf("payload 의 창: %+v", got)
+	}
+	if got := windows(cacheDir, in, input.Status{SessionID: "s1"}); got.Five.Pct != 24 || got.Week.Pct != 41 {
+		t.Fatalf("같은 프로세스는 빠진 창을 캐시로 채운다: %+v", got)
+	}
+
+	os.Remove(filepath.Join(configDir, "sessions", "11.json"))
+	proc(31, now.UnixMilli()-1000) // claude --continue: 새 프로세스, 같은 session id
+	if got := windows(cacheDir, in, input.Status{SessionID: "s1"}); got.Five.Present || got.Week.Present {
+		t.Fatalf("이전 프로세스의 창이 그려졌다: %+v", got)
 	}
 }

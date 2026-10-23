@@ -13,15 +13,22 @@
 // The first event of a session id created by /clear is a user_prompt, whose email is
 // whatever the file holds at that moment, so it never starts an anchor.
 //
+// Neither kind proves which credentials the session holds. A login anchor was written by
+// an event the session itself produced after authenticating, so its account is
+// confirmed; a start anchor is only what the settings file held at the start, an estimate.
+//
 // State lives under <stateDir> = ${XDG_STATE_HOME:-$HOME/.local/state}/claude-statusline:
 //
-//	otel/sessions/<session.id>.env   the anchor: email=, kind=, ts= (event time, unix ms)
+//	otel/sessions/<session.id>.env   the anchor: email=, kind=, ts= (event time, unix ms),
+//	                                 seen= (when the receiver stored it, unix ms)
 //	otel/heartbeat                   touched by the receiver; its mtime says it is alive
+//	otel/generation                  when the receiver last began or may have lost events
 //	pids/<pid>-<startedAt>.env       the anchor a process carries across /clear
 //	pids/session-<session.id>.ref    which pid file a session belongs to
 //
-// Each directory is pruned on write to 30 days and, for otel/sessions and pids, 2,000
-// files.
+// Every file is kept 30 days after it was stored or last written, and each directory at
+// most 2,000 files: the writer prunes on write, the receiver sweeps all three at start and
+// hourly, and a reader ignores an anchor older than that.
 package anchor
 
 import (
@@ -43,12 +50,14 @@ const (
 	KindLogout = "logout"
 )
 
-// Anchor is one session's latest known account. TS is the event time in unix
-// milliseconds.
+// Anchor is one session's latest known account. TS is the event time and Seen the time
+// the receiver stored it, both in unix milliseconds. An anchor stored before the
+// receiver's current generation (see WriteGeneration) may have missed a /login since.
 type Anchor struct {
 	Email string
 	Kind  string
 	TS    int64
+	Seen  int64
 }
 
 // Event is the allowed-keys view of one OTLP log record: nothing else the record
@@ -62,10 +71,12 @@ type Event struct {
 	TS        int64  // unix milliseconds
 }
 
-// How much the state directories keep. Variables so tests can shrink them.
+// How much the state directories keep, and the clock the receiver stamps anchors with.
+// Variables so tests can shrink them and move time.
 var (
 	maxFiles  = 2000
 	retention = 30 * 24 * time.Hour
+	clock     = time.Now
 )
 
 const maxEmailBytes = 254
@@ -109,7 +120,7 @@ func Apply(stateDir string, ev Event) (bool, error) {
 	if !validID(ev.SessionID) {
 		return false, nil
 	}
-	next := Anchor{TS: ev.TS}
+	next := Anchor{TS: ev.TS, Seen: clock().UnixMilli()}
 	switch strings.TrimPrefix(ev.Name, "claude_code.") {
 	case "managed_settings_resolved", "plugin_loaded":
 		next.Kind = KindStart
@@ -131,19 +142,20 @@ func Apply(stateDir string, ev Event) (bool, error) {
 		}
 		next.Email = ev.Email
 	}
-	if cur, has := Read(stateDir, ev.SessionID); has && (next.Kind == KindStart || next.TS < cur.TS) {
+	if cur, has := readFresh(stateDir, ev.SessionID, clock()); has && (next.Kind == KindStart || next.TS < cur.TS) {
 		return false, nil
 	}
 	dir := sessionsDir(stateDir)
 	if err := statefile.Write(filepath.Join(dir, ev.SessionID+".env"), encode(next)); err != nil {
 		return false, err
 	}
-	statefile.Prune(dir, time.Now(), retention, maxFiles)
+	statefile.Prune(dir, clock(), retention, maxFiles)
 	return true, nil
 }
 
 func encode(a Anchor) []byte {
-	return []byte("email=" + a.Email + "\nkind=" + a.Kind + "\nts=" + strconv.FormatInt(a.TS, 10) + "\n")
+	return []byte("email=" + a.Email + "\nkind=" + a.Kind + "\nts=" + strconv.FormatInt(a.TS, 10) +
+		"\nseen=" + strconv.FormatInt(a.Seen, 10) + "\n")
 }
 
 // Read returns the anchor of session id. A missing or damaged file is no anchor.
@@ -172,6 +184,8 @@ func decode(s string) (Anchor, bool) {
 			a.Kind = v
 		case "ts":
 			a.TS, _ = strconv.ParseInt(v, 10, 64)
+		case "seen":
+			a.Seen, _ = strconv.ParseInt(v, 10, 64)
 		}
 	}
 	switch a.Kind {
@@ -188,6 +202,70 @@ func decode(s string) (Anchor, bool) {
 		return Anchor{}, false
 	}
 	return a, true
+}
+
+// stored is when the receiver wrote the anchor, or its event time for a file that carries
+// no seen=.
+func (a Anchor) stored() int64 {
+	if a.Seen > 0 {
+		return a.Seen
+	}
+	return a.TS
+}
+
+// expired reports whether the anchor is older than the retention, so a file the writer has
+// not got round to pruning is not used.
+func (a Anchor) expired(now time.Time) bool {
+	return now.UnixMilli()-a.stored() > retention.Milliseconds()
+}
+
+// readFresh is Read without an anchor past its retention.
+func readFresh(stateDir, id string, now time.Time) (Anchor, bool) {
+	a, ok := Read(stateDir, id)
+	if !ok || a.expired(now) {
+		return Anchor{}, false
+	}
+	return a, true
+}
+
+func generationPath(stateDir string) string { return filepath.Join(stateDir, "otel", "generation") }
+
+// WriteGeneration records that at the receiver began a new stretch of listening, or may
+// have lost events: a restart, or a failed write. An anchor stored before it cannot be
+// told from one a lost /login left behind, so a reader doubts it until a later event
+// replaces it.
+func WriteGeneration(stateDir string, at time.Time) error {
+	return statefile.Write(generationPath(stateDir), []byte(strconv.FormatInt(at.UnixMilli(), 10)+"\n"))
+}
+
+// Writable reports whether an anchor could be stored now: it writes and removes a probe
+// file where the anchors live.
+func Writable(stateDir string) error {
+	probe := filepath.Join(sessionsDir(stateDir), ".probe")
+	if err := statefile.Write(probe, []byte("ok\n")); err != nil {
+		return err
+	}
+	return os.Remove(probe)
+}
+
+// readGeneration returns the start of the receiver's current generation. A missing or
+// damaged file is unknown.
+func readGeneration(stateDir string) (int64, bool) {
+	b, err := os.ReadFile(generationPath(stateDir))
+	if err != nil {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	return n, err == nil && n > 0
+}
+
+// Sweep prunes the state directories to the retention and file limits. The receiver runs
+// it at start and hourly, so files of sessions that stopped sending are removed even
+// when no new anchor is written.
+func Sweep(stateDir string, now time.Time) {
+	for _, dir := range []string{sessionsDir(stateDir), filepath.Join(stateDir, "pids"), filepath.Join(stateDir, "fingerprints")} {
+		statefile.Prune(dir, now, retention, maxFiles)
+	}
 }
 
 // TouchHeartbeat records that the receiver is alive at now.

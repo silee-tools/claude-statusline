@@ -89,17 +89,17 @@ assert_contains "수신기가 뜬 기계에서 앵커 없는 세션은 ?" " ? �
 
 # --- 시작 이벤트: 한 설정 폴더의 두 세션이 각자 자기 계정을 보인다 ---
 assert_equals "시작 이벤트 요청은 200" "200" "$(post "$(record managed_settings_resolved s1 a@example.com),$(record plugin_loaded s1 a@example.com),$(record managed_settings_resolved s2 b@example.com)")"
-assert_contains "세션 s1 은 자기 시작 계정" " a@example.com ⧉ s1" "$(first_line s1)"
-assert_contains "세션 s2 는 자기 시작 계정" " b@example.com ⧉ s2" "$(first_line s2)"
+assert_contains "세션 s1 은 자기 시작 계정(추정이라 물결표)" " ~a@example.com ⧉ s1" "$(first_line s1)"
+assert_contains "세션 s2 는 자기 시작 계정(추정이라 물결표)" " ~b@example.com ⧉ s2" "$(first_line s2)"
 
 # --- 세션 안 /login: 그 세션만 새 계정으로 바뀐다 ---
 post "$(record auth s1 c@example.com "$(auth_extra login true)")" >/dev/null
-assert_contains "/login 뒤 s1 은 새 계정" " c@example.com ⧉ s1" "$(first_line s1)"
-assert_contains "/login 은 s2 를 바꾸지 않는다" " b@example.com ⧉ s2" "$(first_line s2)"
+assert_contains "/login 뒤 s1 은 새 계정(확정이라 물결표 없음)" " c@example.com ⧉ s1" "$(first_line s1)"
+assert_contains "/login 은 s2 를 바꾸지 않는다" " ~b@example.com ⧉ s2" "$(first_line s2)"
 
 # 실패한 로그인은 앵커를 바꾸지 않는다.
 post "$(record auth s2 d@example.com "$(auth_extra login false)")" >/dev/null
-assert_contains "실패한 로그인은 무시" " b@example.com ⧉ s2" "$(first_line s2)"
+assert_contains "실패한 로그인은 무시" " ~b@example.com ⧉ s2" "$(first_line s2)"
 
 # --- 로그아웃 → ? ---
 post "$(record auth s1 '' "$(auth_extra logout true)")" >/dev/null
@@ -108,7 +108,7 @@ assert_contains "로그아웃 뒤 s1 은 ?" " ? ⧉ s1" "$(first_line s1)"
 # --- 「Not logged in」 세션도 시작 이벤트의 이메일을 앵커로 삼는다(알려진 한계를 못박는다) ---
 post "$(record managed_settings_resolved s3 a@example.com)" >/dev/null
 post "$(record auth s3 a@example.com "$(auth_extra login false)")" >/dev/null
-assert_contains "로그인에 실패한 세션도 시작 계정이 앵커" " a@example.com ⧉ s3" "$(first_line s3)"
+assert_contains "로그인에 실패한 세션도 시작 계정이 앵커(추정)" " ~a@example.com ⧉ s3" "$(first_line s3)"
 
 # --- /clear 로 만든 세션의 첫 이벤트 user_prompt 는 앵커가 아니다 ---
 post "$(record user_prompt s4 z@example.com ",$(attr prompt SENTINEL_PROMPT),$(attr prompt_text SENTINEL_TEXT)")" >/dev/null
@@ -146,13 +146,19 @@ kill "$RECV_PID"
 set +e; wait "$RECV_PID"; RC=$?; set -e
 RECV_PID=""
 assert_equals "SIGTERM 으로 끝나면 종료코드 0" "0" "$RC"
-assert_contains "멈춘 직후엔 아직 신선한 하트비트라 ? 가 없다" " b@example.com ⧉ s2" "$(first_line s2)"
+assert_contains "멈춘 직후엔 아직 신선한 하트비트라 ? 가 없다" " ~b@example.com ⧉ s2" "$(first_line s2)"
 touch -t 200001010000 "$HEARTBEAT"
-assert_contains "하트비트가 정체되면 이메일 뒤에 ?" " b@example.com? ⧉ s2" "$(first_line s2)"
+assert_contains "하트비트가 정체되면 이메일 뒤에 ?" " ~b@example.com? ⧉ s2" "$(first_line s2)"
 
 # --- 실행 파일이 교체되면 종료코드 75 로 스스로 끝난다 ---
 cp "$RECV" "$TMPROOT/bin/receiver-live"
 start_receiver "$TMPROOT/bin/receiver-live" "$TMPROOT/recv2.err" || { echo "FATAL: 두 번째 수신기가 뜨지 않았다" >&2; exit 1; }
+
+# --- 재시작: 멈춰 있던 동안의 /login 이 유실됐을 수 있어, 이전 세대의 앵커는 하트비트가 신선해도 ? 가 붙는다 ---
+assert_contains "재시작한 수신기의 하트비트는 신선해도 이전 세대 앵커는 의심" " ~b@example.com? ⧉ s2" "$(first_line s2)"
+PORT=$(sed -n 's/.*listening on 127\.0\.0\.1:\([0-9]*\)$/\1/p' "$TMPROOT/recv2.err" | head -1)
+post "$(record auth s2 e@example.com "$(auth_extra login true)")" >/dev/null
+assert_contains "새 세대가 받은 /login 은 다시 신뢰한다" " e@example.com ⧉ s2" "$(first_line s2)"
 cp "$RECV" "$TMPROOT/bin/receiver-live.next"
 mv "$TMPROOT/bin/receiver-live.next" "$TMPROOT/bin/receiver-live"
 _n=0

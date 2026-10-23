@@ -226,9 +226,14 @@ func readFields(line string, n int) []string {
 //   - installed is false when the OTLP receiver never ran on this machine: the slot is
 //     empty, because a permanent "?" would tell the reader nothing;
 //   - an unknown account is a dim "?": no anchor says which account the session uses;
-//   - a known account is its email, followed by "?" when suspect, that is when the
-//     receiver looks stopped or the session's rate-limit window changed under it.
-func Account(installed bool, email string, suspect bool) string {
+//   - a confirmed account, one an in-session /login named, is its email;
+//   - an estimated account, the one the settings file held when the session began, is
+//     its email behind a dim "~", because nothing shows the session's credentials are
+//     that account's;
+//   - either is followed by "?" when suspect, that is when the receiver looks stopped, the
+//     anchor predates the receiver's current run, or the session's rate-limit window
+//     changed under it.
+func Account(installed bool, email string, estimate, suspect bool) string {
 	if !installed {
 		return ""
 	}
@@ -237,6 +242,9 @@ func Account(installed bool, email string, suspect bool) string {
 		return theme.Dim + "?" + theme.Reset
 	}
 	out := theme.Coral173 + email + theme.Reset
+	if estimate {
+		out = theme.Dim + "~" + theme.Reset + out
+	}
 	if suspect {
 		out += theme.Dim + "?" + theme.Reset
 	}

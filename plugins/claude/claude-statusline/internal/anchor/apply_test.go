@@ -33,6 +33,7 @@ func mustApply(t *testing.T, dir string, e Event) bool {
 func wantAnchor(t *testing.T, dir, id string, want Anchor) {
 	t.Helper()
 	got, ok := Read(dir, id)
+	got.Seen = 0 // when the receiver stored it is checked on its own
 	if !ok || got != want {
 		t.Fatalf("Read(%s) = %+v, %v; want %+v", id, got, ok, want)
 	}
@@ -51,7 +52,7 @@ func TestStartOnlyEventsCreateAStartAnchor(t *testing.T) {
 		if !mustApply(t, dir, ev(name, "s1", "a@example.com", 1000)) {
 			t.Errorf("%s: 앵커를 쓰지 않았다", name)
 		}
-		wantAnchor(t, dir, "s1", Anchor{"a@example.com", KindStart, 1000})
+		wantAnchor(t, dir, "s1", Anchor{Email: "a@example.com", Kind: KindStart, TS: 1000})
 	}
 }
 
@@ -72,14 +73,14 @@ func TestStartEventDoesNotOverwriteAnExistingAnchor(t *testing.T) {
 	if mustApply(t, dir, ev("plugin_loaded", "s1", "b@example.com", 1100)) {
 		t.Error("두 번째 시작 이벤트가 앵커를 덮었다")
 	}
-	wantAnchor(t, dir, "s1", Anchor{"a@example.com", KindStart, 1000})
+	wantAnchor(t, dir, "s1", Anchor{Email: "a@example.com", Kind: KindStart, TS: 1000})
 }
 
 func TestSuccessfulLoginReplacesTheAnchor(t *testing.T) {
 	dir := t.TempDir()
 	mustApply(t, dir, ev("managed_settings_resolved", "s1", "a@example.com", 1000))
 	mustApply(t, dir, login("s1", "b@example.com", 2000))
-	wantAnchor(t, dir, "s1", Anchor{"b@example.com", KindLogin, 2000})
+	wantAnchor(t, dir, "s1", Anchor{Email: "b@example.com", Kind: KindLogin, TS: 2000})
 }
 
 func TestFailedOrIncompleteLoginIsIgnored(t *testing.T) {
@@ -97,14 +98,14 @@ func TestFailedOrIncompleteLoginIsIgnored(t *testing.T) {
 			t.Errorf("%+v: 앵커를 바꾸면 안 된다", e)
 		}
 	}
-	wantAnchor(t, dir, "s1", Anchor{"a@example.com", KindStart, 1000})
+	wantAnchor(t, dir, "s1", Anchor{Email: "a@example.com", Kind: KindStart, TS: 1000})
 }
 
 func TestLogoutClearsTheEmail(t *testing.T) {
 	dir := t.TempDir()
 	mustApply(t, dir, login("s1", "a@example.com", 1000))
 	mustApply(t, dir, logout("s1", 2000))
-	wantAnchor(t, dir, "s1", Anchor{"", KindLogout, 2000})
+	wantAnchor(t, dir, "s1", Anchor{Email: "", Kind: KindLogout, TS: 2000})
 }
 
 func TestFailedLogoutIsIgnored(t *testing.T) {
@@ -115,7 +116,7 @@ func TestFailedLogoutIsIgnored(t *testing.T) {
 	if mustApply(t, dir, failed) {
 		t.Error("실패한 로그아웃이 앵커를 지웠다")
 	}
-	wantAnchor(t, dir, "s1", Anchor{"a@example.com", KindLogin, 1000})
+	wantAnchor(t, dir, "s1", Anchor{Email: "a@example.com", Kind: KindLogin, TS: 1000})
 }
 
 func TestEventsArrivingOutOfOrderKeepTheLatestByEventTime(t *testing.T) {
@@ -123,16 +124,16 @@ func TestEventsArrivingOutOfOrderKeepTheLatestByEventTime(t *testing.T) {
 	// 로그인(2000)이 시작(1000)보다 먼저 도착해도 시작은 이미 있는 앵커를 덮지 못한다.
 	mustApply(t, dir, login("s1", "b@example.com", 2000))
 	mustApply(t, dir, ev("managed_settings_resolved", "s1", "a@example.com", 1000))
-	wantAnchor(t, dir, "s1", Anchor{"b@example.com", KindLogin, 2000})
+	wantAnchor(t, dir, "s1", Anchor{Email: "b@example.com", Kind: KindLogin, TS: 2000})
 	// 로그아웃(3000) 뒤에 늦게 도착한 옛 로그인(2500)은 무시한다.
 	mustApply(t, dir, logout("s1", 3000))
 	if mustApply(t, dir, login("s1", "c@example.com", 2500)) {
 		t.Error("더 이른 이벤트가 최신 앵커를 덮었다")
 	}
-	wantAnchor(t, dir, "s1", Anchor{"", KindLogout, 3000})
+	wantAnchor(t, dir, "s1", Anchor{Email: "", Kind: KindLogout, TS: 3000})
 	// 같은 시각은 받아들인다.
 	mustApply(t, dir, login("s1", "d@example.com", 3000))
-	wantAnchor(t, dir, "s1", Anchor{"d@example.com", KindLogin, 3000})
+	wantAnchor(t, dir, "s1", Anchor{Email: "d@example.com", Kind: KindLogin, TS: 3000})
 }
 
 func TestInvalidSessionIDsAndEmailsAreIgnored(t *testing.T) {
@@ -155,15 +156,18 @@ func TestInvalidSessionIDsAndEmailsAreIgnored(t *testing.T) {
 	}
 }
 
-func TestAnchorFileIsPrivateAndHoldsOnlyTheThreeFields(t *testing.T) {
+func TestAnchorFileIsPrivateAndHoldsOnlyTheFourFields(t *testing.T) {
 	dir := t.TempDir()
+	old := clock
+	t.Cleanup(func() { clock = old })
+	clock = func() time.Time { return time.UnixMilli(5678) }
 	mustApply(t, dir, ev("managed_settings_resolved", "s1", "a@example.com", 1234))
 	path := filepath.Join(dir, "otel", "sessions", "s1.env")
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(b) != "email=a@example.com\nkind=start\nts=1234\n" {
+	if string(b) != "email=a@example.com\nkind=start\nts=1234\nseen=5678\n" {
 		t.Errorf("파일 내용 = %q", b)
 	}
 	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
@@ -213,5 +217,24 @@ func TestApplyPrunesBeyondRetentionAndFileLimit(t *testing.T) {
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Error("보존 기간이 지난 앵커가 남았다")
 	}
-	wantAnchor(t, dir, "n7", Anchor{"a@example.com", KindStart, 1007})
+	wantAnchor(t, dir, "n7", Anchor{Email: "a@example.com", Kind: KindStart, TS: 1007})
+}
+
+func TestAnAppliedAnchorRecordsWhenTheReceiverStoredIt(t *testing.T) {
+	// 앵커는 이벤트 시각(ts)과 별개로 수신기가 저장한 시각(seen)을 가진다. 수신기 세대와 보존 기간의
+	// 기준은 seen 이다.
+	old := clock
+	t.Cleanup(func() { clock = old })
+	clock = func() time.Time { return time.UnixMilli(5000) }
+	dir := t.TempDir()
+	mustApply(t, dir, ev("managed_settings_resolved", "s1", "a@example.com", 1000))
+	got, ok := Read(dir, "s1")
+	if !ok || got.TS != 1000 || got.Seen != 5000 {
+		t.Fatalf("Read = %+v, %v; want ts 1000 and seen 5000", got, ok)
+	}
+	clock = func() time.Time { return time.UnixMilli(9000) }
+	mustApply(t, dir, login("s1", "b@example.com", 2000))
+	if got, _ := Read(dir, "s1"); got.TS != 2000 || got.Seen != 9000 {
+		t.Errorf("로그인으로 바뀐 앵커 = %+v, want ts 2000 and seen 9000", got)
+	}
 }

@@ -55,8 +55,12 @@ binary and publishes it by copy and rename to
 `${XDG_DATA_HOME:-$HOME/.local/share}/claude-statusline/bin/claude-statusline-otlp`,
 only when the version recorded there is lower. An equal version is left alone because
 the receiver exits 75 when its file is replaced, so a needless replacement is a
-restart. The script names no service: starting and restarting the receiver is the
-supervisor's job, which keeps the source publishable.
+restart. The compare, the copy and the version write run under a `mkdir` lock in that
+directory, and the version is read again inside it: hooks of different versions run
+concurrently, and without the lock a lower version could overwrite a higher one and
+leave `.version` naming a binary that is not there. The script names no service:
+starting and restarting the receiver is the supervisor's job, which keeps the source
+publishable.
 
 Two properties keep the port worth its while, so hold them when editing:
 
@@ -120,7 +124,8 @@ anchors. A call that forgets an override still lands in the temp root.
 layouts, gauges, colors, and indicators against fixture JSON. It fails outright
 when that build fails, because a skipped build would report zero checks as a
 pass. `shim.test.sh` asserts what the shim does with and without a binary and
-that `build-binary.sh` is idempotent and never blocks session start.
+that `build-binary.sh` is idempotent, never blocks session start, and leaves the
+highest version published when publishers of several versions race.
 `otlp.test.sh` starts the receiver on `127.0.0.1:0`, never a fixed port, posts
 requests with `curl`, reads the account slot back through the shim, and stops the
 receiver by the pid it recorded.

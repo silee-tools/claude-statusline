@@ -57,8 +57,11 @@ func main() {
 		loginCacheDir = filepath.Join(home, ".aws", "login", "cache")
 	}
 
-	live := ratelimit.Pair{Five: sample(status.FiveHour), Week: sample(status.SevenDay)}
-	limits := ratelimit.Resolve(cacheDir, status.SessionID, live, now.Unix())
+	session := anchor.Input{
+		StateDir: claudeStateDir(home), ConfigDir: configDir, SessionID: status.SessionID,
+		Parent: os.Getppid(), Now: now,
+	}
+	limits := windows(cacheDir, session, status)
 	var usage []agentstatus.Window
 	if limits.Five.Complete() {
 		usage = append(usage, agentstatus.Window{
@@ -110,7 +113,7 @@ func main() {
 	}
 	// The path and the account are read only for the full layout.
 	view.Path = shorten.Path(status.CWD, home)
-	view.Account = accountSlot(claudeStateDir(home), configDir, status, now)
+	view.Account = accountSlot(session, status)
 	for _, s := range []string{gh, aws} {
 		if s != "" {
 			view.Meta = append(view.Meta, s)
@@ -130,6 +133,14 @@ func compactStatus(gh, aws string, awsHealthy bool) []string {
 		out = append(out, aws)
 	}
 	return out
+}
+
+// windows is what the gauges draw: the payload's windows, with the ones it lacks supplied
+// from what this session saw earlier in the same stretch of the same process (see
+// anchor.Boundary).
+func windows(cacheDir string, session anchor.Input, status input.Status) ratelimit.Pair {
+	live := ratelimit.Pair{Five: sample(status.FiveHour), Week: sample(status.SevenDay)}
+	return ratelimit.Resolve(cacheDir, status.SessionID, anchor.Boundary(session), live, session.Now.Unix())
 }
 
 func sample(w input.Window) ratelimit.Sample {
@@ -170,19 +181,20 @@ func agentStateDir(home string) string {
 // kept the same five-hour and seven-day resetsAt across 54 minutes of sampling.
 var fingerprintWindows = []ratelimit.Window{ratelimit.WindowFive, ratelimit.WindowWeek}
 
-// accountSlot is the Claude account of the first row: the session's anchor, with a
-// question mark when the receiver looks stopped or a rate-limit window of the session
-// changed before it ended.
-func accountSlot(stateDir, configDir string, status input.Status, now time.Time) string {
-	res := anchor.Resolve(anchor.Input{StateDir: stateDir, ConfigDir: configDir, SessionID: status.SessionID, Now: now})
+// accountSlot is the Claude account of the first row: the session's anchor, marked as an
+// estimate unless an in-session /login named it, with a question mark when the account
+// may have changed unseen: the receiver looks stopped, the anchor predates its current
+// run, or a rate-limit window of the session changed before it ended.
+func accountSlot(in anchor.Input, status input.Status) string {
+	res := anchor.Resolve(in)
 	if res.Email != "" {
 		live := ratelimit.Pair{Five: sample(status.FiveHour), Week: sample(status.SevenDay)}
-		fingerprints := filepath.Join(stateDir, "fingerprints")
-		if ratelimit.Fingerprint(fingerprints, status.SessionID, res.AnchorTS, fingerprintWindows, live, now.Unix()) {
+		fingerprints := filepath.Join(in.StateDir, "fingerprints")
+		if ratelimit.Fingerprint(fingerprints, status.SessionID, res.AnchorTS, fingerprintWindows, live, in.Now.Unix()) {
 			res.Suspect = true
 		}
 	}
-	return segments.Account(res.Installed, res.Email, res.Suspect)
+	return segments.Account(res.Installed, res.Email, res.Level == anchor.Estimate, res.Suspect)
 }
 
 func cwdOrDot() string {

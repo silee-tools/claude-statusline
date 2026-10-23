@@ -38,8 +38,14 @@ touch "$OTEL/heartbeat"
 # 계정은 설정 폴더의 .claude.json 이 아니라 세션별 앵커에서 온다. 미끼 .claude.json 은 서로 바꿔 둔다.
 printf '{"oauthAccount":{"emailAddress":"custom@example.com"}}' > "$HOME/.claude.json"
 printf '{"oauthAccount":{"emailAddress":"default@example.com"}}' > "$CUSTOM/.claude.json"
-printf 'email=default@example.com\nkind=start\nts=1700000000000\n' > "$OTEL/sessions/sess-default.env"
-printf 'email=custom@example.com\nkind=start\nts=1700000001000\n' > "$OTEL/sessions/sess-custom.env"
+SEEN="$(date +%s)000"
+printf '1\n' > "$OTEL/generation"
+printf 'email=default@example.com\nkind=start\nts=1700000000000\nseen=%s\n' "$SEEN" > "$OTEL/sessions/sess-default.env"
+printf 'email=custom@example.com\nkind=start\nts=1700000001000\nseen=%s\n' "$SEEN" > "$OTEL/sessions/sess-custom.env"
+# 한도 캐시는 실행 프로세스별이다. 프로세스는 각 설정 폴더의 sessions/<pid>.json 으로 알아낸다.
+mkdir -p "$HOME/.claude/sessions" "$CUSTOM/sessions"
+printf '{"pid":4101,"sessionId":"sess-default","startedAt":1700000000000}\n' > "$HOME/.claude/sessions/4101.json"
+printf '{"pid":4102,"sessionId":"sess-custom","startedAt":1700000000000}\n' > "$CUSTOM/sessions/4102.json"
 render() { printf '{"session_id":"%s","workspace":{"current_dir":"/tmp"},"version":"test","rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":1999999999}}}' "$2" "$3" | CLAUDE_CONFIG_DIR="$1" "$WORK/statusline"; }
 render '' sess-default 12 > "$WORK/default.out" &
 PID=$!
