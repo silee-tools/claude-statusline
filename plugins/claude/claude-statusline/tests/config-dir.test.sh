@@ -3,7 +3,8 @@ set -eu
 SRC=${STATUSLINE_TEST_SRC:-$(cd "$(dirname "$0")/.." && pwd)}
 WORK=$(mktemp -d)
 completed=0
-trap 'rc=$?; rm -rf "$WORK"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
+LIVE_PIDS=""
+trap 'rc=$?; kill $LIVE_PIDS 2>/dev/null; rm -rf "$WORK"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
 pass=0; fail=0
 check() { if [ "$2" = "$3" ]; then pass=$((pass+1)); else printf 'FAIL %s expected=%s actual=%s\n' "$1" "$2" "$3"; fail=$((fail+1)); fi; }
 HOME="$WORK/home"; export HOME
@@ -42,10 +43,16 @@ SEEN="$(date +%s)000"
 printf '1\n' > "$OTEL/generation"
 printf 'email=default@example.com\nkind=start\nts=1700000000000\nseen=%s\n' "$SEEN" > "$OTEL/sessions/sess-default.env"
 printf 'email=custom@example.com\nkind=start\nts=1700000001000\nseen=%s\n' "$SEEN" > "$OTEL/sessions/sess-custom.env"
-# 한도 캐시는 실행 프로세스별이다. 프로세스는 각 설정 폴더의 sessions/<pid>.json 으로 알아낸다.
+# 한도 캐시는 실행 프로세스별이다. 프로세스는 각 설정 폴더의 sessions/<pid>.json 으로 알아내고, 실행 중인 pid 만
+# 프로세스로 인정하므로 시험의 프로세스는 살아 있는 sleep 이다.
 mkdir -p "$HOME/.claude/sessions" "$CUSTOM/sessions"
-printf '{"pid":4101,"sessionId":"sess-default","startedAt":1700000000000}\n' > "$HOME/.claude/sessions/4101.json"
-printf '{"pid":4102,"sessionId":"sess-custom","startedAt":1700000000000}\n' > "$CUSTOM/sessions/4102.json"
+sleep 900 &
+P_DEFAULT=$!
+sleep 900 &
+P_CUSTOM=$!
+LIVE_PIDS="$P_DEFAULT $P_CUSTOM"
+printf '{"pid":%s,"sessionId":"sess-default","startedAt":1700000000000}\n' "$P_DEFAULT" > "$HOME/.claude/sessions/$P_DEFAULT.json"
+printf '{"pid":%s,"sessionId":"sess-custom","startedAt":1700000000000}\n' "$P_CUSTOM" > "$CUSTOM/sessions/$P_CUSTOM.json"
 render() { printf '{"session_id":"%s","workspace":{"current_dir":"/tmp"},"version":"test","rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":1999999999}}}' "$2" "$3" | CLAUDE_CONFIG_DIR="$1" "$WORK/statusline"; }
 render '' sess-default 12 > "$WORK/default.out" &
 PID=$!

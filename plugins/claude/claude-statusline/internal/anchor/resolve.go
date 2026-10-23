@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/silee-tools/claude-statusline/internal/statefile"
@@ -19,6 +20,23 @@ const (
 	// event may lie and still be the process's: events are exported in batches.
 	startSlack = 3000 // ms
 )
+
+// alive says whether a process with this pid exists. Claude Code leaves
+// <config>/sessions/<pid>.json behind when it dies without cleaning up (a kill, a crash, a
+// power loss), so a file alone does not show that its process runs. It is a variable so
+// tests can stand in for pids no machine has.
+// shortcut: an unrelated process that reuses a dead pid makes its file look alive, which
+// the parent-first and latest-start rules narrow but do not close; compare the start time
+// with the OS (a process spawn per render) if that ever shows.
+var alive = processAlive
+
+func processAlive(pid int) bool {
+	if pid <= 0 { // kill(2) would signal a process group
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
+}
 
 // Confidence says how well the anchor behind an email establishes the account.
 type Confidence int
@@ -146,7 +164,7 @@ func scanProcs(configDir string) []procInfo {
 			SessionID string `json:"sessionId"`
 			StartedAt int64  `json:"startedAt"`
 		}
-		if json.Unmarshal(b, &f) != nil || f.PID <= 0 || f.StartedAt <= 0 || !validID(f.SessionID) {
+		if json.Unmarshal(b, &f) != nil || f.PID <= 0 || f.StartedAt <= 0 || !validID(f.SessionID) || !alive(f.PID) {
 			continue
 		}
 		out = append(out, procInfo{proc{f.PID, f.StartedAt}, f.SessionID})
@@ -154,13 +172,18 @@ func scanProcs(configDir string) []procInfo {
 	return out
 }
 
+// findProc picks the process that runs session id. A conversation a new process resumes
+// is named by the files of both the process that left and the one that took it over; the
+// one that started last is the live one, whatever order the directory lists them in.
 func findProc(procs []procInfo, id string) (proc, bool) {
+	var best proc
+	found := false
 	for _, p := range procs {
-		if p.session == id {
-			return p.proc, true
+		if p.session == id && (!found || p.started > best.started) {
+			best, found = p.proc, true
 		}
 	}
-	return proc{}, false
+	return best, found
 }
 
 // What the statusline keeps about a process, in pids/<pid>-<startedAt>.env: the session
@@ -269,22 +292,25 @@ func ownsSession(configDir string, p proc, id string) bool {
 	return ok && q.session == id && q.started == p.started
 }
 
-// locate finds the process that runs session id: through the ref an earlier render left,
-// through the process that started the statusline (Claude Code itself), or by listing the
-// config directory's processes. Each is accepted only when the process's own file names
-// the session. r and hasRef describe the ref when it was the way in.
+// locate finds the process that runs session id. The process that started the statusline
+// is Claude Code itself, so when its own file names the session that is the strongest
+// evidence there is, and one read answers it. Without it, the ref an earlier render left
+// is accepted while its process still runs, and last the config directory's processes are
+// listed. A process counts only while it runs and its own file names the session. r and
+// hasRef describe the ref when it names the process found.
 func locate(in Input) (p proc, r ref, hasRef, ok bool) {
 	id := in.SessionID
-	if r, hasRef = readRef(in.StateDir, id); hasRef && !ownsSession(in.ConfigDir, r.proc, id) {
-		hasRef = false
-	}
-	if hasRef {
-		return r.proc, r, true, true
-	}
+	r, hasRef = readRef(in.StateDir, id)
 	if in.Parent > 0 {
 		if q, found := readProc(in.ConfigDir, in.Parent); found && q.session == id {
-			return q.proc, ref{}, false, true
+			if !hasRef || r.proc != q.proc {
+				r, hasRef = ref{}, false
+			}
+			return q.proc, r, hasRef, true
 		}
+	}
+	if hasRef && ownsSession(in.ConfigDir, r.proc, id) && alive(r.proc.pid) {
+		return r.proc, r, true, true
 	}
 	p, ok = findProc(scanProcs(in.ConfigDir), id)
 	return p, ref{}, false, ok

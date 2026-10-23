@@ -329,6 +329,15 @@ older than the process start belongs to an earlier process. Anchors of other ses
 ids are never borrowed on the strength of timing, because any process of any config
 directory could have written them: a resumed session shows `?` until it logs in.
 
+**Which process.** A `sessions/<pid>.json` names a process only while that process runs
+(`kill(pid, 0)`): a kill, a crash or a reboot leaves the file behind, and a resumed
+conversation must not take the account or the rate-limit windows of the process that
+died. The statusline's parent (Claude Code) is trusted first, when its own file names the
+session; then the process a session's ref names, if it still runs; then, among the
+running processes whose files name the session, the one that started last. A pid that an
+unrelated process has reused counts as running; the first and last rules narrow that
+without closing it.
+
 **Rate-limit windows.** The windows a session saw are kept per *boundary*: the process
 that runs it and the time of its last in-session login or logout. A conversation that a
 new process resumes, or that has logged in again, draws none of the windows the
@@ -380,7 +389,11 @@ checks every 30 seconds), so the supervisor starts the new build; 1 when the add
 not loopback, the port cannot be bound, or the state directory cannot be prepared. It
 touches the heartbeat every 30 seconds, except while it cannot store an anchor: a
 failed write starts a new generation (`otel/generation`) and withholds the heartbeat
-until a probe write succeeds. Every start writes a new generation too. At start and
+until a probe write succeeds, and the generation it then settles on is the time of the
+last failure, so an anchor stored by the exporter's retry in between is not doubted. A
+request body over the size limit (413) is dropped whole, a `/login` with it, so it starts
+a generation too; a malformed body (400) does not, because any local process can send
+one. Every start writes a new generation too. At start and
 then hourly it removes what is past retention. Where stderr goes, and how long it is
 kept, is the supervisor's setting.
 
