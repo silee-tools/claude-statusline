@@ -83,10 +83,12 @@ func Resolve(in Input) Result {
 	r := Result{Installed: true}
 	hb, err := os.Stat(filepath.Join(in.StateDir, "otel", "heartbeat"))
 	r.Suspect = err != nil || in.Now.Sub(hb.ModTime()) > staleHeartbeat
-	if a, ok := sessionAnchor(in); ok && a.Email != "" {
+	if a, ok, known := sessionAnchor(in); ok && a.Email != "" {
 		r.Email, r.AnchorTS = a.Email, a.TS
 		r.Level = Estimate
-		if a.Kind == KindLogin {
+		// Without the process, a login anchor may be the one an earlier process of the same
+		// conversation made, which the start-time check cannot rule out.
+		if a.Kind == KindLogin && known {
 			r.Level = Confirmed
 		}
 		// An anchor stored before the receiver's current generation may have missed a
@@ -333,18 +335,21 @@ func locate(in Input) (p proc, r ref, hasRef, ok bool) {
 // the old id's anchor is still the one the process carried, the process keeps it for
 // good, and if it has changed, whose event changed it cannot be told, so the process has
 // no anchor until it logs in.
-func sessionAnchor(in Input) (Anchor, bool) {
+//
+// known says the running process was found; without it the session's own anchor is all
+// there is, and nothing shows that it was made by this process.
+func sessionAnchor(in Input) (a Anchor, ok, known bool) {
 	id := in.SessionID
 	if !validID(id) {
-		return Anchor{}, false
+		return Anchor{}, false, false
 	}
 	direct, hasDirect := readFresh(in.StateDir, id, in.Now)
 	p, r, hasRef, known := locate(in)
 	if hasDirect && hasRef && r.ts == direct.TS {
-		return direct, true
+		return direct, true, true
 	}
 	if !known {
-		return direct, hasDirect
+		return direct, hasDirect, false
 	}
 	if hasDirect && direct.TS < p.started-startSlack {
 		hasDirect = false
@@ -352,19 +357,19 @@ func sessionAnchor(in Input) (Anchor, bool) {
 	if hasDirect {
 		writePidFile(in.StateDir, in.Now, p, pidFile{Session: id, Src: id, Anchor: direct, Has: true})
 		writeRef(in.StateDir, in.Now, id, p, direct.TS)
-		return direct, true
+		return direct, true, true
 	}
 	pf := readPidFile(in.StateDir, p)
 	if !pf.Has || pf.Anchor.expired(in.Now) {
-		return Anchor{}, false
+		return Anchor{}, false, true
 	}
-	a := pf.Anchor
+	a = pf.Anchor
 	if pf.Session != id {
 		pf.Session = id
 		if cur, found := readFresh(in.StateDir, pf.Src, in.Now); pf.Src != "" && found && cur != a {
 			pf.Has, pf.Anchor = false, Anchor{}
 			writePidFile(in.StateDir, in.Now, p, pf)
-			return Anchor{}, false
+			return Anchor{}, false, true
 		}
 		pf.Src = ""
 		writePidFile(in.StateDir, in.Now, p, pf)
@@ -372,5 +377,5 @@ func sessionAnchor(in Input) (Anchor, bool) {
 	if !hasRef || r.ts != a.TS {
 		writeRef(in.StateDir, in.Now, id, p, a.TS)
 	}
-	return a, true
+	return a, true, true
 }

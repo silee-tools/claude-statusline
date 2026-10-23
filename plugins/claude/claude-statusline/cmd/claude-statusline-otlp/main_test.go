@@ -400,42 +400,100 @@ func TestAnAnchorStoredByARetryAfterAFailureIsNotDoubtedByTheRecovery(t *testing
 	}
 }
 
-func TestAnOversizedBatchIsDroppedWholeSoItsLoginIsDoubted(t *testing.T) {
+func postRaw(t *testing.T, addr, body string) int {
+	t.Helper()
+	resp, err := http.Post("http://"+addr+"/v1/logs", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+func TestARefusedBatchIsDroppedWholeSoItsLoginIsDoubted(t *testing.T) {
+	for name, c := range map[string]struct {
+		body string
+		want int
+	}{
+		"oversized": {`{"resourceLogs":"` + strings.Repeat("x", maxBody+1024) + `"}`, http.StatusRequestEntityTooLarge},
+		"malformed": {`{broken`, http.StatusBadRequest},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := baseConfig(t)
+			addr, exit, _, cancel := start(t, cfg)
+			defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+			if code := postLogin(t, addr, "s1", "a@example.com", 1_700_000_000_000); code != 200 {
+				t.Fatalf("정상 상태 %d", code)
+			}
+			if _, doubt := suspect(t, cfg, "s1"); doubt {
+				t.Fatal("정상 저장 직후에는 의심하지 않는다")
+			}
+			time.Sleep(5 * time.Millisecond)
+			if code := postRaw(t, addr, c.body); code != c.want {
+				t.Fatalf("상태 %d, want %d", code, c.want)
+			}
+			if _, doubt := suspect(t, cfg, "s1"); !doubt {
+				t.Error("버려진 배치 안의 로그인이 유실됐을 수 있으니 앞서 저장된 앵커를 의심해야 한다")
+			}
+			// 이후에 도착한 새 이벤트는 다시 믿는다.
+			time.Sleep(5 * time.Millisecond)
+			if code := postLogin(t, addr, "s1", "a@example.com", 1_700_000_005_000); code != 200 {
+				t.Fatalf("새 이벤트 %d", code)
+			}
+			if _, doubt := suspect(t, cfg, "s1"); doubt {
+				t.Error("버려진 배치 뒤에 저장된 앵커까지 의심한다")
+			}
+		})
+	}
+}
+
+func TestALossRecordedWhileDegradedSurvivesTheRecovery(t *testing.T) {
 	cfg := baseConfig(t)
+	cfg.BeatEvery = 300 * time.Millisecond // both requests land before the beat that notices the recovery
 	addr, exit, _, cancel := start(t, cfg)
 	defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+	t.Cleanup(func() { mendStore(t, cfg) })
+
+	breakStore(t, cfg)
+	if code := postLogin(t, addr, "s0", "a@example.com", 1_700_000_000_000); code != http.StatusServiceUnavailable {
+		t.Fatalf("저장 실패 상태 %d, want 503", code)
+	}
+	mendStore(t, cfg)
+	time.Sleep(5 * time.Millisecond)
+	if code := postLogin(t, addr, "s1", "b@example.com", 1_700_000_001_000); code != 200 { // stored between the two losses
+		t.Fatalf("재시도 상태 %d, want 200", code)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if code := postRaw(t, addr, `{broken`); code != http.StatusBadRequest { // a later loss, before the recovery beat
+		t.Fatalf("깨진 본문 상태 %d", code)
+	}
+	waitHeartbeatAfter(t, cfg, time.Now())
+	if _, doubt := suspect(t, cfg, "s1"); !doubt {
+		t.Error("복구가 더 늦은 유실의 세대를 이른 시각으로 되돌려 그 사이 저장된 앵커의 의심을 풀었다")
+	}
+}
+
+func TestALossThatCannotBeRecordedWithholdsTheHeartbeatUntilItIs(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root 는 쓰기 권한 제한을 받지 않아 저장 실패를 만들 수 없다")
+	}
+	cfg := baseConfig(t)
+	otel := filepath.Join(cfg.StateDir, "otel")
+	hb := filepath.Join(otel, "heartbeat")
+	addr, exit, _, cancel := start(t, cfg)
+	defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+	t.Cleanup(func() { os.Chmod(otel, 0o700) })
+
 	if code := postLogin(t, addr, "s1", "a@example.com", 1_700_000_000_000); code != 200 {
 		t.Fatalf("정상 상태 %d", code)
 	}
-	if _, doubt := suspect(t, cfg, "s1"); doubt {
-		t.Fatal("정상 저장 직후에는 의심하지 않는다")
-	}
 	time.Sleep(5 * time.Millisecond)
-	big := strings.Repeat("x", maxBody+1024)
-	resp, err := http.Post("http://"+addr+"/v1/logs", "application/json", strings.NewReader(`{"resourceLogs":"`+big+`"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusRequestEntityTooLarge {
-		t.Fatalf("상태 %d, want 413", resp.StatusCode)
-	}
+	os.Chmod(otel, 0o500) // the generation and the heartbeat cannot be written
+	postRaw(t, addr, `{broken`)
+	os.Chmod(otel, 0o700)
+	before, _ := os.Stat(hb)
+	waitHeartbeatAfter(t, cfg, before.ModTime())
 	if _, doubt := suspect(t, cfg, "s1"); !doubt {
-		t.Error("버려진 배치 안의 로그인이 유실됐을 수 있으니 앞서 저장된 앵커를 의심해야 한다")
-	}
-	// 형식이 깨진 본문은 아무 지역 프로세스나 보낼 수 있어 세대를 올리지 않는다.
-	if code := postLogin(t, addr, "s1", "a@example.com", 1_700_000_005_000); code != 200 {
-		t.Fatalf("새 이벤트 %d", code)
-	}
-	resp, err = http.Post("http://"+addr+"/v1/logs", "application/json", strings.NewReader(`{broken`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("상태 %d, want 400", resp.StatusCode)
-	}
-	if _, doubt := suspect(t, cfg, "s1"); doubt {
-		t.Error("깨진 본문이 세대를 올려 모든 세션을 의심하게 만들었다")
+		t.Error("세대를 기록하지 못한 유실이 복구 때에도 기록되지 않았다")
 	}
 }

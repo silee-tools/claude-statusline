@@ -219,7 +219,7 @@ RATE_CACHE="$RATE_DIR/$RL_SESSION.env"
 # 알아내므로 캐시를 쓰는 세션마다 프로세스 파일을 둔다. 경계는 <pid>-<startedAt>-<마지막 로그인 ts 또는 0> 이다.
 # 프로세스 파일은 실행 중인 pid 만 인정하므로(죽은 프로세스가 남긴 파일은 그 프로세스가 아니다) 시험의 프로세스는
 # 살아 있는 sleep 이다.
-seed_proc() { mkdir -p "$TMPROOT/sessions"; printf '{"pid":%s,"sessionId":"%s","startedAt":1700000000000}\n' "$2" "$1" > "$TMPROOT/sessions/$2.json"; }
+seed_proc() { mkdir -p "$TMPROOT/sessions"; printf '{"pid":%s,"sessionId":"%s","startedAt":%s}\n' "$2" "$1" "${3:-1700000000000}" > "$TMPROOT/sessions/$2.json"; }
 live_proc() { sleep 900 & eval "$1=\$!"; LIVE_PIDS="$LIVE_PIDS $!"; }
 live_proc P_RL
 live_proc P_A
@@ -381,7 +381,10 @@ assert_match "T48 폭 판정 불가는 첫 줄을 버전·시각·경로·aws �
 #    줄의 표시 폭(vwidth_of)에서 구하고, Claude Code 가 상태줄 양쪽에 남기는 4칸을 더한다.
 if [ "$HAVE_GIT" = "1" ]; then
   # 계정 칸이 첫 줄의 폭에 들어가도록 수신기가 설치된 기계로 렌더한다.
+  # 로그인 앵커는 실행 중인 프로세스를 알 때만 확정으로 그려지므로 이 세션의 프로세스를 둔다.
   seed_anchor "$KNOWN_SESSION" octocat@example.com login 1700000000000
+  live_proc P_KNOWN
+  seed_proc "$KNOWN_SESSION" "$P_KNOWN"
   beat
   STATE_HOME="$STATE_ACCT"
   STAGE_REPO="$TMPROOT/stage/webapp/very-long-project-directory-name"
@@ -443,6 +446,8 @@ if [ "$HAVE_GIT" = "1" ]; then
   else
     echo "warn: 긴 브랜치 fixture 생성 실패 — T61 을 건너뜁니다" >&2
   fi
+  rm -f "$TMPROOT/sessions/$P_KNOWN.json"
+  rm -rf "$RATE_DIR"
   STATE_HOME="$STATE_NONE"
 else
   printf 'SKIP T61 (git fixture 미생성)\n'
@@ -533,8 +538,8 @@ assert_no_match     "T11 행1 에 시각 없음" '[0-9][0-9]:[0-9][0-9]' "$FIRST
 OUT=$(run "$(json_without)" 80)
 assert_equals   "T13a rate 부재 저장소 밖은 1행" "1" "$(nlines "$OUT")"
 assert_match    "T13a 게이지 행 ctx 유지" 'ctx [0-9]' "$(last_line "$OUT")"
-assert_no_match "T13a 캐시가 비면 5h 없음" '5h [0-9]' "$OUT"
-assert_no_match "T13a 캐시가 비면 7d 없음" '7d [0-9]' "$OUT"
+assert_no_match "T13a 캐시가 비면 5h 없음" '5h .*[0-9]+%' "$OUT"
+assert_no_match "T13a 캐시가 비면 7d 없음" '7d .*[0-9]+%' "$OUT"
 
 # --- T13b: rate 는 없어도 유효한 캐시가 있으면 그 값을 그린다 ---
 seed_rate_cache 24 "$FIVE_RESET" 41 "$WEEK_RESET"
@@ -1046,6 +1051,8 @@ OUT=$(run "$(json_without)" 120)
 assert_match "T35 session_id 없는 페이로드도 ? 로 정직하게 모름" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] \? /tmp aws:✓$' "$(first_line "$OUT")"
 
 # 세션 안 /login: 로그인 앵커가 그 세션만 바꾼다. 로그아웃은 ? 이다.
+live_proc P_ACCT
+seed_proc acct-a "$P_ACCT"
 seed_anchor acct-a c@example.com login 1700000009000
 OUT=$(run "$SESS_A" 120); assert_contains "T35 /login 뒤 그 세션이 새 계정을 보여 줌" "c@example.com" "$(first_line "$OUT")"
 assert_not_contains "T35 /login 으로 확정된 계정에는 물결표가 없음" "~c@example.com" "$(first_line "$OUT")"
@@ -1054,6 +1061,11 @@ OUT=$(run "$SESS_B" 120); assert_contains "T35 한 세션의 /login 은 다른 �
 seed_anchor acct-a "" logout 1700000019000
 OUT=$(run "$SESS_A" 120)
 assert_match "T35 로그아웃 뒤는 ?" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] \? ⧉ acct-a /tmp aws:✓$' "$(first_line "$OUT")"
+# 프로세스를 모르면 로그인 앵커도 추정(~)으로만 그린다. 그 앵커가 같은 대화를 돌린 이전 프로세스의 것일 수 있다.
+rm -f "$TMPROOT/sessions/$P_ACCT.json"; rm -rf "$RATE_DIR"
+seed_anchor acct-a c@example.com login 1700000029000
+OUT=$(run "$SESS_A" 120)
+assert_contains "T35 프로세스를 모르면 로그인 앵커는 추정(~)으로 그려짐" "~c@example.com" "$(first_line "$OUT")"
 
 # 수신기가 멈춘 것처럼 보이면(하트비트가 120초보다 오래됨) 이메일 뒤에 ? 가 붙는다.
 stale_beat
@@ -1080,8 +1092,8 @@ RL_B_NONE=$(with_session rl-sess-b "$(json_without)")
 run_keep "$RL_A" 120 >/dev/null
 assert_equals "T62 세션 A 의 캐시 파일은 세션 id 로 갈린다" "yes" "$([ -f "$RATE_DIR/rl-sess-a.env" ] && echo yes || echo no)"
 OUT=$(run_keep "$RL_B_NONE" 120)
-assert_no_match "T62 창을 못 받은 다른 세션에 세션 A 의 5h 가 섞이지 않음" '5h [0-9]' "$OUT"
-assert_no_match "T62 창을 못 받은 다른 세션에 세션 A 의 7d 가 섞이지 않음" '7d [0-9]' "$OUT"
+assert_no_match "T62 창을 못 받은 다른 세션에 세션 A 의 5h 가 섞이지 않음" '5h .*[0-9]+%' "$OUT"
+assert_no_match "T62 창을 못 받은 다른 세션에 세션 A 의 7d 가 섞이지 않음" '7d .*[0-9]+%' "$OUT"
 OUT=$(run_keep "$RL_A_NONE" 120)
 assert_match "T62 창을 못 받은 같은 세션은 자기 캐시에서 5h 공급" '5h .*24%' "$OUT"
 SHARED_BODY="fivePct=99
@@ -1090,7 +1102,7 @@ weekPct=98
 weekReset=$((NOW + 200000))"
 printf '%s\n' "$SHARED_BODY" > "$TMPROOT/cache/claude-statusline/rate-limits.env"
 OUT=$(run_keep "$RL_B_NONE" 120)
-assert_no_match "T62 공용 rate-limits.env 의 5h 를 읽지 않음" '5h [0-9]' "$OUT"
+assert_no_match "T62 공용 rate-limits.env 의 5h 를 읽지 않음" '5h .*[0-9]+%' "$OUT"
 run_keep "$(with_session rl-sess-c "$(json_pct 31 32)")" 120 >/dev/null
 assert_equals "T62 공용 rate-limits.env 에 쓰지 않음" "$SHARED_BODY" "$(cat "$TMPROOT/cache/claude-statusline/rate-limits.env")"
 rm -f "$TMPROOT/cache/claude-statusline/rate-limits.env"
@@ -1105,27 +1117,28 @@ assert_match "T63 같은 프로세스는 자기 캐시에서 5h 공급" '5h .*24
 rm -f "$TMPROOT/sessions/$P_A.json"
 seed_proc rl-sess-a "$P_A2"
 OUT=$(run_keep "$RL_A_NONE" 120)
-assert_no_match "T63 새 프로세스는 이전 프로세스의 5h 를 그리지 않음" '5h [0-9]' "$OUT"
-assert_no_match "T63 새 프로세스는 이전 프로세스의 7d 를 그리지 않음" '7d [0-9]' "$OUT"
+assert_no_match "T63 새 프로세스는 이전 프로세스의 5h 를 그리지 않음" '5h .*[0-9]+%' "$OUT"
+assert_no_match "T63 새 프로세스는 이전 프로세스의 7d 를 그리지 않음" '7d .*[0-9]+%' "$OUT"
 rm -f "$TMPROOT/sessions/$P_A2.json"
 seed_proc rl-sess-a "$P_A"
 OUT=$(run_keep "$RL_A_NONE" 120)
-assert_no_match "T63 옛 프로세스로 돌아가도 지워진 창은 돌아오지 않는다" '5h [0-9]' "$(printf '%s' "$OUT" | sed -n '1p')"
+assert_no_match "T63 옛 프로세스로 돌아가도 지워진 창은 돌아오지 않는다" '5h .*[0-9]+%' "$OUT"
 rm -rf "$RATE_DIR"
 
 # --- T64: 비정상 종료한 프로세스가 파일을 남겨도 그 프로세스의 창은 새 프로세스로 넘어가지 않는다 ---
 #    강제 종료·충돌·재부팅은 <설정 폴더>/sessions/<pid>.json 을 지우지 못한다. 그 파일은 프로세스가 아니므로,
-#    같은 대화를 --continue 한 새 프로세스는 파일 이름순으로 먼저 나오는 죽은 프로세스의 한도를 물려받지 않는다.
+#    같은 대화를 --continue 한 새 프로세스는 죽은 프로세스의 한도를 물려받지 않는다. 생존 확인이 없으면 가장 늦게 시작한 파일이
+#    이기므로, 죽은 쪽의 시작 시각을 더 늦게 시드해 파일 이름 순서와 무관하게 죽은 프로세스가 골라지게 한다.
 live_proc P_DEAD
 live_proc P_NEW
 rm -f "$TMPROOT/sessions/$P_A.json"
-seed_proc rl-sess-a "$P_DEAD"
+seed_proc rl-sess-a "$P_DEAD" 1700000005000
 run_keep "$RL_A" 120 >/dev/null
 kill "$P_DEAD"; wait "$P_DEAD" 2>/dev/null || true
 seed_proc rl-sess-a "$P_NEW"
 OUT=$(run_keep "$RL_A_NONE" 120)
-assert_no_match "T64 죽은 프로세스가 남긴 파일의 5h 를 새 프로세스가 그리지 않음" '5h [0-9]' "$OUT"
-assert_no_match "T64 죽은 프로세스가 남긴 파일의 7d 를 새 프로세스가 그리지 않음" '7d [0-9]' "$OUT"
+assert_no_match "T64 죽은 프로세스가 남긴 파일의 5h 를 새 프로세스가 그리지 않음" '5h .*[0-9]+%' "$OUT"
+assert_no_match "T64 죽은 프로세스가 남긴 파일의 7d 를 새 프로세스가 그리지 않음" '7d .*[0-9]+%' "$OUT"
 rm -f "$TMPROOT/sessions/$P_DEAD.json" "$TMPROOT/sessions/$P_NEW.json"
 seed_proc rl-sess-a "$P_A"
 rm -rf "$RATE_DIR"
@@ -1178,7 +1191,7 @@ assert_match  "T42 버전이 SemVer 세 자리 형태" '^[0-9]+\.[0-9]+\.[0-9]+$
 # --- T50: 만료된 캐시 창은 그리지 않는다. 지난 창의 소진율은 더 이상 참이 아니다 ---
 seed_rate_cache 94 "$((NOW - 60))" 41 "$WEEK_RESET"
 OUT=$(run_keep "$(with_rl "$(json_without)")" 80)
-assert_no_match "T50 만료된 5h 는 감춘다" '5h [0-9]' "$OUT"
+assert_no_match "T50 만료된 5h 는 감춘다" '5h .*[0-9]+%' "$OUT"
 assert_match    "T50 만료 안 된 7d 는 남는다" '7d 41%' "$OUT"
 rm -f "$RATE_CACHE"
 
