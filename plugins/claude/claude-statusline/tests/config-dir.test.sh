@@ -10,6 +10,8 @@ HOME="$WORK/home"; export HOME
 XDG_CACHE_HOME="$WORK/cache"; export XDG_CACHE_HOME
 XDG_CONFIG_HOME="$WORK/config"; export XDG_CONFIG_HOME
 XDG_STATE_HOME="$WORK/state"; export XDG_STATE_HOME
+XDG_DATA_HOME="$WORK/data"; export XDG_DATA_HOME
+CLAUDE_CONFIG_DIR="$WORK/claude-config"; export CLAUDE_CONFIG_DIR
 AWS_LOGIN_CACHE_DIR="$WORK/no-aws"; export AWS_LOGIN_CACHE_DIR
 CLAUDE_STATUSLINE_WIDTH=120; export CLAUDE_STATUSLINE_WIDTH
 ROOT="$WORK/plugin"
@@ -30,30 +32,37 @@ printf '{"hook_event_name":"SessionStart"}' | CLAUDE_CONFIG_DIR= CLAUDE_PLUGIN_R
 check 'default hook preserves custom settings' "$CUSTOM_BEFORE" "$(cksum < "$CUSTOM/settings.json")"
 (cd "$SRC" && GOPROXY=off go build -o "$WORK/statusline" ./cmd/statusline)
 CACHE="$XDG_CACHE_HOME/claude-statusline"
-HASH=$(printf '%s' "$CUSTOM" | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | awk '{print $1}')
-CUSTOM_CACHE="$CACHE/accounts/$HASH"
-mkdir -p "$CACHE" "$CUSTOM_CACHE"
-printf '{"oauthAccount":{"emailAddress":"default@example.com"}}' > "$HOME/.claude.json"
-printf '{"oauthAccount":{"emailAddress":"custom@example.com"}}' > "$CUSTOM/.claude.json"
-render() { printf '{"workspace":{"current_dir":"/tmp"},"version":"test","rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":1999999999}}}' "$2" | CLAUDE_CONFIG_DIR="$1" "$WORK/statusline"; }
-render '' 12 > "$WORK/default.out" &
+OTEL="$XDG_STATE_HOME/claude-statusline/otel"
+mkdir -p "$CACHE" "$OTEL/sessions"
+touch "$OTEL/heartbeat"
+# 계정은 설정 폴더의 .claude.json 이 아니라 세션별 앵커에서 온다. 미끼 .claude.json 은 서로 바꿔 둔다.
+printf '{"oauthAccount":{"emailAddress":"custom@example.com"}}' > "$HOME/.claude.json"
+printf '{"oauthAccount":{"emailAddress":"default@example.com"}}' > "$CUSTOM/.claude.json"
+printf 'email=default@example.com\nkind=start\nts=1700000000000\n' > "$OTEL/sessions/sess-default.env"
+printf 'email=custom@example.com\nkind=start\nts=1700000001000\n' > "$OTEL/sessions/sess-custom.env"
+render() { printf '{"session_id":"%s","workspace":{"current_dir":"/tmp"},"version":"test","rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":1999999999}}}' "$2" "$3" | CLAUDE_CONFIG_DIR="$1" "$WORK/statusline"; }
+render '' sess-default 12 > "$WORK/default.out" &
 PID=$!
-render "$CUSTOM/" 67 > "$WORK/custom.out"
+render "$CUSTOM/" sess-custom 67 > "$WORK/custom.out"
 wait "$PID"
-for entry in 'default:default@example.com:12' 'custom:custom@example.com:67'; do
-  name=${entry%%:*}; rest=${entry#*:}; email=${rest%%:*}; rest=${rest#*:}; pct=$rest
-  dir=$CACHE; [ "$name" = default ] || dir=$CUSTOM_CACHE
+for entry in 'default:default@example.com:12:custom@example.com' 'custom:custom@example.com:67:default@example.com'; do
+  name=${entry%%:*}; rest=${entry#*:}; email=${rest%%:*}; rest=${rest#*:}; pct=${rest%%:*}; other=${rest#*:}
   case "$(cat "$WORK/$name.out")" in *"$email"*) pass=$((pass+1));; *) printf 'FAIL %s account render\n' "$name"; fail=$((fail+1));; esac
-  check "$name rate cache" "$pct" "$(if [ -f "$dir/rate-limits.env" ]; then awk -F= '$1=="fivePct"{print $2}' "$dir/rate-limits.env"; else printf missing; fi)"
-  check "$name account cache" "email=$email" "$(cat "$dir/cc-account.env" 2>/dev/null || printf missing)"
+  case "$(cat "$WORK/$name.out")" in *"$other"*) printf 'FAIL %s shows the other session account\n' "$name"; fail=$((fail+1));; *) pass=$((pass+1));; esac
+  check "$name rate cache" "$pct" "$(if [ -f "$CACHE/rate-limits/sess-$name.env" ]; then awk -F= '$1=="fivePct"{print $2}' "$CACHE/rate-limits/sess-$name.env"; else printf missing; fi)"
 done
-DEFAULT_CACHE_BEFORE=$(cksum < "$CACHE/rate-limits.env")
-CUSTOM_CACHE_BEFORE=$(if [ -f "$CUSTOM_CACHE/rate-limits.env" ]; then cksum < "$CUSTOM_CACHE/rate-limits.env"; else printf missing; fi)
-for config in '' "$CUSTOM"; do
-  printf '{"workspace":{"current_dir":"/tmp"}}' | CLAUDE_CONFIG_DIR="$config" "$WORK/statusline" >/dev/null
+check 'no shared rate-limits.env' missing "$(if [ -e "$CACHE/rate-limits.env" ]; then printf present; else printf missing; fi)"
+check 'no cc-account.env' missing "$(if [ -e "$CACHE/cc-account.env" ]; then printf present; else printf missing; fi)"
+check 'no accounts directory' missing "$(if [ -e "$CACHE/accounts" ]; then printf present; else printf missing; fi)"
+# 창을 못 받은 렌더는 자기 세션의 캐시만 쓰고 그 파일을 바꾸지 않는다.
+for name in default custom; do
+  before=$(cksum < "$CACHE/rate-limits/sess-$name.env")
+  config=''; [ "$name" = custom ] && config="$CUSTOM"
+  printf '{"session_id":"sess-%s","workspace":{"current_dir":"/tmp"}}' "$name" | CLAUDE_CONFIG_DIR="$config" "$WORK/statusline" > "$WORK/$name.fallback.out"
+  check "$name fallback preserves its rate cache" "$before" "$(cksum < "$CACHE/rate-limits/sess-$name.env")"
 done
-check 'default fallback preserves its rate cache' "$DEFAULT_CACHE_BEFORE" "$(cksum < "$CACHE/rate-limits.env")"
-check 'custom fallback preserves its rate cache' "$CUSTOM_CACHE_BEFORE" "$(if [ -f "$CUSTOM_CACHE/rate-limits.env" ]; then cksum < "$CUSTOM_CACHE/rate-limits.env"; else printf missing; fi)"
+case "$(cat "$WORK/default.fallback.out")" in *"5h"*"12%"*) pass=$((pass+1));; *) printf 'FAIL default fallback shows its own window\n'; fail=$((fail+1));; esac
+case "$(cat "$WORK/custom.fallback.out")" in *"5h"*"67%"*) pass=$((pass+1));; *) printf 'FAIL custom fallback shows its own window\n'; fail=$((fail+1));; esac
 printf 'config-dir.test.sh: %d passed, %d failed\n' "$pass" "$fail"
 completed=1
 [ "$fail" -eq 0 ]

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/silee-tools/claude-statusline/internal/agentstatus"
+	"github.com/silee-tools/claude-statusline/internal/anchor"
 	"github.com/silee-tools/claude-statusline/internal/gitinfo"
 	"github.com/silee-tools/claude-statusline/internal/input"
 	"github.com/silee-tools/claude-statusline/internal/ratelimit"
@@ -49,17 +50,15 @@ func main() {
 
 	cacheDir := filepath.Join(xdg("XDG_CACHE_HOME", filepath.Join(home, ".cache")), "claude-statusline")
 	ghCacheDir := filepath.Join(xdg("XDG_CACHE_HOME", filepath.Join(home, ".cache")), "gh-prompt")
-	configDir := xdg("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	paths := resolveClaudePaths(home, cacheDir)
+	xdgConfigDir := xdg("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	configDir := resolveConfigDir(home)
 	loginCacheDir := os.Getenv("AWS_LOGIN_CACHE_DIR")
 	if loginCacheDir == "" {
 		loginCacheDir = filepath.Join(home, ".aws", "login", "cache")
 	}
 
-	limits := ratelimit.Resolve(paths.AccountCache, ratelimit.Pair{
-		Five: sample(status.FiveHour),
-		Week: sample(status.SevenDay),
-	}, now.Unix())
+	live := ratelimit.Pair{Five: sample(status.FiveHour), Week: sample(status.SevenDay)}
+	limits := ratelimit.Resolve(cacheDir, status.SessionID, live, now.Unix())
 	var usage []agentstatus.Window
 	if limits.Five.Complete() {
 		usage = append(usage, agentstatus.Window{
@@ -98,7 +97,7 @@ func main() {
 	var gh string
 	if status.CWD != "" && !gitinfo.Overridden() {
 		repoRoot, _ := gitinfo.Root(status.CWD)
-		gh = segments.GitHubAccount(ghCacheDir, configDir, repoRoot, gitinfo.Origin(repoRoot), now.Unix())
+		gh = segments.GitHubAccount(ghCacheDir, xdgConfigDir, repoRoot, gitinfo.Origin(repoRoot), now.Unix())
 	}
 	aws, awsHealthy := segments.AWS(loginCacheDir, filepath.Join(cacheDir, "aws-check"), now.Unix(), segments.SpawnAWSCheck)
 
@@ -111,7 +110,7 @@ func main() {
 	}
 	// The path and the account are read only for the full layout.
 	view.Path = shorten.Path(status.CWD, home)
-	view.Account = segments.ClaudeAccount(paths.OAuthDir, paths.AccountCache)
+	view.Account = accountSlot(claudeStateDir(home), configDir, status, now)
 	for _, s := range []string{gh, aws} {
 		if s != "" {
 			view.Meta = append(view.Meta, s)
@@ -154,12 +153,36 @@ func xdg(name, fallback string) string {
 	return fallback
 }
 
+// claudeStateDir is where the receiver's anchors and this program's per-session state live.
+func claudeStateDir(home string) string {
+	return filepath.Join(xdg("XDG_STATE_HOME", filepath.Join(home, ".local", "state")), "claude-statusline")
+}
+
 func agentStateDir(home string) string {
 	if root := os.Getenv("AGENT_STATUS_STATE_DIR"); root != "" {
 		return root
 	}
-	return filepath.Join(xdg("XDG_STATE_HOME", filepath.Join(home, ".local", "state")),
-		"claude-statusline", "agent-status")
+	return filepath.Join(claudeStateDir(home), "agent-status")
+}
+
+// fingerprintWindows are the rate-limit windows whose change inside the window casts
+// doubt on the account. Both resets stay fixed while their window runs: 21 live sessions
+// kept the same five-hour and seven-day resetsAt across 54 minutes of sampling.
+var fingerprintWindows = []ratelimit.Window{ratelimit.WindowFive, ratelimit.WindowWeek}
+
+// accountSlot is the Claude account of the first row: the session's anchor, with a
+// question mark when the receiver looks stopped or a rate-limit window of the session
+// changed before it ended.
+func accountSlot(stateDir, configDir string, status input.Status, now time.Time) string {
+	res := anchor.Resolve(anchor.Input{StateDir: stateDir, ConfigDir: configDir, SessionID: status.SessionID, Now: now})
+	if res.Email != "" {
+		live := ratelimit.Pair{Five: sample(status.FiveHour), Week: sample(status.SevenDay)}
+		fingerprints := filepath.Join(stateDir, "fingerprints")
+		if ratelimit.Fingerprint(fingerprints, status.SessionID, res.AnchorTS, fingerprintWindows, live, now.Unix()) {
+			res.Suspect = true
+		}
+	}
+	return segments.Account(res.Installed, res.Email, res.Suspect)
 }
 
 func cwdOrDot() string {
