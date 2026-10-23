@@ -3,12 +3,10 @@ import Foundation
 public struct SessionLocations: Sendable {
     public let claudeSessionsURL: URL
     public let codexSessionsURL: URL
-    public let stuckStateURL: URL
 
-    public init(claudeSessionsURL: URL, codexSessionsURL: URL, stuckStateURL: URL) {
+    public init(claudeSessionsURL: URL, codexSessionsURL: URL) {
         self.claudeSessionsURL = claudeSessionsURL
         self.codexSessionsURL = codexSessionsURL
-        self.stuckStateURL = stuckStateURL
     }
 
     public static func defaults(
@@ -21,8 +19,7 @@ public struct SessionLocations: Sendable {
         return SessionLocations(
             claudeSessionsURL: stateHome
                 .appendingPathComponent("claude-statusline/agent-status/sessions/claude", isDirectory: true),
-            codexSessionsURL: homeURL.appendingPathComponent(".codex/sessions", isDirectory: true),
-            stuckStateURL: stateHome.appendingPathComponent("stuck-resume/v2", isDirectory: true)
+            codexSessionsURL: homeURL.appendingPathComponent(".codex/sessions", isDirectory: true)
         )
     }
 }
@@ -30,7 +27,6 @@ public struct SessionLocations: Sendable {
 public enum SessionCollector {
     public static func collect(
         locations: SessionLocations,
-        now: Int64,
         codexLimit: Int = 8
     ) throws -> [SessionSnapshot] {
         let decoder = JSONDecoder()
@@ -52,12 +48,7 @@ public enum SessionCollector {
         let codex = try recentCodexSessionURLs(in: locations.codexSessionsURL, limit: codexLimit)
             .compactMap { try? CodexSessionAdapter.snapshot(from: $0) }
             .compactMap { $0 }
-        let overlaid = StuckResumeAdapter.overlay(
-            claude + codex,
-            stateURL: locations.stuckStateURL,
-            now: now
-        )
-        return overlaid.sorted(by: precedes)
+        return (claude + codex).sorted(by: precedes)
     }
 
     public static func recentCodexSessionURLs(in rootURL: URL, limit: Int = 8) throws -> [URL] {
@@ -169,7 +160,6 @@ public enum AgentDisplay {
         case .waitingInput: "입력 대기"
         case .waitingApproval: "승인 대기"
         case .rateLimited: "한도 대기"
-        case .resuming: "재개 중"
         case .failed: "실패"
         case .stale: "오래된 상태"
         }
@@ -214,9 +204,5 @@ public enum AgentDisplay {
 
     public static func usageLabel(_ window: UsageWindow) -> String {
         "\(100 - window.usedPercent)% 남음"
-    }
-
-    public static func resumeLabel(_ progress: ResumeProgress) -> String {
-        "재개 \(progress.attempt)/\(progress.maximumAttempts.map(String.init) ?? "∞")"
     }
 }

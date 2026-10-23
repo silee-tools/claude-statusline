@@ -220,7 +220,7 @@ func validWindows(windows []Window) []Window {
 
 func validActivity(activity string) bool {
 	switch activity {
-	case "inactive", "idle", "working", "waitingInput", "waitingApproval", "rateLimited", "resuming", "failed", "stale":
+	case "inactive", "idle", "working", "waitingInput", "waitingApproval", "rateLimited", "failed", "stale":
 		return true
 	default:
 		return false

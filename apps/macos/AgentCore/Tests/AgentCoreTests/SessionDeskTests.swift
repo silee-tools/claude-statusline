@@ -19,7 +19,7 @@ import Testing
             to: locations.claudeSessionsURL.appendingPathComponent("future.json")
         )
 
-        let snapshots = try SessionCollector.collect(locations: locations, now: 200)
+        let snapshots = try SessionCollector.collect(locations: locations)
 
         #expect(snapshots.map(\.sessionID) == ["session-valid"])
     }
@@ -32,7 +32,7 @@ import Testing
         try Data("not-a-directory".utf8).write(to: locations.claudeSessionsURL)
 
         #expect(throws: CocoaError.self) {
-            _ = try SessionCollector.collect(locations: locations, now: 200)
+            _ = try SessionCollector.collect(locations: locations)
         }
     }
 }
@@ -56,35 +56,32 @@ import Testing
             try SessionCollector.recentCodexSessionURLs(in: locations.codexSessionsURL, limit: 8)
                 .map(\.lastPathComponent) == (2...9).reversed().map { "session-\($0).jsonl" }
         )
-        #expect(try SessionCollector.collect(locations: locations, now: 300).count == 8)
+        #expect(try SessionCollector.collect(locations: locations).count == 8)
     }
 }
 
-@Test func collectorAppliesStuckOverlayAndSortsProviderPriorityAndSession() throws {
-    try withSessionDeskDirectory(named: "overlay-sort") { root in
+@Test func collectorSortsProviderPriorityAndSession() throws {
+    try withSessionDeskDirectory(named: "sort") { root in
         let locations = try makeLocations(in: root)
         try writeSnapshot(
             provider: .claude,
-            sessionID: "session-idle",
+            sessionID: "session-a",
             activity: .idle,
             observedAt: 100,
             to: locations.claudeSessionsURL.appendingPathComponent("idle.json")
         )
         try writeSnapshot(
             provider: .claude,
-            sessionID: "session-active",
-            activity: .idle,
+            sessionID: "session-b",
+            activity: .working,
             observedAt: 100,
             to: locations.claudeSessionsURL.appendingPathComponent("active.json")
         )
         try writeCodexSession(index: 1, to: locations.codexSessionsURL.appendingPathComponent("codex.jsonl"))
-        try writeActiveStuckState(to: locations.stuckStateURL)
 
-        let snapshots = try SessionCollector.collect(locations: locations, now: 120)
+        let snapshots = try SessionCollector.collect(locations: locations)
 
-        #expect(snapshots.map(\.sessionID) == ["session-active", "session-idle", "codex-1"])
-        #expect(snapshots[0].activity == .resuming)
-        #expect(snapshots[0].resumeProgress?.cause == .rateLimit)
+        #expect(snapshots.map(\.sessionID) == ["session-b", "session-a", "codex-1"])
     }
 }
 
@@ -96,7 +93,6 @@ import Testing
         environment: ["XDG_STATE_HOME": "/tmp/example-state"]
     )
     #expect(xdg.claudeSessionsURL.path == "/tmp/example-state/claude-statusline/agent-status/sessions/claude")
-    #expect(xdg.stuckStateURL.path == "/tmp/example-state/stuck-resume/v2")
     #expect(xdg.codexSessionsURL.path == "/tmp/example-home/.codex/sessions")
 
     let fallback = SessionLocations.defaults(homeURL: home, environment: ["XDG_STATE_HOME": ""])
@@ -146,7 +142,6 @@ import Testing
         (.waitingInput, "입력 대기"),
         (.waitingApproval, "승인 대기"),
         (.rateLimited, "한도 대기"),
-        (.resuming, "재개 중"),
         (.failed, "실패"),
         (.stale, "오래된 상태"),
     ]
@@ -189,13 +184,6 @@ import Testing
 
     let window = try UsageWindow(id: "five-hour", label: "5 hour", usedPercent: 42, resetsAt: 200)
     #expect(AgentDisplay.usageLabel(window) == "58% 남음")
-    #expect(AgentDisplay.resumeLabel(ResumeProgress(
-        cause: .rateLimit,
-        attempt: 2,
-        maximumAttempts: 5,
-        nextAttemptAt: 150,
-        deadlineAt: 200
-    )) == "재개 2/5")
 }
 
 @Test func sharedSnapshotStoreDistinguishesMissingCorruptEmptyAndReady() throws {
@@ -238,10 +226,9 @@ private func withSessionDeskDirectory(named name: String, _ body: (URL) throws -
 private func makeLocations(in root: URL) throws -> SessionLocations {
     let locations = SessionLocations(
         claudeSessionsURL: root.appendingPathComponent("claude", isDirectory: true),
-        codexSessionsURL: root.appendingPathComponent("codex", isDirectory: true),
-        stuckStateURL: root.appendingPathComponent("stuck", isDirectory: true)
+        codexSessionsURL: root.appendingPathComponent("codex", isDirectory: true)
     )
-    for directory in [locations.claudeSessionsURL, locations.codexSessionsURL, locations.stuckStateURL] {
+    for directory in [locations.claudeSessionsURL, locations.codexSessionsURL] {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
     return locations
@@ -270,23 +257,4 @@ private func writeCodexSession(index: Int, to fileURL: URL) throws {
     let minute = String(format: "%02d", index)
     let contents = #"{"timestamp":"2026-08-24T01:\#(minute):00Z","type":"session_meta","payload":{"id":"codex-\#(index)","cwd":"/tmp/example-project"}}"# + "\n"
     try Data(contents.utf8).write(to: fileURL)
-}
-
-private func writeActiveStuckState(to stateURL: URL) throws {
-    let contents = """
-    episode=1
-    generation=1
-    recovered_generation=0
-    delay=30
-    last_attempt=110
-    attempts=1
-    base_delay=30
-    max_attempts=5
-    active_session=session-active
-    active_generation=1
-    active_cause=rate_limit
-    handoff_at=180
-    deadline=300
-    """
-    try Data(contents.utf8).write(to: stateURL.appendingPathComponent("global"))
 }

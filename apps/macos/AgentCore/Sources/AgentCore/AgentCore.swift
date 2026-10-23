@@ -12,7 +12,6 @@ public enum AgentActivity: String, Codable, Equatable, Sendable {
     case waitingInput
     case waitingApproval
     case rateLimited
-    case resuming
     case failed
     case stale
 
@@ -46,19 +45,10 @@ public enum AgentActivity: String, Codable, Equatable, Sendable {
         case .waitingInput: 3
         case .waitingApproval: 4
         case .rateLimited: 5
-        case .resuming: 6
-        case .failed: 7
-        case .stale: 8
+        case .failed: 6
+        case .stale: 7
         }
     }
-}
-
-public enum ResumeCause: String, Codable, Equatable, Sendable {
-    case rateLimit
-    case authenticationFailed
-    case serverError
-    case overloaded
-    case other
 }
 
 public enum AgentContractError: Error, Equatable, Sendable {
@@ -102,28 +92,6 @@ public struct UsageWindow: Codable, Equatable, Sendable {
     }
 }
 
-public struct ResumeProgress: Codable, Equatable, Sendable {
-    public let cause: ResumeCause
-    public let attempt: Int
-    public let maximumAttempts: Int?
-    public let nextAttemptAt: Int64
-    public let deadlineAt: Int64
-
-    public init(
-        cause: ResumeCause,
-        attempt: Int,
-        maximumAttempts: Int? = nil,
-        nextAttemptAt: Int64,
-        deadlineAt: Int64
-    ) {
-        self.cause = cause
-        self.attempt = attempt
-        self.maximumAttempts = maximumAttempts
-        self.nextAttemptAt = nextAttemptAt
-        self.deadlineAt = deadlineAt
-    }
-}
-
 public struct SessionSnapshot: Codable, Equatable, Sendable {
     public static let currentSchemaVersion = 1
 
@@ -134,7 +102,6 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
     public let model: String?
     public let activity: AgentActivity
     public let usageWindows: [UsageWindow]
-    public let resumeProgress: ResumeProgress?
     public let observedAt: Int64
 
     public init(
@@ -145,7 +112,6 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
         model: String? = nil,
         activity: AgentActivity,
         usageWindows: [UsageWindow],
-        resumeProgress: ResumeProgress? = nil,
         observedAt: Int64
     ) throws {
         guard schemaVersion == Self.currentSchemaVersion else {
@@ -158,7 +124,6 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
         self.model = model
         self.activity = activity
         self.usageWindows = usageWindows
-        self.resumeProgress = resumeProgress
         self.observedAt = observedAt
     }
 
@@ -172,7 +137,6 @@ public struct SessionSnapshot: Codable, Equatable, Sendable {
             model: values.decodeIfPresent(String.self, forKey: .model),
             activity: values.decode(AgentActivity.self, forKey: .activity),
             usageWindows: values.decode([UsageWindow].self, forKey: .usageWindows),
-            resumeProgress: values.decodeIfPresent(ResumeProgress.self, forKey: .resumeProgress),
             observedAt: values.decode(Int64.self, forKey: .observedAt)
         )
     }

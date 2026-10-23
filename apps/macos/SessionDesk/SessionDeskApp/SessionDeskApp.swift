@@ -66,10 +66,7 @@ private final class SessionDeskModel: ObservableObject {
         let observed = clock()
         let locations = SessionLocations.defaults(homeURL: homeURL)
         let snapshots = await Task.detached(priority: .utility) {
-            try? SessionCollector.collect(
-                locations: locations,
-                now: Int64(observed.timeIntervalSince1970)
-            )
+            try? SessionCollector.collect(locations: locations)
         }.value
         guard let snapshots else {
             state = .failed
@@ -207,12 +204,6 @@ private struct SessionRow: View {
                 ForEach(Array(snapshot.usageWindows.prefix(2)), id: \.id) { window in
                     UsageLine(window: window, accent: DeskColors.provider(snapshot.provider))
                 }
-
-                if let progress = snapshot.resumeProgress {
-                    Text(resumeText(progress))
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(DeskColors.wait)
-                }
             }
             Spacer(minLength: 0)
         }
@@ -233,22 +224,12 @@ private struct SessionRow: View {
         let usage = snapshot.usageWindows
             .map { "\($0.label) \($0.usedPercent)퍼센트 사용" }
             .joined(separator: ", ")
-        let resume = snapshot.resumeProgress.map {
-            "재개 시도 \($0.attempt), 다음 시도 \($0.nextAttemptAt)"
-        } ?? ""
         return [
             AgentDisplay.providerLabel(snapshot.provider),
             AgentDisplay.activityLabel(activity),
             metadata,
             usage,
-            resume,
         ].filter { !$0.isEmpty }.joined(separator: ", ")
-    }
-
-    private func resumeText(_ progress: ResumeProgress) -> String {
-        let time = Date(timeIntervalSince1970: TimeInterval(progress.nextAttemptAt))
-            .formatted(date: .omitted, time: .shortened)
-        return "\(AgentDisplay.resumeLabel(progress)) · \(time) 재시도"
     }
 }
 
@@ -308,7 +289,7 @@ private enum DeskColors {
 
     static func status(_ activity: AgentActivity) -> Color {
         switch activity {
-        case .working, .resuming: live
+        case .working: live
         case .waitingInput, .waitingApproval, .rateLimited: wait
         case .failed: .red
         case .stale, .inactive: .secondary

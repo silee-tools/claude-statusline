@@ -12,7 +12,7 @@
       "name": "claude-statusline",
       "source": "./plugins/claude/claude-statusline",
       "description": "터미널 폭에 따라 최대 2행과 6행으로 전환하는 statusline HUD",
-      "version": "5.9.0",
+      "version": "5.9.1",
       "author": {
         "name": "silee9019"
       },
@@ -21,24 +21,6 @@
         "statusline",
         "hud",
         "context"
-      ],
-      "category": "utility"
-    },
-    {
-      "name": "stuck-resume",
-      "source": "./plugins/claude/stuck-resume",
-      "description": "턴을 끊은 원인이 풀린 뒤 자동으로 이어서 재개한다",
-      "version": "0.5.1",
-      "author": {
-        "name": "silee9019"
-      },
-      "license": "MIT",
-      "keywords": [
-        "rate-limit",
-        "auth",
-        "stuck",
-        "resume",
-        "hook"
       ],
       "category": "utility"
     }

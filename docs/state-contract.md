@@ -23,7 +23,6 @@
 | `model` | string | 아니요 | provider가 보고한 model이다. |
 | `activity` | string enum | 예 | producer가 관측한 현재 활동이다. |
 | `usageWindows` | array | 예 | usage window 목록이며 없으면 빈 배열이다. |
-| `resumeProgress` | object | 아니요 | stuck-resumer가 진행 중일 때의 정보다. |
 | `observedAt` | integer | 예 | producer가 이 상태를 관측한 Unix epoch seconds다. |
 
 `provider`는 다음 literal만 허용한다.
@@ -43,8 +42,7 @@
 | `waitingInput` | 사용자 입력을 기다림 |
 | `waitingApproval` | 사용자 승인을 기다림 |
 | `rateLimited` | usage limit으로 진행할 수 없음 |
-| `resuming` | 중단된 turn을 재개하는 중임 |
-| `failed` | 세션이나 재개가 실패함 |
+| `failed` | 세션이 실패함 |
 | `stale` | 관측값이 freshness 기준을 넘김 |
 
 ## Usage window
@@ -61,41 +59,18 @@
 
 `usedPercent`가 `0`보다 작거나 `100`보다 크면 snapshot 전체를 거부한다.
 
-## Resume progress
-
-`resumeProgress` 객체는 재개 시도가 존재할 때만 넣는다.
-
-| 필드 | JSON 타입 | 필수 | 의미 |
-|---|---|---:|---|
-| `cause` | string enum | 예 | 재개가 필요한 원인이다. |
-| `attempt` | integer | 예 | 현재 재개 시도 번호다. |
-| `maximumAttempts` | integer | 아니요 | 원인별 최대 시도 횟수를 알 때의 값이다. |
-| `nextAttemptAt` | integer | 예 | 다음 시도를 시작할 Unix epoch seconds다. |
-| `deadlineAt` | integer | 예 | 현재 재개 작업의 종료 시한인 Unix epoch seconds다. |
-
-`cause`는 다음 literal만 허용한다.
-
-| literal | 의미 |
-|---|---|
-| `rateLimit` | usage limit 도달 |
-| `authenticationFailed` | 인증 실패 또는 만료 |
-| `serverError` | provider 서버 오류 |
-| `overloaded` | provider 과부하 |
-| `other` | 위 값으로 분류할 수 없는 원인 |
-
 ## 상태 우선순위
 
 consumer가 같은 세션에 관한 여러 실시간 후보를 합치면 다음 우선순위를 적용한다.
 
 1. `stale`
 2. `failed`
-3. `resuming`
-4. `rateLimited`
-5. `waitingApproval`
-6. `waitingInput`
-7. `working`
-8. `idle`
-9. `inactive`
+3. `rateLimited`
+4. `waitingApproval`
+5. `waitingInput`
+6. `working`
+7. `idle`
+8. `inactive`
 
 후보가 없으면 `inactive`다.
 
@@ -110,7 +85,7 @@ staleness는 consumer가 전달한 `now`, snapshot의 `observedAt`과 0 이상�
   "sessionID": "session-123",
   "workspace": "/tmp/example-project",
   "model": "example-model",
-  "activity": "resuming",
+  "activity": "rateLimited",
   "usageWindows": [
     {
       "id": "five-hour",
@@ -120,13 +95,6 @@ staleness는 consumer가 전달한 `now`, snapshot의 `observedAt`과 0 이상�
       "windowMinutes": 300
     }
   ],
-  "resumeProgress": {
-    "cause": "rateLimit",
-    "attempt": 2,
-    "maximumAttempts": 5,
-    "nextAttemptAt": 1787229900,
-    "deadlineAt": 1787230200
-  },
   "observedAt": 1787229600
 }
 ```
