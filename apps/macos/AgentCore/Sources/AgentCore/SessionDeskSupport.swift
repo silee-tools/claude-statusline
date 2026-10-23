@@ -113,8 +113,17 @@ public struct SharedSnapshotStore: Sendable {
         )
     }
 
+    /// 배열이 아니면 던지고, 디코드할 수 없는 항목(앱이 이전 판본에서 쓴 폐기된 값 포함)은 그 항목만 버린다.
     public func read() throws -> [SessionSnapshot] {
-        try JSONDecoder().decode([SessionSnapshot].self, from: Data(contentsOf: fileURL))
+        try JSONDecoder().decode([Entry].self, from: Data(contentsOf: fileURL)).compactMap(\.snapshot)
+    }
+
+    private struct Entry: Decodable {
+        let snapshot: SessionSnapshot?
+
+        init(from decoder: Decoder) {
+            snapshot = try? SessionSnapshot(from: decoder)
+        }
     }
 
     public func load() -> SessionLoadState {

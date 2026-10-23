@@ -18,6 +18,9 @@ import Testing
         try Data(#"{"schemaVersion":2}"#.utf8).write(
             to: locations.claudeSessionsURL.appendingPathComponent("future.json")
         )
+        try Data(retiredEntry(sessionID: "session-retired").utf8).write(
+            to: locations.claudeSessionsURL.appendingPathComponent("retired.json")
+        )
 
         let snapshots = try SessionCollector.collect(locations: locations)
 
@@ -186,6 +189,36 @@ import Testing
     #expect(AgentDisplay.usageLabel(window) == "58% 남음")
 }
 
+@Test func sharedSnapshotStoreSkipsOnlyEntriesItCannotDecode() throws {
+    try withSessionDeskDirectory(named: "shared-tolerant") { root in
+        let fileURL = root.appendingPathComponent("group/snapshots.json")
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let valid = { (sessionID: String) in
+            #"{"schemaVersion":1,"provider":"codex","sessionID":"\#(sessionID)","workspace":"/tmp/example-project","activity":"idle","usageWindows":[],"observedAt":100}"#
+        }
+        let unknownProvider = #"{"schemaVersion":1,"provider":"gemini","sessionID":"session-unknown","workspace":"/tmp/example-project","activity":"idle","usageWindows":[],"observedAt":100}"#
+        let store = SharedSnapshotStore(fileURL: fileURL)
+
+        let mixed = "[\(valid("session-a")),\(retiredEntry(sessionID: "session-retired")),7,\(unknownProvider),\(valid("session-b"))]"
+        try Data(mixed.utf8).write(to: fileURL)
+        #expect(try store.read().map(\.sessionID) == ["session-a", "session-b"])
+        guard case .ready(let ready) = store.load() else {
+            Issue.record("유효한 항목이 남았는데 ready가 아니다")
+            return
+        }
+        #expect(ready.map(\.sessionID) == ["session-a", "session-b"])
+
+        try Data("[\(retiredEntry(sessionID: "session-retired"))]".utf8).write(to: fileURL)
+        #expect(store.load() == .empty)
+
+        try Data(retiredEntry(sessionID: "session-retired").utf8).write(to: fileURL)
+        #expect(store.load() == .failed)
+    }
+}
+
 @Test func sharedSnapshotStoreDistinguishesMissingCorruptEmptyAndReady() throws {
     try withSessionDeskDirectory(named: "shared-load-state") { root in
         let fileURL = root.appendingPathComponent("group/snapshots.json")
@@ -213,6 +246,10 @@ import Testing
         try store.write([snapshot])
         #expect(store.load() == .ready([snapshot]))
     }
+}
+
+private func retiredEntry(sessionID: String) -> String {
+    #"{"schemaVersion":1,"provider":"claude","sessionID":"\#(sessionID)","workspace":"/tmp/example-project","activity":"resuming","usageWindows":[],"resumeProgress":{"cause":"rateLimit","attempt":1,"nextAttemptAt":110,"deadlineAt":200},"observedAt":100}"#
 }
 
 private func withSessionDeskDirectory(named name: String, _ body: (URL) throws -> Void) throws {
