@@ -11,7 +11,7 @@ import Testing
           "sessionID": "session-123",
           "workspace": "/tmp/example-project",
           "model": "example-model",
-          "activity": "resuming",
+          "activity": "rateLimited",
           "usageWindows": [
             {
               "id": "five-hour",
@@ -21,13 +21,6 @@ import Testing
               "windowMinutes": 300
             }
           ],
-          "resumeProgress": {
-            "cause": "rateLimit",
-            "attempt": 2,
-            "maximumAttempts": 5,
-            "nextAttemptAt": 1787229900,
-            "deadlineAt": 1787230200
-          },
           "observedAt": 1787229600
         }
         """#.utf8
@@ -35,34 +28,27 @@ import Testing
 
     let snapshot = try JSONDecoder().decode(SessionSnapshot.self, from: fixture)
     #expect(snapshot.provider == .claude)
-    #expect(snapshot.activity == .resuming)
-    #expect(snapshot.resumeProgress?.cause == .rateLimit)
+    #expect(snapshot.activity == .rateLimited)
 
     let encoded = try JSONEncoder().encode(snapshot)
     let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
     #expect(Set(object.keys) == [
         "schemaVersion", "provider", "sessionID", "workspace", "model",
-        "activity", "usageWindows", "resumeProgress", "observedAt",
+        "activity", "usageWindows", "observedAt",
     ])
     #expect(object["schemaVersion"] as? Int == 1)
     #expect(object["provider"] as? String == "claude")
-    #expect(object["activity"] as? String == "resuming")
+    #expect(object["activity"] as? String == "rateLimited")
 
     let windows = try #require(object["usageWindows"] as? [[String: Any]])
     #expect(Set(try #require(windows.first).keys) == [
         "id", "label", "usedPercent", "resetsAt", "windowMinutes",
     ])
     #expect(try #require(windows.first?["usedPercent"] as? Int) == 100)
-
-    let progress = try #require(object["resumeProgress"] as? [String: Any])
-    #expect(Set(progress.keys) == [
-        "cause", "attempt", "maximumAttempts", "nextAttemptAt", "deadlineAt",
-    ])
-    #expect(progress["cause"] as? String == "rateLimit")
     #expect(try JSONDecoder().decode(SessionSnapshot.self, from: encoded) == snapshot)
 }
 
-@Test func providerActivityAndResumeCauseExposeStableLiterals() throws {
+@Test func providerAndActivityExposeStableLiterals() throws {
     let encoder = JSONEncoder()
 
     #expect(String(decoding: try encoder.encode(AgentProvider.claude), as: UTF8.self) == #""claude""#)
@@ -75,24 +61,37 @@ import Testing
         (.waitingInput, "waitingInput"),
         (.waitingApproval, "waitingApproval"),
         (.rateLimited, "rateLimited"),
-        (.resuming, "resuming"),
         (.failed, "failed"),
         (.stale, "stale"),
     ]
     for (activity, literal) in activities {
         #expect(String(decoding: try encoder.encode(activity), as: UTF8.self) == "\"\(literal)\"")
     }
+}
 
-    let causes: [(ResumeCause, String)] = [
-        (.rateLimit, "rateLimit"),
-        (.authenticationFailed, "authenticationFailed"),
-        (.serverError, "serverError"),
-        (.overloaded, "overloaded"),
-        (.other, "other"),
-    ]
-    for (cause, literal) in causes {
-        #expect(String(decoding: try encoder.encode(cause), as: UTF8.self) == "\"\(literal)\"")
+@Test func retiredResumingActivityIsRejectedAndLegacyResumeProgressIsIgnored() throws {
+    func document(activity: String, extra: String = "") -> Data {
+        Data(
+            #"{"schemaVersion":1,"provider":"claude","sessionID":"session-123","workspace":"/tmp/example-project","activity":"\#(activity)","usageWindows":[],\#(extra)"observedAt":100}"#.utf8
+        )
     }
+
+    #expect(throws: DecodingError.self) {
+        try JSONDecoder().decode(SessionSnapshot.self, from: document(activity: "resuming"))
+    }
+
+    let legacy = try JSONDecoder().decode(
+        SessionSnapshot.self,
+        from: document(
+            activity: "rateLimited",
+            extra: #""resumeProgress":{"cause":"rateLimit","attempt":1,"nextAttemptAt":110,"deadlineAt":200},"#
+        )
+    )
+    #expect(legacy.activity == .rateLimited)
+    let object = try #require(
+        JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any]
+    )
+    #expect(object["resumeProgress"] == nil)
 }
 
 @Test func usagePercentAcceptsBoundariesAndRejectsValuesOutsideThem() throws {
@@ -121,7 +120,7 @@ import Testing
 
 @Test func staleOverridesEveryLiveActivityAtTheThreshold() {
     let liveActivities: [AgentActivity] = [
-        .failed, .resuming, .rateLimited, .waitingApproval, .waitingInput,
+        .failed, .rateLimited, .waitingApproval, .waitingInput,
         .working, .idle, .inactive,
     ]
 
@@ -137,8 +136,7 @@ import Testing
 
 @Test func liveActivityPriorityIsStable() {
     let lowerByPriority: [(AgentActivity, [AgentActivity])] = [
-        (.failed, [.resuming, .rateLimited, .waitingApproval, .waitingInput, .working, .idle, .inactive]),
-        (.resuming, [.rateLimited, .waitingApproval, .waitingInput, .working, .idle, .inactive]),
+        (.failed, [.rateLimited, .waitingApproval, .waitingInput, .working, .idle, .inactive]),
         (.rateLimited, [.waitingApproval, .waitingInput, .working, .idle, .inactive]),
         (.waitingApproval, [.waitingInput, .working, .idle, .inactive]),
         (.waitingInput, [.working, .idle, .inactive]),

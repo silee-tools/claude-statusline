@@ -124,6 +124,23 @@ func TestHookActivityMappings(t *testing.T) {
 	}
 }
 
+func TestRenderResetsRetiredActivityToIdle(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	const sessionID = "placeholder-session"
+	if err := store(root, snapshot{
+		SchemaVersion: 1, Provider: "claude", SessionID: sessionID, Workspace: "/tmp/example-project",
+		Activity: "resuming", ObservedAt: 1700000000,
+	}); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	if err := RecordRender(root, Metadata{SessionID: sessionID, Workspace: "/tmp/example-project"}, nil, 1700000100); err != nil {
+		t.Fatalf("RecordRender: %v", err)
+	}
+	if _, _, got := readSnapshot(t, root); got.Activity != "idle" {
+		t.Fatalf("폐기된 activity가 idle로 돌아오지 않았다: %q", got.Activity)
+	}
+}
+
 func TestConcurrentWritersLeaveOneCompleteJSONFile(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
 	const sessionID = "concurrent-placeholder-session"

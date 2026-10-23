@@ -167,11 +167,7 @@ private struct SessionWidgetView: View {
                     .foregroundStyle(WidgetColors.provider(provider))
                 Text(AgentDisplay.activityLabel(activity))
                     .font(.caption2)
-                if let progress = snapshot?.resumeProgress {
-                    Text(AgentDisplay.resumeLabel(progress))
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.orange)
-                } else if let window = snapshot?.usageWindows.first {
+                if let window = snapshot?.usageWindows.first {
                     HStack(spacing: 3) {
                         Text(AgentDisplay.usageLabel(window))
                         Text(Date(timeIntervalSince1970: TimeInterval(window.resetsAt)), style: .time)
@@ -213,16 +209,10 @@ private struct SessionWidgetView: View {
                 }
                 .font(.system(.caption2, design: .monospaced))
             }
-            if let progress = snapshot.resumeProgress {
-                Text(AgentDisplay.resumeLabel(progress))
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.orange)
-            } else {
-                Text(URL(fileURLWithPath: snapshot.workspace).lastPathComponent)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            Text(URL(fileURLWithPath: snapshot.workspace).lastPathComponent)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
