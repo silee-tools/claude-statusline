@@ -15,12 +15,22 @@ const (
 	// staleHeartbeat is how old the receiver's heartbeat may be before the account is
 	// shown with a doubt: it touches the file every 30 seconds.
 	staleHeartbeat = 120 * time.Second
-	// minProcessAge is how long a process must have run before the search for its
-	// resumed session's start anchor, which only arrives after the log export interval.
-	minProcessAge = 8 * time.Second
-	// startSlack is how far a start anchor's event time may lie from the process start
-	// (the sessions file's startedAt) to count as that process's.
+	// startSlack is how far before the process start (the sessions file's startedAt) an
+	// event may lie and still be the process's: events are exported in batches.
 	startSlack = 3000 // ms
+)
+
+// Confidence says how well the anchor behind an email establishes the account.
+type Confidence int
+
+const (
+	// Unknown: no anchor ties an account to the session.
+	Unknown Confidence = iota
+	// Estimate: the account the settings file held when the session began, which is the
+	// session's own only while the file and the credentials agree.
+	Estimate
+	// Confirmed: an in-session /login named the account.
+	Confirmed
 )
 
 // Input is what Resolve needs to know about one render.
@@ -28,16 +38,20 @@ type Input struct {
 	StateDir  string
 	ConfigDir string // the normalised Claude config directory, whose sessions/ lists its processes
 	SessionID string
+	Parent    int // the pid of the process that started the statusline, 0 when unknown
 	Now       time.Time
 }
 
 // Result is what the account slot shows. Installed is false when the receiver has never
 // run on this machine, which leaves the slot empty instead of a permanent "?". Email is
-// empty when the account cannot be told. Suspect says the receiver looks stopped, so a
-// /login may have gone unseen. AnchorTS identifies the anchor the email came from.
+// empty when the account cannot be told, and Level says how well it is established.
+// Suspect says the account may have changed unseen: the receiver looks stopped, or the
+// anchor predates the receiver's current generation. AnchorTS identifies the anchor the
+// email came from.
 type Result struct {
 	Installed bool
 	Email     string
+	Level     Confidence
 	Suspect   bool
 	AnchorTS  int64
 }
@@ -53,8 +67,37 @@ func Resolve(in Input) Result {
 	r.Suspect = err != nil || in.Now.Sub(hb.ModTime()) > staleHeartbeat
 	if a, ok := sessionAnchor(in); ok && a.Email != "" {
 		r.Email, r.AnchorTS = a.Email, a.TS
+		r.Level = Estimate
+		if a.Kind == KindLogin {
+			r.Level = Confirmed
+		}
+		// An anchor stored before the receiver's current generation may have missed a
+		// /login since, and only a later event replaces it.
+		if gen, ok := readGeneration(in.StateDir); !ok || a.stored() < gen {
+			r.Suspect = true
+		}
 	}
 	return r
+}
+
+// Boundary names the stretch of a session in which its rate-limit windows describe one
+// account: the process that runs it and the time of its last in-session login or logout.
+// Windows kept under another boundary, as when a new process resumes the conversation or
+// a /login has changed the account, are not drawn. It is empty when the process cannot be
+// told, which leaves nothing to keep.
+func Boundary(in Input) string {
+	if !validID(in.SessionID) {
+		return ""
+	}
+	p, _, _, ok := locate(in)
+	if !ok {
+		return ""
+	}
+	var auth int64
+	if a, ok := readFresh(in.StateDir, in.SessionID, in.Now); ok && a.Kind != KindStart && a.TS >= p.started-startSlack {
+		auth = a.TS
+	}
+	return p.key() + "-" + strconv.FormatInt(auth, 10)
 }
 
 // A process is told apart by its pid and start time together, which no later process
@@ -121,14 +164,14 @@ func findProc(procs []procInfo, id string) (proc, bool) {
 }
 
 // What the statusline keeps about a process, in pids/<pid>-<startedAt>.env: the session
-// id that last rendered, the anchor the process carries (and the session it came from),
-// and whether the search for a resumed session's start anchor already ran.
+// id that last rendered and the anchor the process carries. Src is the session the anchor
+// came from while the first render under a new id has not yet checked it: once that
+// render has, the anchor is the process's and nothing later under the old id reaches it.
 type pidFile struct {
 	Session string
 	Src     string
 	Anchor  Anchor
 	Has     bool // Anchor is meaningful
-	Checked bool
 }
 
 func pidPath(stateDir string, p proc) string {
@@ -151,8 +194,6 @@ func readPidFile(stateDir string, p proc) pidFile {
 			f.Session = v
 		case "src":
 			f.Src = v
-		case "checked":
-			f.Checked = v == "1"
 		}
 	}
 	f.Anchor, f.Has = decode(string(b))
@@ -163,9 +204,6 @@ func writePidFile(stateDir string, now time.Time, p proc, f pidFile) {
 	body := "session=" + f.Session + "\nsrc=" + f.Src + "\n"
 	if f.Has {
 		body += string(encode(f.Anchor))
-	}
-	if f.Checked {
-		body += "checked=1\n"
 	}
 	prunedWrite(stateDir, now, pidPath(stateDir, p), body)
 }
@@ -206,47 +244,78 @@ func prunedWrite(stateDir string, now time.Time, path, body string) {
 	}
 }
 
-// ownsSession reports whether the process still runs under session id: the file Claude
-// Code keeps for it must name that id and that start time. It reads the one file and
-// lists nothing.
-func ownsSession(configDir string, p proc, id string) bool {
-	b, err := os.ReadFile(filepath.Join(configDir, "sessions", strconv.Itoa(p.pid)+".json"))
+// readProc reads the one file Claude Code keeps for process pid in configDir. It lists
+// nothing and opens no *.key file.
+func readProc(configDir string, pid int) (procInfo, bool) {
+	b, err := os.ReadFile(filepath.Join(configDir, "sessions", strconv.Itoa(pid)+".json"))
 	if err != nil {
-		return false
+		return procInfo{}, false
 	}
 	var f struct {
+		PID       int    `json:"pid"`
 		SessionID string `json:"sessionId"`
 		StartedAt int64  `json:"startedAt"`
 	}
-	return json.Unmarshal(b, &f) == nil && f.SessionID == id && f.StartedAt == p.started
+	if json.Unmarshal(b, &f) != nil || f.PID != pid || f.StartedAt <= 0 || !validID(f.SessionID) {
+		return procInfo{}, false
+	}
+	return procInfo{proc{f.PID, f.StartedAt}, f.SessionID}, true
+}
+
+// ownsSession reports whether the process still runs under session id: the file Claude
+// Code keeps for it must name that id and that start time.
+func ownsSession(configDir string, p proc, id string) bool {
+	q, ok := readProc(configDir, p.pid)
+	return ok && q.session == id && q.started == p.started
+}
+
+// locate finds the process that runs session id: through the ref an earlier render left,
+// through the process that started the statusline (Claude Code itself), or by listing the
+// config directory's processes. Each is accepted only when the process's own file names
+// the session. r and hasRef describe the ref when it was the way in.
+func locate(in Input) (p proc, r ref, hasRef, ok bool) {
+	id := in.SessionID
+	if r, hasRef = readRef(in.StateDir, id); hasRef && !ownsSession(in.ConfigDir, r.proc, id) {
+		hasRef = false
+	}
+	if hasRef {
+		return r.proc, r, true, true
+	}
+	if in.Parent > 0 {
+		if q, found := readProc(in.ConfigDir, in.Parent); found && q.session == id {
+			return q.proc, ref{}, false, true
+		}
+	}
+	p, ok = findProc(scanProcs(in.ConfigDir), id)
+	return p, ref{}, false, ok
 }
 
 // sessionAnchor finds the anchor of the session: its own, or, after /clear gave the
-// process a new session id, the one the process carried; for a resumed session, the start
-// anchor of the throwaway id its start events were sent under.
+// process a new session id, the one the process carried.
 //
 // "Its own" means the anchor of this process. A resumed session reuses the id of the
-// conversation it resumes, whose earlier process may have left an anchor and a ref under
-// that id; an anchor older than this process's start belongs to that earlier process.
+// conversation it resumes, whose earlier process may have left an anchor under that id;
+// an anchor older than this process's start belongs to that earlier process.
+//
+// A process that resumes a conversation sends its start events under a throwaway session
+// id that nothing ties to the process, so a resumed session has no anchor until it
+// logs in. The anchors of other session ids are never borrowed on the strength of timing:
+// any process of any config directory could have written them.
+//
+// /clear leaves the anchor under the old id, where another process that resumes that id
+// can replace it. The first render under the new id therefore settles the carry once: if
+// the old id's anchor is still the one the process carried, the process keeps it for
+// good, and if it has changed, whose event changed it cannot be told, so the process has
+// no anchor until it logs in.
 func sessionAnchor(in Input) (Anchor, bool) {
 	id := in.SessionID
 	if !validID(id) {
 		return Anchor{}, false
 	}
-	direct, hasDirect := Read(in.StateDir, id)
-	r, hasRef := readRef(in.StateDir, id)
-	if hasRef && !ownsSession(in.ConfigDir, r.proc, id) {
-		hasRef = false
-	}
+	direct, hasDirect := readFresh(in.StateDir, id, in.Now)
+	p, r, hasRef, known := locate(in)
 	if hasDirect && hasRef && r.ts == direct.TS {
 		return direct, true
-	}
-
-	var procs []procInfo
-	p, known := r.proc, hasRef
-	if !hasRef {
-		procs = scanProcs(in.ConfigDir)
-		p, known = findProc(procs, id)
 	}
 	if !known {
 		return direct, hasDirect
@@ -254,86 +323,28 @@ func sessionAnchor(in Input) (Anchor, bool) {
 	if hasDirect && direct.TS < p.started-startSlack {
 		hasDirect = false
 	}
-	pf := readPidFile(in.StateDir, p)
-
 	if hasDirect {
 		writePidFile(in.StateDir, in.Now, p, pidFile{Session: id, Src: id, Anchor: direct, Has: true})
 		writeRef(in.StateDir, in.Now, id, p, direct.TS)
 		return direct, true
 	}
-	if pf.Has {
-		a := pf.Anchor
-		// The session this anchor came from may have logged in again since the last
-		// render saw it.
-		if pf.Src != id {
-			if s, ok := Read(in.StateDir, pf.Src); ok && s.TS > a.TS {
-				a = s
-			}
-		}
-		if pf.Session != id || a != pf.Anchor {
-			pf.Session, pf.Anchor = id, a
+	pf := readPidFile(in.StateDir, p)
+	if !pf.Has || pf.Anchor.expired(in.Now) {
+		return Anchor{}, false
+	}
+	a := pf.Anchor
+	if pf.Session != id {
+		pf.Session = id
+		if cur, found := readFresh(in.StateDir, pf.Src, in.Now); pf.Src != "" && found && cur != a {
+			pf.Has, pf.Anchor = false, Anchor{}
 			writePidFile(in.StateDir, in.Now, p, pf)
+			return Anchor{}, false
 		}
-		if !hasRef || r.ts != a.TS {
-			writeRef(in.StateDir, in.Now, id, p, a.TS)
-		}
-		return a, true
+		pf.Src = ""
+		writePidFile(in.StateDir, in.Now, p, pf)
 	}
-	if pf.Checked {
-		if !hasRef {
-			writeRef(in.StateDir, in.Now, id, p, 0)
-		}
-		return Anchor{}, false
+	if !hasRef || r.ts != a.TS {
+		writeRef(in.StateDir, in.Now, id, p, a.TS)
 	}
-	if in.Now.UnixMilli()-p.started < minProcessAge.Milliseconds() {
-		return Anchor{}, false
-	}
-	if procs == nil {
-		procs = scanProcs(in.ConfigDir)
-	}
-	a, src, ok := adoptOrphan(in, p, procs)
-	writePidFile(in.StateDir, in.Now, p, pidFile{Session: id, Src: src, Anchor: a, Has: ok, Checked: true})
-	writeRef(in.StateDir, in.Now, id, p, a.TS)
-	return a, ok
-}
-
-// adoptOrphan looks for the start anchor of a resumed session. --resume and --continue
-// send their start events under a throwaway session id, and the real id appears only
-// with the first prompt, so the two are tied together by time: the anchors that are
-// start anchors, belong to no running process of this config directory, and have an
-// event time within startSlack of the process start. The process takes their account
-// only when every such anchor names the same one.
-func adoptOrphan(in Input, p proc, procs []procInfo) (Anchor, string, bool) {
-	alive := make(map[string]bool, len(procs))
-	for _, q := range procs {
-		alive[q.session] = true
-	}
-	ents, err := os.ReadDir(sessionsDir(in.StateDir))
-	if err != nil {
-		return Anchor{}, "", false
-	}
-	// An anchor is written no earlier than its event time, so older files cannot match.
-	floor := time.UnixMilli(p.started - startSlack)
-	var found Anchor
-	var src string
-	for _, e := range ents {
-		id, isEnv := strings.CutSuffix(e.Name(), ".env")
-		if !isEnv || !e.Type().IsRegular() || alive[id] {
-			continue
-		}
-		if info, err := e.Info(); err != nil || info.ModTime().Before(floor) {
-			continue
-		}
-		a, ok := Read(in.StateDir, id)
-		if !ok || a.Kind != KindStart || a.TS < p.started-startSlack || a.TS > p.started+startSlack {
-			continue
-		}
-		switch {
-		case src == "":
-			found, src = a, id
-		case a.Email != found.Email:
-			return Anchor{}, "", false
-		}
-	}
-	return found, src, src != ""
+	return a, true
 }

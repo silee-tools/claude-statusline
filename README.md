@@ -130,9 +130,11 @@ account right now, and a stored sample carries no observation time to be judged
 against. The file is drawn only for a window the payload leaves out, and a window
 whose reset time has passed is not drawn at all, because its usage no longer
 describes the current window. A session never draws another session's window,
-since sessions of one config directory can run on different accounts; a session
-shows no window until Claude Code sends one. A write removes the files of
-sessions idle for two days.
+since sessions of one config directory can run on different accounts, and a file
+written by another process or before another login is not drawn either: a
+conversation that a new process resumes shows no window until Claude Code sends one
+(see [Claude account indicator](#claude-account-indicator)). A write removes the files
+of sessions idle for two days and the oldest beyond 2,000.
 
 ## Reasoning effort
 
@@ -294,8 +296,9 @@ Neither `.claude.json` nor `oauthAccount` is read.
 
 | Slot | Meaning |
 |---|---|
-| `a@example.com` | the account of this session |
-| `a@example.com?` | probably right but may have changed: the receiver's heartbeat is older than 120 seconds, so a `/login` may have gone unseen, or a rate-limit window of the session has differed from its baseline for over a minute before the baseline window ended |
+| `a@example.com` | confirmed: a `/login` inside this session named the account |
+| `~a@example.com` | estimate: the account the settings file held when the session began; the file is shared by every session of the config directory and the session's credentials may belong to another account |
+| `a@example.com?`, `~a@example.com?` | may have changed unseen: the receiver's heartbeat is older than 120 seconds, the anchor was stored before the receiver's current run (it may have missed a `/login` while it was down), or a rate-limit window of the session has differed from its baseline for over a minute before the baseline window ended |
 | `?` | the receiver runs but nothing says which account this session uses |
 | *(empty)* | the receiver never ran on this machine (`otel/sessions` does not exist) |
 
@@ -303,27 +306,42 @@ The compact layout shows no account and reads none of this.
 
 **What counts.** Per session id the receiver keeps one anchor, from these events only:
 a start-only event (`managed_settings_resolved`, `plugin_loaded`) sets it when the
-session has none; a successful `auth` event with `action=login` replaces it with the
-new account; `action=logout` clears it. An event older than the stored anchor is
-dropped. Every other event is ignored, including the `user_prompt` that opens the
-session id `/clear` creates, because its email is whatever the settings file holds at
-that moment.
+session has none, as an estimate; a successful `auth` event with `action=login`
+replaces it with the new account, confirmed; `action=logout` clears it. An event older
+than the stored anchor is dropped. Every other event is ignored, including the
+`user_prompt` that opens the session id `/clear` creates, because its email is whatever
+the settings file holds at that moment. Events carry no process id, and every email in
+them comes from the settings file, so only a `/login` made inside the session proves
+which account its credentials belong to.
 
 **`/clear`.** Claude Code keeps `<config>/sessions/<pid>.json` for each running
 process, and `/clear` changes only its `sessionId`. The statusline records the anchor
 under the process (`pids/`) and the new session id takes it over, again after a
-second `/clear`, and after a `/login` that arrived between two renders.
+second `/clear`, and after a `/login` that arrived between two renders. The first
+render under the new id settles the carry once: if the old id's anchor is still the one
+the process carried, the process keeps it for good; if it has changed, whose event
+changed it cannot be told (another process may have resumed the old id), so the
+process shows `?` until it logs in.
 
 **`--resume` and `--continue`.** Their start events go out under a throwaway session
-id. Once a process is 8 seconds old, the start anchors whose event time lies within 3
-seconds of its `startedAt`, and whose id belongs to no running process of the config
-directory, are its candidates; the process takes their account only when all of them
-name the same one, and the verdict is stored. An anchor under the session's own id
-that is older than the process start belongs to an earlier process and is not used.
+id that nothing ties to the process, and an anchor under the session's own id that is
+older than the process start belongs to an earlier process. Anchors of other session
+ids are never borrowed on the strength of timing, because any process of any config
+directory could have written them: a resumed session shows `?` until it logs in.
+
+**Rate-limit windows.** The windows a session saw are kept per *boundary*: the process
+that runs it and the time of its last in-session login or logout. A conversation that a
+new process resumes, or that has logged in again, draws none of the windows the
+previous boundary saw. Where the process cannot be told, nothing is kept.
 
 **Limits to know.**
 - A start anchor is the account the settings file held when the session began. A
-  session that shows "Not logged in" carries it too.
+  session that shows "Not logged in" carries it too, which is why it is only an estimate.
+- Restarting the receiver (a new plugin version replaces it, or the supervisor restarts
+  it after a failure) starts a new generation, so every session shows `?` behind its
+  email until a `/login` inside it is seen again. Events sent while the receiver was down
+  are lost, and a `/login` among them would otherwise go unseen.
+- Two Claude Code processes that run the same session id at the same time share one anchor.
 - A session that quietly takes over another session's credentials at a token refresh
   emits no event. The only trace is a rate-limit window changing before it ends, which
   adds `?`; the account is never corrected from it. Both the five-hour and the seven-day
@@ -353,24 +371,29 @@ Leave the content-logging variables (`OTEL_LOG_USER_PROMPTS` and similar) and
 **The receiver.** Run the published `claude-statusline-otlp` under a supervisor that
 restarts it after a non-zero exit. It listens on `127.0.0.1:14318` only (`-addr` must be
 a loopback IP literal), serves `POST /v1/logs` with `Content-Type: application/json` and
-a body of at most 1 MiB, and answers `200 {}`. It stores no event and reads only
+a body of at most 1 MiB, and answers `200 {}`; when it could not store a record it
+answers `503`, which the exporter retries. It stores no event and reads only
 `session.id`, `user.email`, `event.name`, `action`, `success` and the event time of each
 record; stderr says what happened (start, stop, failure kinds), never a value. Exit
 codes: 0 after SIGINT or SIGTERM; 75 when the file at its own path was replaced (it
 checks every 30 seconds), so the supervisor starts the new build; 1 when the address is
 not loopback, the port cannot be bound, or the state directory cannot be prepared. It
-touches the heartbeat every 30 seconds. Where stderr goes, and how long it is kept, is
-the supervisor's setting.
+touches the heartbeat every 30 seconds, except while it cannot store an anchor: a
+failed write starts a new generation (`otel/generation`) and withholds the heartbeat
+until a probe write succeeds. Every start writes a new generation too. At start and
+then hourly it removes what is past retention. Where stderr goes, and how long it is
+kept, is the supervisor's setting.
 
-**Files.** State files are kept 30 days with at most 2,000 files per directory, and the process that writes into a directory prunes it at each write: the receiver for `otel/sessions`, the statusline for `pids/` and `fingerprints/` (the cache and data rows below say their own).
+**Files.** State files are kept 30 days with at most 2,000 files in each of `otel/sessions`, `pids/` and `fingerprints/`. The receiver prunes all three at start, hourly and after each write, and a reader ignores an anchor older than 30 days even when nothing pruned it (the cache and data rows below say their own).
 
 | Path | Written by | Holds | Kept |
 |---|---|---|---|
-| `${XDG_STATE_HOME:-$HOME/.local/state}/claude-statusline/otel/sessions/<session.id>.env` | receiver | email, kind, event time (0600) | 30 days, 2,000 files |
+| `${XDG_STATE_HOME:-$HOME/.local/state}/claude-statusline/otel/sessions/<session.id>.env` | receiver | email, kind, event time, time the receiver stored it (0600) | 30 days, 2,000 files |
 | `.../otel/heartbeat` | receiver | its mtime | one file |
+| `.../otel/generation` | receiver | when its current run began, or when it last failed to store | one file |
 | `.../pids/<pid>-<startedAt>.env`, `.../pids/session-<id>.ref` | statusline | the anchor a process carries, which pid file a session uses | 30 days, 2,000 files |
 | `.../fingerprints/<session_id>.env` | statusline | the baseline of the watched rate-limit window | 30 days, 2,000 files |
-| `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/rate-limits/<session_id>.env` | statusline | the windows the session last saw | 2 days after the last write, no count limit |
+| `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/rate-limits/<session_id>.env` | statusline | the windows the session last saw, and the boundary they were seen under | 2 days after the last write, 2,000 files |
 | `${XDG_DATA_HOME:-$HOME/.local/share}/claude-statusline/bin/claude-statusline-otlp{,.version}` | `build-binary.sh` | the published receiver | replaced by the same or a higher version, never deleted |
 | `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/bin/claude-statusline-otlp-<version>-<os>-<arch>` | `build-binary.sh` | the built receiver | never deleted, like the render binary |
 

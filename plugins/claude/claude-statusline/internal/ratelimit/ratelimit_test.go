@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,9 @@ func c(pct int, reset int64) Sample {
 }
 
 const sid = "11111111-2222-3333-4444-555555555555"
+
+// bd is the boundary the tests keep their windows under: one process, no login.
+const bd = "11-1700000000000-0"
 
 // cacheOf is where a session's windows live under cacheDir.
 func cacheOf(cacheDir, id string) string {
@@ -79,8 +83,8 @@ func TestLoadTreatsAWindowWithoutResetAsAbsent(t *testing.T) {
 
 func TestResolveShowsCachedValueWhenStdinHasNone(t *testing.T) {
 	dir := t.TempDir()
-	Store(cacheOf(dir, sid), Pair{Five: c(24, 2000), Week: c(41, 3000)})
-	got := Resolve(dir, sid, Pair{}, 1000)
+	store(cacheOf(dir, sid), bd, Pair{Five: c(24, 2000), Week: c(41, 3000)})
+	got := Resolve(dir, sid, bd, Pair{}, 1000)
 	if got.Five.Pct != 24 || got.Week.Pct != 41 {
 		t.Fatalf("세션이 값을 못 받았으면 캐시가 공급해야 한다: %+v", got)
 	}
@@ -88,8 +92,8 @@ func TestResolveShowsCachedValueWhenStdinHasNone(t *testing.T) {
 
 func TestResolveHidesExpiredCachedWindow(t *testing.T) {
 	dir := t.TempDir()
-	Store(cacheOf(dir, sid), Pair{Five: c(94, 1000), Week: c(41, 3000)})
-	got := Resolve(dir, sid, Pair{}, 2000) // 5시간 창의 리셋 시각이 지났다
+	store(cacheOf(dir, sid), bd, Pair{Five: c(94, 1000), Week: c(41, 3000)})
+	got := Resolve(dir, sid, bd, Pair{}, 2000) // 5시간 창의 리셋 시각이 지났다
 	if got.Five.Present {
 		t.Fatalf("지난 창의 소진율은 더 이상 참이 아니다: %+v", got.Five)
 	}
@@ -100,8 +104,8 @@ func TestResolveHidesExpiredCachedWindow(t *testing.T) {
 
 func TestResolveWritesWhenLiveSampleWins(t *testing.T) {
 	dir := t.TempDir()
-	Store(cacheOf(dir, sid), Pair{Five: c(24, 2000)})
-	Resolve(dir, sid, Pair{Five: c(31, 2000)}, 1000)
+	store(cacheOf(dir, sid), bd, Pair{Five: c(24, 2000)})
+	Resolve(dir, sid, bd, Pair{Five: c(31, 2000)}, 1000)
 	if after := Load(cacheOf(dir, sid)); after.Five.Pct != 31 {
 		t.Fatalf("새 표본이 저장되지 않았다: %+v", after.Five)
 	}
@@ -109,11 +113,11 @@ func TestResolveWritesWhenLiveSampleWins(t *testing.T) {
 
 func TestResolveDoesNotWriteWhenNothingChanged(t *testing.T) {
 	dir := t.TempDir()
-	Store(cacheOf(dir, sid), Pair{Five: c(24, 2000)})
+	store(cacheOf(dir, sid), bd, Pair{Five: c(24, 2000)})
 	path := cacheOf(dir, sid)
 	before, _ := os.Stat(path)
 	time.Sleep(10 * time.Millisecond)
-	Resolve(dir, sid, Pair{Five: c(24, 2000)}, 1000)
+	Resolve(dir, sid, bd, Pair{Five: c(24, 2000)}, 1000)
 	after, _ := os.Stat(path)
 	if !before.ModTime().Equal(after.ModTime()) {
 		t.Fatal("값이 그대로면 쓰지 않아야 한다 — 렌더마다 쓰면 자원만 쓴다")
@@ -123,7 +127,7 @@ func TestResolveDoesNotWriteWhenNothingChanged(t *testing.T) {
 func TestResolveDisplaysButNeverStoresASampleWithoutReset(t *testing.T) {
 	dir := t.TempDir()
 	live := Pair{Five: Sample{Present: true, Pct: 77}}
-	got := Resolve(dir, sid, live, 1000)
+	got := Resolve(dir, sid, bd, live, 1000)
 	if got.Five.Pct != 77 {
 		t.Fatalf("자기 세션이 받은 값은 그대로 그린다: %+v", got.Five)
 	}
@@ -135,8 +139,8 @@ func TestResolveDisplaysButNeverStoresASampleWithoutReset(t *testing.T) {
 func TestResolveKeepsExpiredEntryInFileUntilOverwritten(t *testing.T) {
 	// 만료 판정은 그릴 때만 한다. 지우는 쓰기를 따로 두면 병합하는 쓰기와 경합만 는다.
 	dir := t.TempDir()
-	Store(cacheOf(dir, sid), Pair{Five: c(94, 1000), Week: c(41, 3000)})
-	Resolve(dir, sid, Pair{}, 2000)
+	store(cacheOf(dir, sid), bd, Pair{Five: c(94, 1000), Week: c(41, 3000)})
+	Resolve(dir, sid, bd, Pair{}, 2000)
 	if after := Load(cacheOf(dir, sid)); after.Five.Pct != 94 {
 		t.Fatalf("만료됐다고 파일에서 지우면 안 된다: %+v", after.Five)
 	}
@@ -146,8 +150,8 @@ func TestResolveShowsLiveSampleEvenWhenCacheHoldsALaterReset(t *testing.T) {
 	// 실제로 관측한 상태다. 5시간 창은 굴러가는 창이라 리셋 시각이 앞선 창으로 되돌아갈
 	// 수 있고, 그때 캐시의 더 먼 리셋이 지금 페이로드를 계속 이겨 화면이 얼어붙었다.
 	dir := t.TempDir()
-	Store(cacheOf(dir, sid), Pair{Five: c(1, 3000), Week: c(56, 9000)})
-	got := Resolve(dir, sid, Pair{Five: c(81, 2000), Week: c(78, 8000)}, 1000)
+	store(cacheOf(dir, sid), bd, Pair{Five: c(1, 3000), Week: c(56, 9000)})
+	got := Resolve(dir, sid, bd, Pair{Five: c(81, 2000), Week: c(78, 8000)}, 1000)
 	if got.Five.Pct != 81 || got.Week.Pct != 78 {
 		t.Fatalf("페이로드가 화면을 차지해야 한다: %+v", got)
 	}
@@ -160,8 +164,8 @@ func TestResolveFollowsLiveSampleDownwardWithinOneWindow(t *testing.T) {
 	// 리셋이 같아도 페이로드가 낮으면 낮은 값이 지금의 상태다. 계정이 바뀌었든 서버가
 	// 다시 계산했든, 화면이 따라야 할 값은 이 세션이 방금 받은 값 하나뿐이다.
 	dir := t.TempDir()
-	Store(cacheOf(dir, sid), Pair{Five: c(60, 2000)})
-	got := Resolve(dir, sid, Pair{Five: c(24, 2000)}, 1000)
+	store(cacheOf(dir, sid), bd, Pair{Five: c(60, 2000)})
+	got := Resolve(dir, sid, bd, Pair{Five: c(24, 2000)}, 1000)
 	if got.Five.Pct != 24 {
 		t.Fatalf("페이로드를 따라 내려가야 한다: %+v", got.Five)
 	}
@@ -174,12 +178,12 @@ func TestResolveFollowsLiveSampleDownwardWithinOneWindow(t *testing.T) {
 
 func TestSessionsNeverSeeEachOthersWindows(t *testing.T) {
 	dir := t.TempDir()
-	Resolve(dir, "session-a", Pair{Five: c(24, 2000), Week: c(41, 3000)}, 1000)
-	got := Resolve(dir, "session-b", Pair{}, 1000)
+	Resolve(dir, "session-a", bd, Pair{Five: c(24, 2000), Week: c(41, 3000)}, 1000)
+	got := Resolve(dir, "session-b", bd, Pair{}, 1000)
 	if got.Five.Present || got.Week.Present {
 		t.Fatalf("다른 세션의 창이 섞였다: %+v", got)
 	}
-	if again := Resolve(dir, "session-a", Pair{}, 1000); again.Five.Pct != 24 || again.Week.Pct != 41 {
+	if again := Resolve(dir, "session-a", bd, Pair{}, 1000); again.Five.Pct != 24 || again.Week.Pct != 41 {
 		t.Fatalf("자기 세션의 캐시는 남아 있어야 한다: %+v", again)
 	}
 }
@@ -187,11 +191,11 @@ func TestSessionsNeverSeeEachOthersWindows(t *testing.T) {
 func TestInvalidSessionIDsHaveNoCache(t *testing.T) {
 	dir := t.TempDir()
 	for _, id := range []string{"", "../x", "a/b", "a b", "a.b", strings.Repeat("a", 65), "x\n"} {
-		got := Resolve(dir, id, Pair{Five: c(24, 2000)}, 1000)
+		got := Resolve(dir, id, bd, Pair{Five: c(24, 2000)}, 1000)
 		if got.Five.Pct != 24 {
 			t.Errorf("%q: 페이로드 값은 그대로 그려야 한다: %+v", id, got)
 		}
-		if again := Resolve(dir, id, Pair{}, 1000); again.Five.Present {
+		if again := Resolve(dir, id, bd, Pair{}, 1000); again.Five.Present {
 			t.Errorf("%q: 캐시 없이 값이 남았다: %+v", id, again)
 		}
 	}
@@ -212,11 +216,11 @@ func TestSharedCacheFileIsNeitherReadNorWritten(t *testing.T) {
 	shared := filepath.Join(dir, "rate-limits.env")
 	body := "fivePct=99\nfiveReset=4102444800\nweekPct=98\nweekReset=4102444800\n"
 	os.WriteFile(shared, []byte(body), 0o600)
-	got := Resolve(dir, sid, Pair{}, 1000)
+	got := Resolve(dir, sid, bd, Pair{}, 1000)
 	if got.Five.Present || got.Week.Present {
 		t.Fatalf("공용 파일의 값이 그려졌다: %+v", got)
 	}
-	Resolve(dir, sid, Pair{Five: c(10, 4102444800)}, 1000)
+	Resolve(dir, sid, bd, Pair{Five: c(10, 4102444800)}, 1000)
 	if b, _ := os.ReadFile(shared); string(b) != body {
 		t.Fatalf("공용 파일이 바뀌었다: %q", b)
 	}
@@ -225,16 +229,16 @@ func TestSharedCacheFileIsNeitherReadNorWritten(t *testing.T) {
 func TestWritingPrunesSessionCachesOlderThanTwoDays(t *testing.T) {
 	dir := t.TempDir()
 	old := cacheOf(dir, "old-session")
-	Store(old, Pair{Five: c(1, 2)})
+	store(old, bd, Pair{Five: c(1, 2)})
 	at := time.Now().Add(-49 * time.Hour)
 	os.Chtimes(old, at, at)
 	recent := cacheOf(dir, "recent-session")
-	Store(recent, Pair{Five: c(1, 2)})
+	store(recent, bd, Pair{Five: c(1, 2)})
 	at = time.Now().Add(-47 * time.Hour)
 	os.Chtimes(recent, at, at)
 
 	now := time.Now().Unix()
-	Resolve(dir, sid, Pair{Five: c(24, now+9000)}, now)
+	Resolve(dir, sid, bd, Pair{Five: c(24, now+9000)}, now)
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Error("이틀 넘은 캐시가 남았다")
 	}
@@ -371,5 +375,98 @@ func TestFingerprintWritePrunesOldFiles(t *testing.T) {
 	Fingerprint(dir, sid, 1, week, Pair{Week: c(10, now+100_000)}, now)
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Error("30일 넘은 지문 파일이 남았다")
+	}
+}
+
+// R15 — a window kept under one boundary supplies nothing under another.
+
+const (
+	bdA = "11-1700000000000-0"          // the process that ran the conversation as account A
+	bdB = "31-1700000900000-0"          // a new process resumed it
+	bdL = "11-1700000000000-1700000500" // the same process after a /login
+)
+
+func TestResumedConversationNeverDrawsTheWindowsOfThePreviousProcess(t *testing.T) {
+	// 계정 A 로 돌던 대화를 계정 B 의 새 프로세스가 --continue 하고 payload 에 한도가 아직 없을 때,
+	// 만료되지 않은 A 의 한도를 그리면 SessionDesk 의 usageWindows 까지 틀린 값이 간다.
+	dir := t.TempDir()
+	Resolve(dir, sid, bdA, Pair{Five: c(24, 2000), Week: c(41, 3000)}, 1000)
+	got := Resolve(dir, sid, bdB, Pair{}, 1100)
+	if got.Five.Present || got.Week.Present {
+		t.Fatalf("이전 프로세스의 창이 그려졌다: %+v", got)
+	}
+	if _, err := os.Stat(cacheOf(dir, sid)); !os.IsNotExist(err) {
+		t.Error("경계가 다른 낡은 캐시 파일이 남았다")
+	}
+	// The new process remembers its own windows from then on.
+	Resolve(dir, sid, bdB, Pair{Five: c(7, 2000)}, 1200)
+	if again := Resolve(dir, sid, bdB, Pair{}, 1300); again.Five.Pct != 7 || again.Week.Present {
+		t.Fatalf("새 프로세스의 캐시: %+v", again)
+	}
+}
+
+func TestAfterALoginOnlyTheWindowsThatArrivedAreDrawn(t *testing.T) {
+	// /login 직후 한쪽 창만 도착했을 때 이전 계정의 다른 창으로 채우지 않는다.
+	dir := t.TempDir()
+	Resolve(dir, sid, bdA, Pair{Five: c(24, 2000), Week: c(41, 3000)}, 1000)
+	got := Resolve(dir, sid, bdL, Pair{Five: c(3, 2500)}, 1100)
+	if got.Five.Pct != 3 {
+		t.Fatalf("도착한 창은 그린다: %+v", got)
+	}
+	if got.Week.Present {
+		t.Fatalf("이전 계정의 7일 창으로 채웠다: %+v", got.Week)
+	}
+	if after := Load(cacheOf(dir, sid)); after.Week.Present {
+		t.Fatalf("이전 계정의 7일 창이 파일에 남았다: %+v", after)
+	}
+}
+
+func TestTheSameBoundaryKeepsFillingAWindowThePayloadLacks(t *testing.T) {
+	dir := t.TempDir()
+	Resolve(dir, sid, bdA, Pair{Five: c(24, 2000), Week: c(41, 3000)}, 1000)
+	got := Resolve(dir, sid, bdA, Pair{Five: c(25, 2000)}, 1100)
+	if got.Five.Pct != 25 || got.Week.Pct != 41 {
+		t.Fatalf("같은 경계에서는 빠진 창을 캐시가 채운다: %+v", got)
+	}
+}
+
+func TestWithoutABoundaryNothingIsRememberedOrDrawnFromTheCache(t *testing.T) {
+	dir := t.TempDir()
+	store(cacheOf(dir, sid), bdA, Pair{Five: c(24, 2000)})
+	got := Resolve(dir, sid, "", Pair{Week: c(41, 3000)}, 1000)
+	if got.Five.Present || got.Week.Pct != 41 {
+		t.Fatalf("경계를 모르면 payload 만 그린다: %+v", got)
+	}
+	if after := Load(cacheOf(dir, sid)); after.Five.Pct != 24 || after.Week.Present {
+		t.Fatalf("경계를 모르는 렌더가 캐시를 바꿨다: %+v", after)
+	}
+}
+
+func TestCachedWindowsWithoutABoundaryAreNotDrawn(t *testing.T) {
+	dir := t.TempDir()
+	Store(cacheOf(dir, sid), Pair{Five: c(24, 2000)}) // a file that names no boundary
+	if got := Resolve(dir, sid, bdA, Pair{}, 1000); got.Five.Present {
+		t.Fatalf("경계가 없는 파일의 창이 그려졌다: %+v", got)
+	}
+}
+
+func TestTheCacheDirectoryKeepsAtMostTwoThousandFiles(t *testing.T) {
+	dir := t.TempDir()
+	cache := filepath.Join(dir, "rate-limits")
+	os.MkdirAll(cache, 0o700)
+	now := time.Now()
+	for i := 0; i < cacheMaxFiles+5; i++ {
+		path := filepath.Join(cache, "s"+strconv.Itoa(i)+".env")
+		os.WriteFile(path, []byte("x\n"), 0o600)
+		mod := now.Add(-time.Duration(i+1) * time.Second)
+		os.Chtimes(path, mod, mod)
+	}
+	Resolve(dir, sid, bd, Pair{Five: c(24, now.Unix()+9000)}, now.Unix())
+	ents, _ := os.ReadDir(cache)
+	if len(ents) > cacheMaxFiles {
+		t.Errorf("%d files, want at most %d", len(ents), cacheMaxFiles)
+	}
+	if _, err := os.Stat(cacheOf(dir, sid)); err != nil {
+		t.Error("방금 쓴 파일이 지워졌다")
 	}
 }

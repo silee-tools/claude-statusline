@@ -22,6 +22,10 @@ set -eu
 #   - 바이너리와 포인터를 모두 임시 파일에 쓴 뒤 rename 으로 바꾼다. shim 이 읽는 중에 반쯤
 #     쓰인 내용을 보면 안 된다. 게시 파일도 같은 폴더의 임시 파일을 rename 해 바꾼다 — 도는 수신기의
 #     파일을 제자리에서 덮어쓰면 수신기가 종료코드 0 으로 죽어 정상 종료와 구별되지 않는다.
+#   - 설치된 판본을 읽고 비교하고 실행 파일과 .version 을 바꾸는 구간 전체를 게시 폴더의 잠금
+#     (mkdir)으로 직렬화하고, 판본은 잠금 안에서 다시 읽는다. 계정마다 훅이 따로 도는 탓에 서로 다른
+#     판본이 동시에 옛 판본을 읽으면 낮은 판본이 높은 판본을 덮고 .version 이 실행 파일과 어긋나, 이후
+#     같은 판본의 게시까지 생략된다. 빌드는 잠금 밖이다.
 #   - 게시는 설치된 판본(.version)보다 같거나 높을 때만 한다. 계정마다 플러그인 갱신 시점이 달라 낮은
 #     판본의 훅이 높은 판본을 덮으면 수신기가 판본 사이를 오가며 재시작한다. 같은 판본이 이미 게시돼
 #     있으면 건드리지 않는다. 비교는 숫자 순서(5.10.0 > 5.9.0)다.
@@ -87,6 +91,31 @@ publish_receiver() {
   printf '%s\n' "$version" > "$_vtmp" && mv "$_vtmp" "$_ver"
 }
 
+# publish_receiver_locked: publish_receiver 를 게시 폴더 단위 잠금 안에서 실행한다. 정상 보유 시간은
+# 복사 한 번이라 10초 안에 잡히지 않으면 포기하고(다음 세션 시작에 다시 시도한다), 비정상 종료한 게시자가 남긴
+# 잠금은 2분이 지나면 버린다.
+# shortcut: 낡은 잠금을 두 프로세스가 동시에 치우면 새로 잡힌 잠금을 지울 수 있다, 그 틈은 비정상 종료와
+# 동시 시작이 겹쳐야 열리고 결과도 한 번 더 게시하는 데 그친다.
+publish_receiver_locked() {
+  _lock="$PUB_DIR/.publish.lock"
+  mkdir -p "$PUB_DIR" || return 1
+  _tries=0
+  while ! mkdir "$_lock" 2>/dev/null; do
+    if [ -n "$(find "$_lock" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then
+      rmdir "$_lock" 2>/dev/null || true
+    fi
+    _tries=$((_tries + 1))
+    [ "$_tries" -le 50 ] || return 1
+    sleep 0.2
+  done
+  trap 'rmdir "$_lock" 2>/dev/null; exit 0' HUP INT TERM
+  _rc=0
+  publish_receiver || _rc=$?
+  trap - HUP INT TERM
+  rmdir "$_lock" 2>/dev/null || true
+  return "$_rc"
+}
+
 render_ready=0
 if [ -x "$target" ]; then
   current=""
@@ -103,7 +132,7 @@ fi
 
 # 수신기 빌드·게시가 실패해도 렌더 바이너리는 이미 준비돼 있다.
 if [ -x "$otlp_target" ] || build_to ./cmd/claude-statusline-otlp "$otlp_target" "claude-statusline-otlp"; then
-  publish_receiver || printf '[claude-statusline] claude-statusline-otlp 게시에 실패했습니다.\n' >&2
+  publish_receiver_locked || printf '[claude-statusline] claude-statusline-otlp 게시에 실패했습니다.\n' >&2
 fi
 
 # 다른 설정 디렉터리의 설치와 진행 중인 빌드도 같은 bin을 쓰므로 자동 삭제하지 않는다.

@@ -54,6 +54,11 @@ type anyValue struct {
 // id, the email, the event name, the auth action and outcome, and the event time of each
 // record and drops every other attribute undecoded: prompts, tool arguments and the
 // account ids are never read.
+//
+// A record that could not be stored makes the whole request answer 503, which the
+// exporter retries; re-applying the records that did land changes nothing, because an
+// anchor is replaced only by a later event. Answering 200 would tell Claude Code its
+// /login was received when it was not.
 func newHandler(apply applier, now func() time.Time, logf func(kind string)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -86,14 +91,21 @@ func newHandler(apply applier, now func() time.Time, logf func(kind string)) htt
 			return
 		}
 		received := now()
+		failed := false
 		for _, rl := range req.ResourceLogs {
 			for _, sl := range rl.ScopeLogs {
 				for _, rec := range sl.LogRecords {
 					if err := apply(toEvent(rec, received)); err != nil {
 						logf(logApplyFailed)
+						failed = true
 					}
 				}
 			}
+		}
+		if failed {
+			w.Header().Set("Retry-After", "5")
+			http.Error(w, "state unavailable", http.StatusServiceUnavailable)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte("{}"))

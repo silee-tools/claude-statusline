@@ -5,6 +5,12 @@
 // and a heartbeat the statusline reads to tell whether anyone is listening. stderr carries
 // only what happened (start, stop, failure kinds), never a value from a request.
 //
+// Anything it could not store makes it answer 503 so the exporter retries, bumps the
+// generation (otel/generation) so the anchors it holds are doubted, and stops touching the
+// heartbeat until a write succeeds again. The same bump marks every start, because a
+// /login that arrived while it was down is lost. Once an hour it removes what is past
+// retention.
+//
 // Exit codes: 0 after SIGINT or SIGTERM; 75 when the executable at its own path was
 // replaced, so a supervisor that restarts on failure brings up the new build; 1 when the
 // address is not a loopback address, the port cannot be bound, or the state directory
@@ -22,6 +28,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -39,6 +46,7 @@ type config struct {
 	ExePath    string // the file whose replacement stops the receiver; "" disables the check
 	WatchEvery time.Duration
 	BeatEvery  time.Duration
+	SweepEvery time.Duration // how often to remove state past retention; 0 means hourly
 	OnListen   func(net.Addr)
 }
 
@@ -79,18 +87,49 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 		say("state directory unavailable")
 		return exitFailed
 	}
+	// Events sent while no receiver ran are gone, so every anchor stored before this
+	// start is doubted until a later event replaces it.
+	if err := anchor.WriteGeneration(cfg.StateDir, time.Now()); err != nil {
+		say("generation unavailable")
+		return exitFailed
+	}
 	if err := anchor.TouchHeartbeat(cfg.StateDir, time.Now()); err != nil {
 		say("heartbeat unavailable")
 		return exitFailed
 	}
+	anchor.Sweep(cfg.StateDir, time.Now())
 
 	// Apply reads the stored anchor before replacing it, so concurrent requests take turns.
 	var mu sync.Mutex
+	var degraded atomic.Bool
 	apply := func(ev anchor.Event) error {
 		mu.Lock()
 		defer mu.Unlock()
 		_, err := anchor.Apply(cfg.StateDir, ev)
+		if err != nil {
+			degraded.Store(true)
+			_ = anchor.WriteGeneration(cfg.StateDir, time.Now())
+		}
 		return err
+	}
+	// recovered says state can be written again, and starts a new generation so what was
+	// stored before the failure stays doubted.
+	recovered := func(now time.Time) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if !degraded.Load() {
+			return true
+		}
+		if anchor.Writable(cfg.StateDir) != nil || anchor.WriteGeneration(cfg.StateDir, now) != nil {
+			return false
+		}
+		degraded.Store(false)
+		return true
+	}
+	sweep := func(now time.Time) {
+		mu.Lock()
+		defer mu.Unlock()
+		anchor.Sweep(cfg.StateDir, now)
 	}
 	srv := &http.Server{
 		Handler:           newHandler(apply, time.Now, func(kind string) { say("request failed: " + kind) }),
@@ -106,7 +145,8 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 
 	stop := make(chan struct{})
 	defer close(stop)
-	go heartbeat(stop, cfg)
+	go heartbeat(stop, cfg, recovered)
+	go sweeper(stop, cfg, sweep)
 	replaced := make(chan struct{})
 	go watchExecutable(stop, cfg, replaced)
 
@@ -138,7 +178,10 @@ func loopback(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func heartbeat(stop <-chan struct{}, cfg config) {
+// heartbeat touches the file the statusline reads to tell the receiver is alive, unless
+// the receiver cannot store anchors: a receiver that hears but cannot write is not one
+// whose answers can be trusted.
+func heartbeat(stop <-chan struct{}, cfg config, recovered func(time.Time) bool) {
 	t := time.NewTicker(cfg.BeatEvery)
 	defer t.Stop()
 	for {
@@ -146,7 +189,26 @@ func heartbeat(stop <-chan struct{}, cfg config) {
 		case <-stop:
 			return
 		case now := <-t.C:
-			_ = anchor.TouchHeartbeat(cfg.StateDir, now)
+			if recovered(now) {
+				_ = anchor.TouchHeartbeat(cfg.StateDir, now)
+			}
+		}
+	}
+}
+
+func sweeper(stop <-chan struct{}, cfg config, sweep func(time.Time)) {
+	every := cfg.SweepEvery
+	if every <= 0 {
+		every = time.Hour
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case now := <-t.C:
+			sweep(now)
 		}
 	}
 }

@@ -27,10 +27,25 @@ func newFixture(t *testing.T) *fixture {
 	return f
 }
 
-// install makes the receiver's directory and a fresh heartbeat exist.
+// otherProfile is a second config directory that shares this fixture's state directory,
+// as two Claude config directories of one user do.
+func (f *fixture) otherProfile() *fixture {
+	f.t.Helper()
+	g := &fixture{t: f.t, state: f.state, config: f.t.TempDir()}
+	if err := os.MkdirAll(filepath.Join(g.config, "sessions"), 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	return g
+}
+
+// install makes the receiver's directory, a fresh heartbeat and a generation older than
+// every anchor the tests store exist.
 func (f *fixture) install(heartbeatAge time.Duration, now time.Time) {
 	f.t.Helper()
 	if err := os.MkdirAll(sessionsDir(f.state), 0o700); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := WriteGeneration(f.state, time.UnixMilli(1)); err != nil {
 		f.t.Fatal(err)
 	}
 	if heartbeatAge < 0 {
@@ -39,6 +54,14 @@ func (f *fixture) install(heartbeatAge time.Duration, now time.Time) {
 	if err := TouchHeartbeat(f.state, now.Add(-heartbeatAge)); err != nil {
 		f.t.Fatal(err)
 	}
+}
+
+// clockAt moves the time the receiver stamps anchors with.
+func (f *fixture) clockAt(ms int64) {
+	f.t.Helper()
+	old := clock
+	f.t.Cleanup(func() { clock = old })
+	clock = func() time.Time { return time.UnixMilli(ms) }
 }
 
 // proc writes the file Claude Code keeps for a running process.
@@ -72,6 +95,11 @@ func (f *fixture) wantEmail(id string, now time.Time, want string) Result {
 	return got
 }
 
+func (f *fixture) startAnchor(id, email string, ts int64) {
+	f.t.Helper()
+	f.apply(ev("managed_settings_resolved", id, email, ts))
+}
+
 // R1 — the anchor is the only source of the account.
 
 func TestWithoutTheReceiversDirectoryTheSlotIsNotInstalled(t *testing.T) {
@@ -95,6 +123,9 @@ func TestInstalledWithoutAnAnchorForThisSessionHasNoEmail(t *testing.T) {
 	if !got.Installed {
 		t.Error("디렉터리가 있으면 설치된 것이다")
 	}
+	if got.Level != Unknown {
+		t.Errorf("앵커가 없으면 신뢰도는 Unknown: %+v", got)
+	}
 }
 
 func TestTheAnchorWinsOverEveryOtherSource(t *testing.T) {
@@ -116,6 +147,46 @@ func TestInvalidSessionIDsHaveNoEmail(t *testing.T) {
 	f.apply(ev("managed_settings_resolved", "s1", "a@example.com", t0))
 	for _, id := range []string{"", "../s1", "s1/../s1", "s1 ", "s1\n", "s1.env"} {
 		f.wantEmail(id, now, "")
+	}
+}
+
+// R10 — only an in-session login confirms an account; the settings file's account at the
+// session start is an estimate, because the file is shared and the credentials are not.
+
+func TestAStartAnchorIsAnEstimateAndALoginIsConfirmed(t *testing.T) {
+	f := newFixture(t)
+	now := time.Now()
+	f.install(0, now)
+	f.proc(11, t0, "s1")
+	f.startAnchor("s1", "a@example.com", t0+20)
+	if got := f.wantEmail("s1", now, "a@example.com"); got.Level != Estimate {
+		t.Errorf("시작 앵커: %+v, want Estimate", got)
+	}
+	f.apply(login("s1", "b@example.com", t0+5000))
+	if got := f.wantEmail("s1", now, "b@example.com"); got.Level != Confirmed {
+		t.Errorf("로그인 앵커: %+v, want Confirmed", got)
+	}
+}
+
+func TestClearKeepsTheConfidenceOfTheCarriedAnchor(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		first Event
+		want  Confidence
+	}{
+		{"시작", ev("managed_settings_resolved", "s1", "a@example.com", t0+20), Estimate},
+		{"로그인", login("s1", "a@example.com", t0+5000), Confirmed},
+	} {
+		f := newFixture(t)
+		now := time.Now()
+		f.install(0, now)
+		f.proc(11, t0, "s1")
+		f.apply(c.first)
+		f.wantEmail("s1", now, "a@example.com")
+		f.proc(11, t0, "s2")
+		if got := f.wantEmail("s2", now, "a@example.com"); got.Level != c.want {
+			t.Errorf("%s: /clear 뒤 %+v, want %v", c.name, got, c.want)
+		}
 	}
 }
 
@@ -151,6 +222,140 @@ func TestWithoutAnAnchorTheSlotStaysUnknownWhateverTheHeartbeat(t *testing.T) {
 	now := time.Now()
 	f.install(time.Hour, now)
 	f.wantEmail("s1", now, "")
+}
+
+// R11 — a restart of the receiver, or a failed write, may have lost a /login. An anchor
+// stored before the receiver's current generation is doubted until an event replaces it.
+
+func TestAnAnchorStoredBeforeTheReceiversGenerationIsSuspectUntilAnEventReplacesIt(t *testing.T) {
+	f := newFixture(t)
+	now := at(t0 + 60_000)
+	f.install(0, now)
+	f.clockAt(t0 + 1000)
+	f.startAnchor("s1", "a@example.com", t0+900)
+	if got := f.resolve("s1", now); got.Suspect {
+		t.Fatalf("같은 세대의 앵커는 의심하지 않는다: %+v", got)
+	}
+	// The receiver restarted: it may have missed a /login while it was down.
+	if err := WriteGeneration(f.state, at(t0+30_000)); err != nil {
+		t.Fatal(err)
+	}
+	got := f.resolve("s1", now)
+	if !got.Suspect || got.Email != "a@example.com" {
+		t.Fatalf("이전 세대의 앵커: %+v, want 이메일을 남기고 의심", got)
+	}
+	// A login the new generation saw replaces it and is trusted again.
+	f.clockAt(t0 + 40_000)
+	f.apply(login("s1", "b@example.com", t0+39_000))
+	got = f.resolve("s1", now)
+	if got.Suspect || got.Email != "b@example.com" || got.Level != Confirmed {
+		t.Fatalf("새 세대의 로그인: %+v", got)
+	}
+}
+
+func TestAMissingGenerationFileMakesEveryAnchorSuspect(t *testing.T) {
+	f := newFixture(t)
+	now := time.Now()
+	f.install(0, now)
+	f.startAnchor("s1", "a@example.com", t0)
+	if err := os.Remove(filepath.Join(f.state, "otel", "generation")); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.resolve("s1", now); !got.Suspect {
+		t.Errorf("세대를 알 수 없으면 의심: %+v", got)
+	}
+}
+
+func TestACarriedAnchorKeepsTheGenerationItWasStoredIn(t *testing.T) {
+	f := newFixture(t)
+	now := at(t0 + 60_000)
+	f.install(0, now)
+	f.clockAt(t0 + 1000)
+	f.proc(11, t0, "s1")
+	f.apply(login("s1", "a@example.com", t0+900))
+	f.wantEmail("s1", now, "a@example.com")
+	if err := WriteGeneration(f.state, at(t0+30_000)); err != nil {
+		t.Fatal(err)
+	}
+	f.proc(11, t0, "s2") // /clear
+	if got := f.wantEmail("s2", now, "a@example.com"); !got.Suspect {
+		t.Errorf("/clear 로 이어진 앵커도 저장 시점의 세대를 따른다: %+v", got)
+	}
+}
+
+// R12 — what the receiver has not renewed in 30 days is not used.
+
+func TestAnAnchorOlderThanTheRetentionIsNotUsedEvenIfNoWriteEverPrunedIt(t *testing.T) {
+	f := newFixture(t)
+	f.install(0, at(t0))
+	f.clockAt(t0)
+	f.startAnchor("s1", "a@example.com", t0)
+	month := retention.Milliseconds()
+	if got := f.resolve("s1", at(t0+month)); got.Email != "a@example.com" {
+		t.Errorf("보존 기간 안: %+v", got)
+	}
+	if got := f.resolve("s1", at(t0+month+1)); got.Email != "" || !got.Installed {
+		t.Errorf("보존 기간이 지난 앵커: %+v, want 이메일 없음", got)
+	}
+}
+
+func TestACarriedAnchorOlderThanTheRetentionIsNotUsed(t *testing.T) {
+	f := newFixture(t)
+	f.install(0, at(t0))
+	f.clockAt(t0)
+	f.proc(11, t0, "s1")
+	f.apply(login("s1", "a@example.com", t0))
+	f.wantEmail("s1", at(t0), "a@example.com")
+	f.proc(11, t0, "s2")
+	f.wantEmail("s2", at(t0+retention.Milliseconds()+1), "")
+}
+
+func TestSweepPrunesAllThreeDirectoriesWithoutAnyNewEvent(t *testing.T) {
+	f := newFixture(t)
+	now := time.Now()
+	f.install(0, now)
+	old := now.Add(-retention - time.Hour)
+	for _, rel := range []string{"otel/sessions/old.env", "pids/11-1.env", "pids/session-old.ref", "fingerprints/old.env"} {
+		path := filepath.Join(f.state, rel)
+		os.MkdirAll(filepath.Dir(path), 0o700)
+		os.WriteFile(path, []byte("x\n"), 0o600)
+		os.Chtimes(path, old, old)
+	}
+	keep := filepath.Join(f.state, "otel", "sessions", "recent.env")
+	os.WriteFile(keep, []byte("x\n"), 0o600)
+	Sweep(f.state, now)
+	for _, rel := range []string{"otel/sessions/old.env", "pids/11-1.env", "pids/session-old.ref", "fingerprints/old.env"} {
+		if _, err := os.Stat(filepath.Join(f.state, rel)); err == nil {
+			t.Errorf("%s 가 남았다", rel)
+		}
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("최근 파일을 지웠다: %v", err)
+	}
+}
+
+func TestSweepKeepsTheNewestFilesWithinTheLimitPerDirectory(t *testing.T) {
+	defer func(n int) { maxFiles = n }(maxFiles)
+	maxFiles = 3
+	f := newFixture(t)
+	now := time.Now()
+	f.install(0, now)
+	for _, dir := range []string{"otel/sessions", "pids", "fingerprints"} {
+		os.MkdirAll(filepath.Join(f.state, dir), 0o700)
+		for i := 0; i < 6; i++ {
+			path := filepath.Join(f.state, dir, "f"+strconv.Itoa(i)+".env")
+			os.WriteFile(path, []byte("x\n"), 0o600)
+			mod := now.Add(-time.Duration(10-i) * time.Minute)
+			os.Chtimes(path, mod, mod)
+		}
+	}
+	Sweep(f.state, now)
+	for _, dir := range []string{"otel/sessions", "pids", "fingerprints"} {
+		ents, _ := os.ReadDir(filepath.Join(f.state, dir))
+		if len(ents) != 3 {
+			t.Errorf("%s: %d files, want 3", dir, len(ents))
+		}
+	}
 }
 
 // R4 — /clear keeps the process's account.
@@ -211,18 +416,6 @@ func TestClearAfterLogoutStaysLoggedOut(t *testing.T) {
 	f.wantEmail("s2", now.Add(time.Minute), "")
 }
 
-func TestClearUsesTheSourceAnchorWhenItBecameNewerThanTheMirror(t *testing.T) {
-	f := newFixture(t)
-	now := time.Now()
-	f.install(0, now)
-	f.proc(11, t0, "s1")
-	f.apply(login("s1", "a@example.com", t0+5000))
-	f.wantEmail("s1", now, "a@example.com")
-	f.apply(login("s1", "b@example.com", t0+8000)) // arrives after the last render, before /clear
-	f.proc(11, t0, "s2")
-	f.wantEmail("s2", now, "b@example.com")
-}
-
 func TestTwoSessionsOfOneConfigDirectoryNeverMix(t *testing.T) {
 	f := newFixture(t)
 	now := time.Now()
@@ -275,119 +468,108 @@ func TestOnlyJSONFilesOfTheSessionsDirectoryAreRead(t *testing.T) {
 	f.wantEmail("s2", now, "")
 }
 
-// R5 — --resume and --continue emit their start events under a throwaway session id.
+// R13 — what /clear leaves behind under the old session id is not the process's to
+// follow. Another process that resumes that id can log in under it, and a later render of
+// the cleared process must not take that account.
 
-func (f *fixture) startAnchor(id, email string, ts int64) {
-	f.t.Helper()
-	f.apply(ev("managed_settings_resolved", id, email, ts))
-}
-
-func TestResumeAdoptsTheOrphanStartAnchorNearTheProcessStart(t *testing.T) {
+func TestAnotherProcessResumingTheOldIDAfterClearDoesNotMoveTheClearedProcess(t *testing.T) {
 	f := newFixture(t)
-	now := at(t0 + 10_000)
+	now := time.Now()
 	f.install(0, now)
-	f.proc(21, t0, "real")
-	f.startAnchor("throwaway", "a@example.com", t0+20)
-	got := f.wantEmail("real", now, "a@example.com")
-	if got.AnchorTS != t0+20 {
-		t.Errorf("AnchorTS = %d", got.AnchorTS)
+	f.proc(11, t0, "s1")
+	f.apply(login("s1", "a@example.com", t0+5000))
+	f.wantEmail("s1", now, "a@example.com")
+	f.proc(11, t0, "s2") // P1: /clear
+	f.wantEmail("s2", now, "a@example.com")
+	// P2 resumes the conversation s1 and logs in as another account.
+	f.proc(12, t0+60_000, "s1")
+	f.apply(login("s1", "b@example.com", t0+70_000))
+	if got := f.wantEmail("s2", now, "a@example.com"); got.AnchorTS != t0+5000 {
+		t.Errorf("P1 의 앵커가 P2 의 로그인으로 바뀌었다: %+v", got)
 	}
-	// The adoption is kept with the process: the throwaway anchor may be pruned later.
-	os.Remove(filepath.Join(sessionsDir(f.state), "throwaway.env"))
-	f.wantEmail("real", now.Add(time.Minute), "a@example.com")
-	// And survives /clear.
-	f.proc(21, t0, "real2")
-	f.wantEmail("real2", now.Add(2*time.Minute), "a@example.com")
+	f.wantEmail("s2", now.Add(time.Hour), "a@example.com") // and stays so
+	// P2 itself shows its own login.
+	f.wantEmail("s1", now, "b@example.com")
 }
 
-func TestResumeIgnoresAnchorsOfOtherLiveProcesses(t *testing.T) {
+func TestAChangeUnderTheOldIDBeforeTheFirstRenderAfterClearLeavesTheProcessUnknown(t *testing.T) {
+	f := newFixture(t)
+	now := time.Now()
+	f.install(0, now)
+	f.proc(11, t0, "s1")
+	f.apply(login("s1", "a@example.com", t0+5000))
+	f.wantEmail("s1", now, "a@example.com")
+	f.proc(11, t0, "s2") // P1: /clear, not rendered yet
+	f.proc(12, t0+60_000, "s1")
+	f.apply(login("s1", "b@example.com", t0+70_000)) // P2, or P1's own login just before /clear: unknowable
+	f.wantEmail("s2", now, "")
+	f.wantEmail("s2", now.Add(time.Minute), "") // the verdict is kept
+	// P1's own login under the new id is trusted again.
+	f.apply(login("s2", "c@example.com", t0+90_000))
+	f.wantEmail("s2", now, "c@example.com")
+}
+
+func TestARemovedOldIDAnchorDoesNotUndoTheCarry(t *testing.T) {
+	f := newFixture(t)
+	now := time.Now()
+	f.install(0, now)
+	f.proc(11, t0, "s1")
+	f.apply(login("s1", "a@example.com", t0+5000))
+	f.wantEmail("s1", now, "a@example.com")
+	os.Remove(filepath.Join(sessionsDir(f.state), "s1.env")) // pruned
+	f.proc(11, t0, "s2")
+	f.wantEmail("s2", now, "a@example.com")
+}
+
+// R5 — a resumed conversation sends its start events under a throwaway session id that
+// nothing ties to the process, and the anchors of other ids are never borrowed on timing
+// alone: any process of any config directory could have written them.
+
+func TestResumedSessionNeverBorrowsTheStartAnchorOfAnotherID(t *testing.T) {
 	f := newFixture(t)
 	now := at(t0 + 10_000)
 	f.install(0, now)
 	f.proc(21, t0, "real")
-	f.proc(22, t0+500, "live2") // another running session started at nearly the same time
-	f.startAnchor("live2", "b@example.com", t0+520)
-	f.startAnchor("throwaway", "a@example.com", t0+20)
-	f.wantEmail("real", now, "a@example.com")
-}
-
-func TestResumeWithOnlyALiveProcessCandidateStaysUnknown(t *testing.T) {
-	f := newFixture(t)
-	now := at(t0 + 10_000)
-	f.install(0, now)
-	f.proc(21, t0, "real")
-	f.proc(22, t0+500, "live2")
-	f.startAnchor("live2", "b@example.com", t0+520)
-	f.wantEmail("real", now, "")
-}
-
-func TestResumeWithDisagreeingCandidatesIsUnknownAndNotSearchedAgain(t *testing.T) {
-	f := newFixture(t)
-	now := at(t0 + 10_000)
-	f.install(0, now)
-	f.proc(21, t0, "real")
-	f.startAnchor("throwaway1", "a@example.com", t0+20)
-	f.startAnchor("throwaway2", "b@example.com", t0+900)
-	f.wantEmail("real", now, "")
-	os.Remove(filepath.Join(sessionsDir(f.state), "throwaway2.env"))
-	f.wantEmail("real", now.Add(time.Minute), "") // the verdict was stored
-}
-
-func TestResumeAgreeingCandidatesAreAdopted(t *testing.T) {
-	f := newFixture(t)
-	now := at(t0 + 10_000)
-	f.install(0, now)
-	f.proc(21, t0, "real")
-	f.startAnchor("throwaway1", "a@example.com", t0+20)
-	f.startAnchor("throwaway2", "a@example.com", t0+900)
-	f.wantEmail("real", now, "a@example.com")
-}
-
-func TestResumeWaitsUntilTheProcessIsEightSecondsOld(t *testing.T) {
-	f := newFixture(t)
-	f.install(0, time.Now())
-	f.proc(21, t0, "real")
-	f.startAnchor("throwaway", "a@example.com", t0+20)
-	f.wantEmail("real", at(t0+7_999), "") // too young: held, not decided
-	f.wantEmail("real", at(t0+8_000), "a@example.com")
-}
-
-func TestResumeOnlyConsidersStartAnchorsWithinThreeSecondsOfTheProcessStart(t *testing.T) {
-	cases := []struct {
-		name string
-		ts   int64
-		want string
-	}{
-		{"+3초", t0 + 3000, "a@example.com"},
-		{"-3초", t0 - 3000, "a@example.com"},
-		{"+3.001초", t0 + 3001, ""},
-		{"-3.001초", t0 - 3001, ""},
+	f.startAnchor("throwaway", "a@example.com", t0+20) // started at the very time of the process
+	got := f.resolve("real", now)
+	if got.Email != "" || got.Level != Unknown {
+		t.Errorf("Resolve = %+v, want unknown", got)
 	}
-	for _, c := range cases {
-		f := newFixture(t)
-		now := at(t0 + 10_000)
-		f.install(0, now)
-		f.proc(21, t0, "real")
-		f.startAnchor("throwaway", "a@example.com", c.ts)
-		if got := f.resolve("real", now).Email; got != c.want {
-			t.Errorf("%s: Email = %q, want %q", c.name, got, c.want)
-		}
-	}
+	f.wantEmail("real", now.Add(time.Hour), "")
 }
 
-func TestResumeIgnoresLoginAndLogoutAnchors(t *testing.T) {
+func TestAnotherProfilesEventsAreNotTakenWhenTheProcessOwnEventsAreMissing(t *testing.T) {
+	f1 := newFixture(t)
+	f2 := f1.otherProfile()
+	now := at(t0 + 10_000)
+	f1.install(0, now)
+	f1.proc(21, t0, "real") // profile 1: a resumed conversation whose own start events never arrived
+	f2.proc(22, t0+500, "other-real")
+	f2.startAnchor("other-throwaway", "b@example.com", t0+520) // profile 2's, nearly simultaneous
+	f2.startAnchor("other-fresh", "c@example.com", t0+400)
+	f1.wantEmail("real", now, "")
+	// Profile 2's own fresh session reads its own anchor.
+	f2.proc(23, t0+300, "other-fresh")
+	f2.wantEmail("other-fresh", now, "c@example.com")
+}
+
+func TestResumedSessionAnchorsOnItsFirstLoginAndKeepsItAcrossClear(t *testing.T) {
 	f := newFixture(t)
 	now := at(t0 + 10_000)
 	f.install(0, now)
 	f.proc(21, t0, "real")
-	f.apply(login("other-login", "a@example.com", t0+20))
-	f.apply(logout("other-logout", t0+30))
 	f.wantEmail("real", now, "")
+	f.apply(login("real", "c@example.com", t0+12_000))
+	if got := f.wantEmail("real", now, "c@example.com"); got.Level != Confirmed {
+		t.Errorf("로그인한 재개 세션: %+v", got)
+	}
+	f.proc(21, t0, "cleared") // /clear
+	f.wantEmail("cleared", now.Add(time.Minute), "c@example.com")
 }
 
 func TestStartAnchorOfTheSessionItselfNeedsNoSearch(t *testing.T) {
 	f := newFixture(t)
-	now := at(t0 + 1_000) // younger than eight seconds
+	now := at(t0 + 1_000)
 	f.install(0, now)
 	f.proc(21, t0, "s1")
 	f.startAnchor("s1", "a@example.com", t0+20)
@@ -411,9 +593,8 @@ func TestResumedSessionIgnoresTheAnchorOfItsPreviousProcessLife(t *testing.T) {
 	now := at(t0 + 10_000)
 	f.install(0, now)
 	f.previousLife("real", t0-86_400_000, "old@example.com")
-	f.proc(31, t0, "real")                               // claude --resume real: a new process
-	f.startAnchor("throwaway", "new@example.com", t0+20) // its start events use another id
-	f.wantEmail("real", now, "new@example.com")
+	f.proc(31, t0, "real")       // claude --resume real: a new process
+	f.wantEmail("real", now, "") // the old life's account says nothing about this process
 }
 
 func TestLoginAfterAResumeSurvivesClear(t *testing.T) {
@@ -422,21 +603,11 @@ func TestLoginAfterAResumeSurvivesClear(t *testing.T) {
 	f.install(0, now)
 	f.previousLife("real", t0-86_400_000, "old@example.com")
 	f.proc(31, t0, "real")
-	f.startAnchor("throwaway", "new@example.com", t0+20)
-	f.wantEmail("real", now, "new@example.com")
+	f.wantEmail("real", now, "")
 	f.apply(login("real", "c@example.com", t0+12_000))
 	f.wantEmail("real", now, "c@example.com")
 	f.proc(31, t0, "cleared") // /clear
 	f.wantEmail("cleared", now.Add(time.Minute), "c@example.com")
-}
-
-func TestResumedSessionWithoutStartAnchorsInThisLifeIsUnknown(t *testing.T) {
-	f := newFixture(t)
-	now := at(t0 + 10_000)
-	f.install(0, now)
-	f.previousLife("real", t0-86_400_000, "old@example.com")
-	f.proc(31, t0, "real")
-	f.wantEmail("real", now, "") // the old life's account says nothing about this process
 }
 
 func TestInSessionResumeOfAnOlderConversationKeepsTheProcessAccount(t *testing.T) {
@@ -449,4 +620,101 @@ func TestInSessionResumeOfAnOlderConversationKeepsTheProcessAccount(t *testing.T
 	f.wantEmail("current", now, "c@example.com")
 	f.proc(31, t0, "older") // /resume of the older conversation inside the same process
 	f.wantEmail("older", now.Add(time.Minute), "c@example.com")
+}
+
+// R14 — the rate-limit windows a session kept belong to one account only within one
+// boundary: the process that runs it and its last in-session login or logout.
+
+func (f *fixture) boundary(id string, parent int, now time.Time) string {
+	return Boundary(Input{StateDir: f.state, ConfigDir: f.config, SessionID: id, Parent: parent, Now: now})
+}
+
+func TestBoundaryNamesTheProcessAndTheLastLogin(t *testing.T) {
+	f := newFixture(t)
+	now := at(t0 + 10_000)
+	f.install(0, now)
+	f.proc(11, t0, "s1")
+	want := "11-" + strconv.FormatInt(t0, 10) + "-0"
+	if got := f.boundary("s1", 0, now); got != want {
+		t.Fatalf("Boundary = %q, want %q", got, want)
+	}
+	f.startAnchor("s1", "a@example.com", t0+20) // a start anchor is not an authentication
+	if got := f.boundary("s1", 0, now); got != want {
+		t.Errorf("시작 앵커가 경계를 바꿨다: %q", got)
+	}
+	f.apply(login("s1", "a@example.com", t0+5000))
+	if got := f.boundary("s1", 0, now); got != "11-"+strconv.FormatInt(t0, 10)+"-"+strconv.FormatInt(t0+5000, 10) {
+		t.Errorf("로그인 뒤 Boundary = %q", got)
+	}
+	f.apply(logout("s1", t0+9000))
+	if got := f.boundary("s1", 0, now); got != "11-"+strconv.FormatInt(t0, 10)+"-"+strconv.FormatInt(t0+9000, 10) {
+		t.Errorf("로그아웃 뒤 Boundary = %q", got)
+	}
+}
+
+func TestBoundaryDiffersWhenANewProcessResumesTheSameConversation(t *testing.T) {
+	f := newFixture(t)
+	now := at(t0 + 10_000)
+	f.install(0, now)
+	f.proc(11, t0-86_400_000, "real")
+	first := f.boundary("real", 0, now)
+	f.proc(31, t0, "real") // claude --continue: another process, the same session id
+	os.Remove(filepath.Join(f.config, "sessions", "11.json"))
+	second := f.boundary("real", 0, now)
+	if first == "" || second == "" || first == second {
+		t.Errorf("재개한 프로세스의 경계가 같다: %q, %q", first, second)
+	}
+}
+
+func TestBoundaryIgnoresALoginOfAnEarlierProcessLife(t *testing.T) {
+	f := newFixture(t)
+	now := at(t0 + 10_000)
+	f.install(0, now)
+	f.apply(login("real", "old@example.com", t0-86_400_000))
+	f.proc(31, t0, "real")
+	if got := f.boundary("real", 0, now); got != "31-"+strconv.FormatInt(t0, 10)+"-0" {
+		t.Errorf("이전 삶의 로그인이 경계에 들어갔다: %q", got)
+	}
+}
+
+func TestBoundaryIsEmptyWhenTheProcessCannotBeTold(t *testing.T) {
+	f := newFixture(t)
+	now := at(t0 + 10_000)
+	f.install(0, now)
+	if got := f.boundary("s1", 0, now); got != "" {
+		t.Errorf("프로세스를 모르면 비어야 한다: %q", got)
+	}
+	f.proc(11, t0, "s1")
+	for _, id := range []string{"", "../s1", "s1 "} {
+		if got := f.boundary(id, 0, now); got != "" {
+			t.Errorf("%q: %q", id, got)
+		}
+	}
+}
+
+func TestBoundaryWorksWithoutTheReceiver(t *testing.T) {
+	f := newFixture(t) // no otel directory at all
+	f.proc(11, t0, "s1")
+	if got := f.boundary("s1", 0, at(t0+10_000)); got != "11-"+strconv.FormatInt(t0, 10)+"-0" {
+		t.Errorf("수신기가 없어도 프로세스는 안다: %q", got)
+	}
+}
+
+func TestTheParentProcessIsTrustedOnlyWhenItsOwnFileNamesTheSession(t *testing.T) {
+	f := newFixture(t)
+	now := at(t0 + 10_000)
+	f.install(0, now)
+	f.proc(11, t0, "s1")
+	f.proc(12, t0+500, "s2")
+	want := "11-" + strconv.FormatInt(t0, 10) + "-0"
+	for _, parent := range []int{11, 0, 99, 12} { // the right one, none, no file, another session's
+		if got := f.boundary("s1", parent, now); got != want {
+			t.Errorf("parent %d: Boundary = %q, want %q", parent, got, want)
+		}
+	}
+	// With the files gone the parent alone proves nothing.
+	os.RemoveAll(filepath.Join(f.config, "sessions"))
+	if got := f.boundary("s1", 11, now); got != "" {
+		t.Errorf("파일이 없는데 부모만 믿었다: %q", got)
+	}
 }

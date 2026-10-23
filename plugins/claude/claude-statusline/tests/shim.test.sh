@@ -205,6 +205,67 @@ assert_equals "T16 높은 판본을 게시하면 파일이 교체됨" "no" "$([ 
 multi_build account-c 5.9.0
 assert_equals "T16 숫자 비교로 5.9.0 은 5.10.0 을 되돌리지 못함" "5.10.0" "$(cat "$PUB_VER")"
 
+# --- T17: 수신기 게시 구간은 게시 폴더 단위로 직렬화된다 ---
+#     서로 다른 판본의 훅이 동시에 옛 판본을 읽으면 낮은 판본이 높은 판본을 덮고 .version 이 실행 파일과
+#     어긋난다. 잠금을 잡고 있는 동안에는 게시하지 않고, 풀리면 게시하며, 비정상 종료가 남긴 잠금은 버린다.
+VERGO="$MULTI/vertools"
+mkdir -p "$VERGO"
+cat > "$VERGO/go" <<'GOEOF'
+#!/bin/sh
+if [ "$1" = env ]; then
+  case "$2" in GOOS) echo fixture ;; GOARCH) echo arch ;; esac
+  exit 0
+fi
+while [ "$1" != -o ]; do shift; done
+shift
+printf '#!/bin/sh\n# %s\nexit 0\n' "$1" > "$1"
+chmod +x "$1"
+GOEOF
+chmod +x "$VERGO/go"
+mkplug() {
+  mkdir -p "$MULTI/account-e/$1/.claude-plugin" "$MULTI/account-e/$1/scripts"
+  printf '{"version":"%s"}\n' "$1" > "$MULTI/account-e/$1/.claude-plugin/plugin.json"
+  cp "$BUILD" "$MULTI/account-e/$1/scripts/build-binary.sh"
+}
+lock_build() {
+  env PATH="$VERGO:$PATH" HOME="$TMPROOT" XDG_CACHE_HOME="$MULTI/lock-cache" XDG_DATA_HOME="$MULTI/lock-data" \
+    XDG_STATE_HOME="$MULTI/lock-state" CLAUDE_CONFIG_DIR="$MULTI/account-e" CLAUDE_PLUGIN_ROOT="$MULTI/account-e/$1" \
+    sh "$MULTI/account-e/$1/scripts/build-binary.sh"
+}
+LPUB_DIR="$MULTI/lock-data/claude-statusline/bin"
+LOCK="$LPUB_DIR/.publish.lock"
+mkplug 8.0.0
+lock_build 8.0.0
+assert_equals "T17 잠금이 없으면 게시함" "8.0.0" "$(cat "$LPUB_DIR/claude-statusline-otlp.version")"
+assert_equals "T17 게시가 끝나면 잠금을 풀어 둠" no "$([ -e "$LOCK" ] && echo yes || echo no)"
+
+mkplug 8.1.0
+mkdir "$LOCK"
+lock_build 8.1.0 &
+HELD_PID=$!
+sleep 1
+assert_equals "T17 잠금을 다른 게시자가 잡고 있는 동안에는 게시하지 않음" "8.0.0" "$(cat "$LPUB_DIR/claude-statusline-otlp.version")"
+rmdir "$LOCK"
+wait "$HELD_PID"
+assert_equals "T17 잠금이 풀리면 게시함" "8.1.0" "$(cat "$LPUB_DIR/claude-statusline-otlp.version")"
+assert_contains "T17 게시된 실행 파일이 .version 의 판본" "-8.1.0-" "$(cat "$LPUB_DIR/claude-statusline-otlp")"
+assert_equals "T17 기다렸다 게시한 뒤에도 잠금을 풀어 둠" no "$([ -e "$LOCK" ] && echo yes || echo no)"
+
+mkplug 8.2.0
+mkdir "$LOCK"
+touch -t 200001010000 "$LOCK"
+lock_build 8.2.0
+assert_equals "T17 비정상 종료가 남긴 낡은 잠금은 버리고 게시함" "8.2.0" "$(cat "$LPUB_DIR/claude-statusline-otlp.version")"
+assert_equals "T17 낡은 잠금을 치운 뒤 잠금을 풀어 둠" no "$([ -e "$LOCK" ] && echo yes || echo no)"
+
+# 서로 다른 판본의 게시자가 한꺼번에 경합해도 최종 실행 파일과 .version 이 가장 높은 판본으로 일치한다.
+for v in 9.0.0 9.1.0 9.2.0 9.3.0 9.4.0 9.5.0 9.6.0 9.7.0; do mkplug "$v"; done
+for v in 9.3.0 9.7.0 9.0.0 9.5.0 9.1.0 9.6.0 9.2.0 9.4.0; do lock_build "$v" & done
+wait
+assert_equals "T17 동시 게시 뒤 .version 은 가장 높은 판본" "9.7.0" "$(cat "$LPUB_DIR/claude-statusline-otlp.version")"
+assert_contains "T17 동시 게시 뒤 실행 파일도 가장 높은 판본의 빌드" "-9.7.0-" "$(cat "$LPUB_DIR/claude-statusline-otlp")"
+assert_equals "T17 동시 게시 뒤 잠금을 풀어 둠" no "$([ -e "$LOCK" ] && echo yes || echo no)"
+
 assert_equals "T16 빌드 스크립트는 LaunchAgent 를 다루지 않음" "0" \
   "$(grep -c 'launchctl\|kr\.silee\|LaunchAgent' "$BUILD" || true)"
 

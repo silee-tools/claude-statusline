@@ -12,7 +12,9 @@
 //
 // The file is the session's own. A file shared by every session of a config directory
 // drew another session's window, and so another account's, on a session that had not
-// received one yet.
+// received one yet. It is also the boundary's own: the same conversation resumed by
+// another process, or after a /login, may run on another account, so a file written under
+// a different boundary supplies nothing and is replaced.
 package ratelimit
 
 import (
@@ -41,8 +43,11 @@ type Pair struct{ Five, Week Sample }
 // Complete reports whether the sample can be judged for expiry.
 func (s Sample) Complete() bool { return s.Present && s.HasReset }
 
-// cacheMaxAge is how long a session's file is kept after its last write.
-const cacheMaxAge = 2 * 24 * time.Hour
+// How long a session's file is kept after its last write, and how many the directory keeps.
+const (
+	cacheMaxAge   = 2 * 24 * time.Hour
+	cacheMaxFiles = 2000
+)
 
 // validID accepts the characters a session id can carry and nothing that could leave the
 // directory.
@@ -62,18 +67,26 @@ func validID(id string) bool {
 // Load reads one session file. A missing or unreadable file yields two absent samples, and
 // a damaged window drops on its own without taking the other one with it.
 func Load(file string) Pair {
+	p, _ := load(file)
+	return p
+}
+
+// load also returns the boundary the file was written under, "" when it names none.
+func load(file string) (Pair, string) {
 	var p Pair
 	b, err := os.ReadFile(file)
 	if err != nil {
-		return p
+		return p, ""
 	}
-	var fivePct, fiveReset, weekPct, weekReset string
+	var boundary, fivePct, fiveReset, weekPct, weekReset string
 	for _, line := range strings.Split(string(b), "\n") {
 		k, v, found := strings.Cut(line, "=")
 		if !found {
 			continue
 		}
 		switch k {
+		case "boundary":
+			boundary = v
 		case "fivePct":
 			fivePct = v
 		case "fiveReset":
@@ -84,7 +97,7 @@ func Load(file string) Pair {
 			weekReset = v
 		}
 	}
-	return Pair{Five: parse(fivePct, fiveReset), Week: parse(weekPct, weekReset)}
+	return Pair{Five: parse(fivePct, fiveReset), Week: parse(weekPct, weekReset)}, boundary
 }
 
 // parse takes a window only when both numbers read. Store never writes a window without
@@ -103,8 +116,13 @@ func parse(pct, reset string) Sample {
 }
 
 // Store replaces the file with p, keeping only the windows that carry a reset time.
-func Store(file string, p Pair) error {
+func Store(file string, p Pair) error { return store(file, "", p) }
+
+func store(file, boundary string, p Pair) error {
 	var b strings.Builder
+	if boundary != "" {
+		fmt.Fprintf(&b, "boundary=%s\n", boundary)
+	}
 	if p.Five.Complete() {
 		fmt.Fprintf(&b, "fivePct=%d\nfiveReset=%d\n", p.Five.Pct, p.Five.ResetsAt)
 	}
@@ -118,22 +136,35 @@ func Store(file string, p Pair) error {
 // behind for its next render to read, in <cacheDir>/rate-limits/<sessionID>.env. It writes
 // only when that differs from what the file already holds, so a render that observes
 // nothing new costs one read, and a write also removes the files of sessions idle for
-// more than two days. A session id that is not a plain identifier gets no file: what the
-// payload carries is drawn and nothing is remembered.
-func Resolve(cacheDir, sessionID string, live Pair, now int64) Pair {
-	if !validID(sessionID) {
+// more than two days and the oldest beyond 2,000. A session id that is not a plain
+// identifier, or an empty boundary, gets no file: what the payload carries is drawn and
+// nothing is remembered.
+//
+// The boundary says in which stretch of the session the windows were seen (see
+// anchor.Boundary). A file written under another boundary is dropped, so a conversation
+// that a new process resumes, or that logged in again, never draws the windows of the
+// account it ran on before, not even to fill the one window its payload still lacks.
+func Resolve(cacheDir, sessionID, boundary string, live Pair, now int64) Pair {
+	if !validID(sessionID) || boundary == "" {
 		show5, _ := resolveWindow(live.Five, Sample{}, now)
 		show7, _ := resolveWindow(live.Week, Sample{}, now)
 		return Pair{Five: show5, Week: show7}
 	}
 	dir := filepath.Join(cacheDir, "rate-limits")
 	file := filepath.Join(dir, sessionID+".env")
-	cached := Load(file)
+	cached, stored := load(file)
+	if stored != boundary {
+		cached = Pair{}
+	}
 	showFive, keepFive := resolveWindow(live.Five, cached.Five, now)
 	showWeek, keepWeek := resolveWindow(live.Week, cached.Week, now)
-	if merged := (Pair{Five: keepFive, Week: keepWeek}); merged != cached {
-		if Store(file, merged) == nil {
-			statefile.Prune(dir, time.Unix(now, 0), cacheMaxAge, 0)
+	merged := Pair{Five: keepFive, Week: keepWeek}
+	if merged != cached || (stored != "" && stored != boundary) {
+		switch {
+		case merged == (Pair{}):
+			os.Remove(file)
+		case store(file, boundary, merged) == nil:
+			statefile.Prune(dir, time.Unix(now, 0), cacheMaxAge, cacheMaxFiles)
 		}
 	}
 	return Pair{Five: showFive, Week: showWeek}

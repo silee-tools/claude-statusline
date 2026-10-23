@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -258,6 +259,7 @@ func TestNotLoggedInSessionStillAnchorsOnItsStartEvent(t *testing.T) {
 func wantAnchor(t *testing.T, dir, id string, want anchor.Anchor) {
 	t.Helper()
 	got, ok := anchor.Read(dir, id)
+	got.Seen = 0 // when the receiver stored it is checked in the anchor package
 	if !ok || got != want {
 		t.Fatalf("Read(%s) = %+v, %v; want %+v", id, got, ok, want)
 	}
@@ -279,4 +281,44 @@ func TestLoginArrivingBeforeTheStartEventWins(t *testing.T) {
 	post(h, record("auth", 1_700_000_005_000*ms, str("session.id", "s1"), str("user.email", "b@example.com"), str("action", "login"), str("success", "true")))
 	post(h, record("managed_settings_resolved", 1_700_000_000_000*ms, str("session.id", "s1"), str("user.email", "a@example.com")))
 	wantAnchor(t, dir, "s1", anchor.Anchor{Email: "b@example.com", Kind: anchor.KindLogin, TS: 1_700_000_005_000})
+}
+
+func TestHandlerAnswers503SoTheExporterRetriesWhenARecordCannotBeStored(t *testing.T) {
+	// 저장하지 못했는데 200 을 주면 Claude Code 는 /login 이벤트가 전달됐다고 믿고 다시 보내지 않는다.
+	var logged []string
+	calls := 0
+	apply := func(anchor.Event) error {
+		calls++
+		if calls == 1 {
+			return errors.New("disk full")
+		}
+		return nil
+	}
+	h := newHandler(apply, fixedNow, func(kind string) { logged = append(logged, kind) })
+	body := request(
+		record("auth", 1_700_000_000_000*ms, str("session.id", "s1"), str("user.email", "a@example.com"), str("action", "login"), boolean("success", true)),
+		record("managed_settings_resolved", 1_700_000_001_000*ms, str("session.id", "s2"), str("user.email", "b@example.com")),
+	)
+	got := serveOnce(h, "POST", "/v1/logs", "application/json", body)
+	if got.Code != http.StatusServiceUnavailable {
+		t.Fatalf("저장 실패 상태 %d, want 503", got.Code)
+	}
+	if got.Header().Get("Retry-After") == "" {
+		t.Error("재시도 간격 힌트가 없다")
+	}
+	if calls != 2 {
+		t.Errorf("실패한 기록 뒤의 기록도 시도해야 한다: %d번 호출", calls)
+	}
+	if len(logged) != 1 || logged[0] != logApplyFailed {
+		t.Errorf("로그 = %v", logged)
+	}
+	for _, leak := range []string{"a@example.com", "s1", "disk full"} {
+		if strings.Contains(got.Body.String(), leak) {
+			t.Errorf("응답에 값이 섞였다: %q", got.Body.String())
+		}
+	}
+	// 같은 요청을 다시 보내면 성공한다.
+	if again := serveOnce(h, "POST", "/v1/logs", "application/json", body); again.Code != 200 {
+		t.Errorf("재시도 상태 %d, want 200", again.Code)
+	}
 }

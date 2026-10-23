@@ -103,10 +103,12 @@ STATE_HOME="$STATE_NONE"
 OTEL_DIR="$STATE_ACCT/claude-statusline/otel"
 mkdir -p "$STATE_NONE"
 anchor_file() { printf '%s/sessions/%s.env' "$OTEL_DIR" "$1"; }
-# seed_anchor <session.id> <email> <kind> <event time ms>
+# seed_anchor <session.id> <email> <kind> <event time ms>. 수신기가 저장한 시각(seen)은 지금이고, 수신기 세대
+# (otel/generation)는 그보다 이르다 — 세대보다 먼저 저장된 앵커는 이메일 뒤에 ? 가 붙는다.
 seed_anchor() {
   mkdir -p "$OTEL_DIR/sessions"
-  printf 'email=%s\nkind=%s\nts=%s\n' "$2" "$3" "$4" > "$(anchor_file "$1")"
+  printf 'email=%s\nkind=%s\nts=%s\nseen=%s000\n' "$2" "$3" "$4" "$(date +%s)" > "$(anchor_file "$1")"
+  printf '1\n' > "$OTEL_DIR/generation"
 }
 beat()       { mkdir -p "$OTEL_DIR"; touch "$OTEL_DIR/heartbeat"; }
 stale_beat() { mkdir -p "$OTEL_DIR"; touch -t 200001010000 "$OTEL_DIR/heartbeat"; }
@@ -212,7 +214,15 @@ json_eff() {
 RL_SESSION="rl-test-session"
 RATE_DIR="$TMPROOT/cache/claude-statusline/rate-limits"
 RATE_CACHE="$RATE_DIR/$RL_SESSION.env"
-seed_rate_cache() { mkdir -p "$RATE_DIR"; printf 'fivePct=%s\nfiveReset=%s\nweekPct=%s\nweekReset=%s\n' "$1" "$2" "$3" "$4" > "$RATE_CACHE"; }
+# 한도 캐시는 실행 프로세스와 인증 경계별이다(anchor.Boundary). 프로세스는 <설정 폴더>/sessions/<pid>.json 으로
+# 알아내므로 캐시를 쓰는 세션마다 프로세스 파일을 둔다. 경계는 <pid>-<startedAt>-<마지막 로그인 ts 또는 0> 이다.
+seed_proc() { mkdir -p "$TMPROOT/sessions"; printf '{"pid":%s,"sessionId":"%s","startedAt":1700000000000}\n' "$2" "$1" > "$TMPROOT/sessions/$2.json"; }
+RL_BOUNDARY="4001-1700000000000-0"
+seed_proc "$RL_SESSION" 4001
+seed_proc rl-sess-a 4002
+seed_proc rl-sess-b 4003
+seed_proc rl-sess-c 4004
+seed_rate_cache() { mkdir -p "$RATE_DIR"; printf 'boundary=%s\nfivePct=%s\nfiveReset=%s\nweekPct=%s\nweekReset=%s\n' "$RL_BOUNDARY" "$1" "$2" "$3" "$4" > "$RATE_CACHE"; }
 with_session() { printf '%s' "$2" | sed "s/^{/{\"session_id\":\"$1\",/"; }
 with_rl() { with_session "$RL_SESSION" "$1"; }
 
@@ -362,7 +372,7 @@ assert_match "T48 폭 판정 불가는 첫 줄을 버전·시각·경로·aws �
 #    줄의 표시 폭(vwidth_of)에서 구하고, Claude Code 가 상태줄 양쪽에 남기는 4칸을 더한다.
 if [ "$HAVE_GIT" = "1" ]; then
   # 계정 칸이 첫 줄의 폭에 들어가도록 수신기가 설치된 기계로 렌더한다.
-  seed_anchor "$KNOWN_SESSION" octocat@example.com start 1700000000000
+  seed_anchor "$KNOWN_SESSION" octocat@example.com login 1700000000000
   beat
   STATE_HOME="$STATE_ACCT"
   STAGE_REPO="$TMPROOT/stage/webapp/very-long-project-directory-name"
@@ -599,6 +609,7 @@ STATE_HOME="$STATE_ACCT"
 ACCT_A=$(with_session acct-a "$(json_without)")
 OUT=$(run "$ACCT_A" 81)
 assert_contains "T26 전체 레이아웃 첫 줄에 Claude 계정 이메일" "octocat@example.com" "$(first_line "$OUT")"
+assert_contains "T26 시작 이벤트의 계정은 추정이라 물결표가 붙음" "~octocat@example.com" "$(first_line "$OUT")"
 assert_not_contains "T26 이메일 앞 cc: 접두 없음" "cc:octocat" "$OUT"
 assert_not_contains "T26 같은 설정 폴더의 .claude.json 이메일은 쓰지 않음" "decoy@example.com" "$OUT"
 CORAL=$(printf '\033[38;5;173m')
@@ -1015,6 +1026,7 @@ SESS_B=$(with_session acct-b "$(json_without)")
 SESS_C=$(with_session acct-c "$(json_without)")
 DECOY_SUM=$(cksum < "$TMPROOT/.claude.json")
 OUT=$(run "$SESS_A" 120); assert_contains     "T35 세션 A 는 자기 앵커의 계정" "a@example.com" "$(first_line "$OUT")"
+assert_contains     "T35 시작 이벤트의 계정은 추정(~)" "~a@example.com" "$(first_line "$OUT")"
 assert_not_contains "T35 세션 A 에 세션 B 의 계정이 섞이지 않음" "b@example.com" "$OUT"
 OUT=$(run "$SESS_B" 120); assert_contains     "T35 세션 B 는 자기 앵커의 계정" "b@example.com" "$(first_line "$OUT")"
 assert_not_contains "T35 세션 B 에 세션 A 의 계정이 섞이지 않음" "a@example.com" "$OUT"
@@ -1027,6 +1039,7 @@ assert_match "T35 session_id 없는 페이로드도 ? 로 정직하게 모름" '
 # 세션 안 /login: 로그인 앵커가 그 세션만 바꾼다. 로그아웃은 ? 이다.
 seed_anchor acct-a c@example.com login 1700000009000
 OUT=$(run "$SESS_A" 120); assert_contains "T35 /login 뒤 그 세션이 새 계정을 보여 줌" "c@example.com" "$(first_line "$OUT")"
+assert_not_contains "T35 /login 으로 확정된 계정에는 물결표가 없음" "~c@example.com" "$(first_line "$OUT")"
 assert_not_contains "T35 /login 뒤 옛 계정이 남지 않음" "a@example.com" "$OUT"
 OUT=$(run "$SESS_B" 120); assert_contains "T35 한 세션의 /login 은 다른 세션을 바꾸지 않음" "b@example.com" "$(first_line "$OUT")"
 seed_anchor acct-a "" logout 1700000019000
@@ -1072,6 +1085,23 @@ assert_no_match "T62 공용 rate-limits.env 의 5h 를 읽지 않음" '5h [0-9]'
 run_keep "$(with_session rl-sess-c "$(json_pct 31 32)")" 120 >/dev/null
 assert_equals "T62 공용 rate-limits.env 에 쓰지 않음" "$SHARED_BODY" "$(cat "$TMPROOT/cache/claude-statusline/rate-limits.env")"
 rm -f "$TMPROOT/cache/claude-statusline/rate-limits.env"
+rm -rf "$RATE_DIR"
+
+# --- T63: 같은 대화를 새 프로세스가 이어 받으면(--continue) 이전 프로세스가 남긴 창은 그리지 않는다 ---
+#    계정 A 로 돌던 대화를 계정 B 의 새 프로세스가 이어 받고 payload 에 한도가 아직 없을 때, 만료 전인 A 의 한도가
+#    그려지면 SessionDesk 의 usageWindows 까지 틀린 값이 간다.
+run_keep "$RL_A" 120 >/dev/null
+OUT=$(run_keep "$RL_A_NONE" 120)
+assert_match "T63 같은 프로세스는 자기 캐시에서 5h 공급" '5h .*24%' "$OUT"
+rm -f "$TMPROOT/sessions/4002.json"
+seed_proc rl-sess-a 4099
+OUT=$(run_keep "$RL_A_NONE" 120)
+assert_no_match "T63 새 프로세스는 이전 프로세스의 5h 를 그리지 않음" '5h [0-9]' "$OUT"
+assert_no_match "T63 새 프로세스는 이전 프로세스의 7d 를 그리지 않음" '7d [0-9]' "$OUT"
+rm -f "$TMPROOT/sessions/4099.json"
+seed_proc rl-sess-a 4002
+OUT=$(run_keep "$RL_A_NONE" 120)
+assert_no_match "T63 옛 프로세스로 돌아가도 지워진 창은 돌아오지 않는다" '5h [0-9]' "$(printf '%s' "$OUT" | sed -n '1p')"
 rm -rf "$RATE_DIR"
 
 # --- T36: aws login 캐시 디렉터리 규칙 — 캐시가 없으면 세그먼트가 통째로 빠지고,
