@@ -75,6 +75,20 @@ func accountFixture(t *testing.T, now time.Time) (stateDir, configDir string) {
 	return stateDir, configDir
 }
 
+// runningProcess lets the statusline find the process of a session: only a login anchor of a
+// known, running process is shown as confirmed. The test process stands in for Claude Code.
+func runningProcess(t *testing.T, configDir, sessionID string) {
+	t.Helper()
+	dir := filepath.Join(configDir, "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"pid":%d,"sessionId":%q,"startedAt":1}`, os.Getpid(), sessionID)
+	if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%d.json", os.Getpid())), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func startEvent(id, email string, ts int64) anchor.Event {
 	return anchor.Event{Name: "managed_settings_resolved", SessionID: id, Email: email, TS: ts}
 }
@@ -94,6 +108,7 @@ var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 func TestAccountSlotFollowsTheSessionsAnchorThroughLoginAndLogout(t *testing.T) {
 	now := time.Now()
 	stateDir, configDir := accountFixture(t, now)
+	runningProcess(t, configDir, "s1")
 	status := input.Status{SessionID: "s1"}
 	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000))
 	anchor.Apply(stateDir, startEvent("s2", "other@example.com", 1000))
@@ -140,6 +155,7 @@ func TestAccountSlotDoubtsAStoppedReceiver(t *testing.T) {
 func TestAccountSlotDoubtsAWindowThatChangedBeforeItEnded(t *testing.T) {
 	now := time.Now()
 	stateDir, configDir := accountFixture(t, now)
+	runningProcess(t, configDir, "s1")
 	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000))
 	week := func(reset int64) input.Status {
 		return input.Status{SessionID: "s1", SevenDay: input.Window{Present: true, HasReset: true, Pct: 10, ResetsAt: reset}}

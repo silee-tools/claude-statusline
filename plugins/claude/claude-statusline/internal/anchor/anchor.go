@@ -238,6 +238,16 @@ func WriteGeneration(stateDir string, at time.Time) error {
 	return statefile.Write(generationPath(stateDir), []byte(strconv.FormatInt(at.UnixMilli(), 10)+"\n"))
 }
 
+// RaiseGeneration is WriteGeneration for a loss learned of while the receiver runs: it
+// never moves the generation back. A recovery that settles on the time of an earlier
+// failure must not undo a later loss, such as an oversized request dropped meanwhile.
+func RaiseGeneration(stateDir string, at time.Time) error {
+	if cur, ok := readGeneration(stateDir); ok && cur >= at.UnixMilli() {
+		return nil
+	}
+	return WriteGeneration(stateDir, at)
+}
+
 // Writable reports whether an anchor could be stored now: it writes and removes a probe
 // file where the anchors live.
 func Writable(stateDir string) error {

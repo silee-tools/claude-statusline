@@ -296,8 +296,8 @@ Neither `.claude.json` nor `oauthAccount` is read.
 
 | Slot | Meaning |
 |---|---|
-| `a@example.com` | confirmed: a `/login` inside this session named the account |
-| `~a@example.com` | estimate: the account the settings file held when the session began; the file is shared by every session of the config directory and the session's credentials may belong to another account |
+| `a@example.com` | confirmed: a `/login` inside this session named the account, and the process that runs the session is known |
+| `~a@example.com` | estimate: the account the settings file held when the session began; the file is shared by every session of the config directory and the session's credentials may belong to another account. A `/login` anchor shows as an estimate too while the running process cannot be found, because the anchor may then belong to an earlier process of the same conversation |
 | `a@example.com?`, `~a@example.com?` | may have changed unseen: the receiver's heartbeat is older than 120 seconds, the anchor was stored before the receiver's current run (it may have missed a `/login` while it was down), or a rate-limit window of the session has differed from its baseline for over a minute before the baseline window ended |
 | `?` | the receiver runs but nothing says which account this session uses |
 | *(empty)* | the receiver never ran on this machine (`otel/sessions` does not exist) |
@@ -390,10 +390,13 @@ not loopback, the port cannot be bound, or the state directory cannot be prepare
 touches the heartbeat every 30 seconds, except while it cannot store an anchor: a
 failed write starts a new generation (`otel/generation`) and withholds the heartbeat
 until a probe write succeeds, and the generation it then settles on is the time of the
-last failure, so an anchor stored by the exporter's retry in between is not doubted. A
-request body over the size limit (413) is dropped whole, a `/login` with it, so it starts
-a generation too; a malformed body (400) does not, because any local process can send
-one. Every start writes a new generation too. At start and
+last loss, so an anchor stored by the exporter's retry in between is not doubted. A
+request refused as oversized (413) or unreadable (400) is a batch dropped whole, a `/login`
+with it, so each starts a generation too, whoever sent it: a process that can post to the
+receiver could also write the anchors, so a false alarm costs an extra `?`. A generation
+that cannot be written counts as a loss that is not recorded yet, so the heartbeat stays
+withheld until it is. A generation never moves back while the receiver runs. Every start
+writes a new generation too. At start and
 then hourly it removes what is past retention. Where stderr goes, and how long it is
 kept, is the supervisor's setting.
 

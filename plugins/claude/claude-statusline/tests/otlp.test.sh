@@ -10,7 +10,8 @@ completed=0
 RECV_PID=""
 # bash 3.2 는 EXIT 트랩 진입에서 $? 를 0 으로 만든다. completed 플래그가 없으면 set -eu 중단이
 # 종료코드 0 으로 보고된다. 정본은 AGENTS.md 의 Testing 절이다. 수신기는 이 스위트가 띄운 pid 로만 끈다.
-trap 'rc=$?; [ -z "$RECV_PID" ] || kill "$RECV_PID" 2>/dev/null || true; rm -rf "$TMPROOT"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
+LIVE_PIDS=""
+trap 'rc=$?; [ -z "$RECV_PID" ] || kill "$RECV_PID" 2>/dev/null || true; kill $LIVE_PIDS 2>/dev/null || true; rm -rf "$TMPROOT"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
 
 HOME="$TMPROOT/home"; CLAUDE_CONFIG_DIR="$TMPROOT/claude-config"
 XDG_DATA_HOME="$TMPROOT/data"; XDG_CACHE_HOME="$TMPROOT/cache"; XDG_CONFIG_HOME="$TMPROOT/config"
@@ -43,6 +44,14 @@ printf '%s\n' "$RENDER" > "$XDG_CACHE_HOME/claude-statusline/binary-path-${TMPRO
 
 ESC=$(printf '\033')
 STATE="$XDG_STATE_HOME/claude-statusline"
+
+# 로그인 앵커는 실행 중인 프로세스를 알 때만 확정으로 그려진다. 세션마다 살아 있는 sleep 을 그 프로세스로 둔다.
+mkdir -p "$CLAUDE_CONFIG_DIR/sessions"
+running_session() {
+  sleep 900 &
+  LIVE_PIDS="$LIVE_PIDS $!"
+  printf '{"pid":%s,"sessionId":"%s","startedAt":1}\n' "$!" "$1" > "$CLAUDE_CONFIG_DIR/sessions/$!.json"
+}
 
 # 한 줄짜리 계정 칸: 첫 줄에서 색 코드를 지운다.
 first_line() {
@@ -83,6 +92,9 @@ start_receiver() { # <binary> <stderr file>
 start_receiver "$RECV" "$TMPROOT/recv.err" || { echo "FATAL: 수신기가 뜨지 않았다" >&2; cat "$TMPROOT/recv.err" >&2; exit 1; }
 PORT=$(sed -n 's/.*listening on 127\.0\.0\.1:\([0-9]*\)$/\1/p' "$TMPROOT/recv.err" | head -1)
 assert_contains "수신기는 loopback 임시 포트에서 받는다" "127.0.0.1:" "$(cat "$TMPROOT/recv.err")"
+
+running_session s1
+running_session s2
 
 # --- 앵커가 없는 동안은 ? (수신기는 떠 있다) ---
 assert_contains "수신기가 뜬 기계에서 앵커 없는 세션은 ?" " ? ⧉ s1" "$(first_line s1)"

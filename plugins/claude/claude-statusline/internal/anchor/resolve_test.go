@@ -253,6 +253,7 @@ func TestAnAnchorStoredBeforeTheReceiversGenerationIsSuspectUntilAnEventReplaces
 	f := newFixture(t)
 	now := at(t0 + 60_000)
 	f.install(0, now)
+	f.proc(11, t0, "s1")
 	f.clockAt(t0 + 1000)
 	f.startAnchor("s1", "a@example.com", t0+900)
 	if got := f.resolve("s1", now); got.Suspect {
@@ -464,9 +465,30 @@ func TestSessionOfAnUnknownProcessFallsBackToItsOwnAnchor(t *testing.T) {
 	f.install(0, now)
 	f.proc(11, t0, "s1")
 	f.apply(login("s1", "a@example.com", t0+5000))
-	f.wantEmail("s1", now, "a@example.com")
+	if got := f.wantEmail("s1", now, "a@example.com"); got.Level != Confirmed {
+		t.Errorf("로그인한 프로세스를 아는 동안은 확정이다: %+v", got)
+	}
 	os.RemoveAll(filepath.Join(f.config, "sessions"))
-	f.wantEmail("s1", now, "a@example.com")
+	if got := f.wantEmail("s1", now, "a@example.com"); got.Level != Estimate {
+		t.Errorf("프로세스를 모르면 로그인 앵커도 추정(~)으로만 보인다: %+v", got)
+	}
+}
+
+func TestAResumedConversationWhoseProcessCannotBeFoundIsNeverShownAsConfirmed(t *testing.T) {
+	f := newFixture(t)
+	now := at(t0 + 10_000)
+	f.install(0, now)
+	f.crashedLife("real", t0-86_400_000, "a@example.com") // P1 logged in and was killed
+	os.RemoveAll(filepath.Join(f.config, "sessions"))     // the new process has no sessions/<pid>.json yet
+	os.MkdirAll(filepath.Join(f.config, "sessions"), 0o700)
+	got := f.resolveAs("real", 31, now)
+	if got.Email != "a@example.com" || got.Level != Estimate {
+		t.Errorf("재개한 프로세스를 모르는 동안 이전 프로세스의 로그인이 확정으로 보인다: %+v", got)
+	}
+	f.proc(31, t0, "real")
+	if got := f.resolveAs("real", 31, now); got.Email != "" {
+		t.Errorf("프로세스를 알게 되면 이전 프로세스의 앵커는 빌리지 않는다: %+v", got)
+	}
 }
 
 func TestUnknownProcessWithoutAnAnchorIsUnknown(t *testing.T) {
@@ -828,5 +850,35 @@ func TestTheLivenessCheckSeesThisProcessAndAnEndedOne(t *testing.T) {
 	}
 	if processAlive(0) || processAlive(-1) {
 		t.Error("pid 0 과 음수는 프로세스가 아니다")
+	}
+}
+
+func TestRaiseGenerationNeverMovesTheGenerationBack(t *testing.T) {
+	state := t.TempDir()
+	os.MkdirAll(filepath.Join(state, "otel"), 0o700)
+	if err := RaiseGeneration(state, at(t0+5_000)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := readGeneration(state); got != t0+5_000 {
+		t.Fatalf("파일이 없으면 기록한다: %d", got)
+	}
+	if err := RaiseGeneration(state, at(t0+1_000)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := readGeneration(state); got != t0+5_000 {
+		t.Errorf("이른 시각이 세대를 되돌렸다: %d", got)
+	}
+	if err := RaiseGeneration(state, at(t0+9_000)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := readGeneration(state); got != t0+9_000 {
+		t.Errorf("늦은 시각은 세대를 올린다: %d", got)
+	}
+	// 시작은 WriteGeneration 으로 이전 실행의 값을 그대로 덮는다.
+	if err := WriteGeneration(state, at(t0)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := readGeneration(state); got != t0 {
+		t.Errorf("WriteGeneration 은 덮어쓴다: %d", got)
 	}
 }
