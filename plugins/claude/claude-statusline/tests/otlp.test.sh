@@ -151,23 +151,28 @@ set -e
 assert_equals   "loopback 이 아닌 주소면 종료코드 1" "1" "$RC"
 assert_contains "loopback 검사로 거부했다고 stderr 에 남김" "loopback" "$(cat "$TMPROOT/nonloopback.err")"
 
-# --- 하트비트: 수신기가 죽은 뒤 120초가 지나면 이메일 뒤에 ? ---
+# --- 하트비트: 도는 수신기의 하트비트가 정체되면(걸린 수신기) 120초가 지난 뒤 이메일 뒤에 ? ---
 HEARTBEAT="$STATE/otel/heartbeat"
 assert_equals "수신기가 도는 동안 하트비트가 있다" "yes" "$([ -f "$HEARTBEAT" ] && echo yes || echo no)"
+touch -t 200001010000 "$HEARTBEAT"
+assert_contains "수신기가 돌아도 하트비트가 정체되면 이메일 뒤에 ?" " ~b@example.com? ⧉ s2" "$(first_line s2)"
+touch "$HEARTBEAT"
+assert_contains "하트비트가 신선하면 ? 가 없다" " ~b@example.com ⧉ s2" "$(first_line s2)"
+
+# --- 수신기가 끝나면 잠금이 풀려, 하트비트가 신선해도 곧바로 이메일 뒤에 ? ---
 kill "$RECV_PID"
 set +e; wait "$RECV_PID"; RC=$?; set -e
 RECV_PID=""
 assert_equals "SIGTERM 으로 끝나면 종료코드 0" "0" "$RC"
-assert_contains "멈춘 직후엔 아직 신선한 하트비트라 ? 가 없다" " ~b@example.com ⧉ s2" "$(first_line s2)"
-touch -t 200001010000 "$HEARTBEAT"
-assert_contains "하트비트가 정체되면 이메일 뒤에 ?" " ~b@example.com? ⧉ s2" "$(first_line s2)"
+assert_equals "끝난 뒤에도 신선한 하트비트가 남아 있다(잠금이 신호임을 확인)" "yes" "$([ -f "$HEARTBEAT" ] && echo yes || echo no)"
+assert_contains "멈춘 직후 하트비트가 신선해도 이메일 뒤에 ?" " ~b@example.com? ⧉ s2" "$(first_line s2)"
 
 # --- 실행 파일이 교체되면 종료코드 75 로 스스로 끝난다 ---
 cp "$RECV" "$TMPROOT/bin/receiver-live"
 start_receiver "$TMPROOT/bin/receiver-live" "$TMPROOT/recv2.err" || { echo "FATAL: 두 번째 수신기가 뜨지 않았다" >&2; exit 1; }
 
 # --- 재시작: 멈춰 있던 동안의 /login 이 유실됐을 수 있어, 이전 세대의 앵커는 하트비트가 신선해도 ? 가 붙는다 ---
-assert_contains "재시작한 수신기의 하트비트는 신선해도 이전 세대 앵커는 의심" " ~b@example.com? ⧉ s2" "$(first_line s2)"
+assert_contains "재시작한 수신기가 돌아도 이전 세대 앵커는 의심" " ~b@example.com? ⧉ s2" "$(first_line s2)"
 PORT=$(sed -n 's/.*listening on 127\.0\.0\.1:\([0-9]*\)$/\1/p' "$TMPROOT/recv2.err" | head -1)
 post "$(record auth s2 e@example.com "$(auth_extra login true)")" >/dev/null
 assert_contains "새 세대가 받은 /login 은 다시 신뢰한다" " e@example.com ⧉ s2" "$(first_line s2)"
@@ -180,9 +185,9 @@ RECV_PID=""
 assert_equals "실행 파일이 교체되면 종료코드 75" "75" "$RC"
 assert_contains "교체 종료 이유가 stderr 에 남음" "executable replaced" "$(cat "$TMPROOT/recv2.err")"
 
-# --- 저장된 앵커를 읽을 수 없어 세대를 정하지 못하는 시작은 포기하고, 세대와 하트비트를 거두어 모든 칸이 ? 가 된다 ---
+# --- 저장된 앵커를 읽을 수 없어 세대를 정하지 못하는 시작은 포기한다. 잠금을 쥔 뒤 세대와 하트비트를 거두므로 파일도 사라진다 ---
 if [ "$(id -u)" -ne 0 ]; then
-  assert_contains "포기하기 전에는 /login 으로 확인한 계정이 의심 없이 보인다" " e@example.com ⧉ s2" "$(first_line s2)"
+  assert_equals "포기하기 전에는 이전 수신기의 하트비트가 남아 있다" "yes" "$([ -f "$HEARTBEAT" ] && echo yes || echo no)"
   chmod 300 "$STATE/otel/sessions"
   "$RECV" -addr 127.0.0.1:0 >/dev/null 2>"$TMPROOT/giveup.err" &
   _gp=$!
@@ -194,6 +199,22 @@ if [ "$(id -u)" -ne 0 ]; then
   assert_contains "포기한 이유가 stderr 에 종류만 남음" "generation unavailable" "$(cat "$TMPROOT/giveup.err")"
   assert_equals "포기하면서 이전 하트비트를 거둔다" "no" "$([ -f "$HEARTBEAT" ] && echo yes || echo no)"
   assert_contains "포기한 뒤에는 하트비트가 신선했던 계정도 ? 가 붙는다" " e@example.com? ⧉ s2" "$(first_line s2)"
+
+  # --- 쓰지 못하는 상태 디렉터리: 지울 수 없어 이전 하트비트·세대가 남아도 잠금이 풀려 있어 ? ---
+  printf '1\n' > "$STATE/otel/generation"
+  touch "$HEARTBEAT"
+  assert_contains "이전 수신기의 파일만 남은 상태는 잠금이 없어 이메일 뒤 ?" " e@example.com? ⧉ s2" "$(first_line s2)"
+  chmod 500 "$STATE/otel"
+  "$RECV" -addr 127.0.0.1:0 >/dev/null 2>"$TMPROOT/readonly.err" &
+  _gp=$!
+  _n=0
+  while kill -0 "$_gp" 2>/dev/null && [ "$_n" -lt 50 ]; do _n=$((_n + 1)); sleep 0.1; done
+  if kill -0 "$_gp" 2>/dev/null; then kill "$_gp" 2>/dev/null || true; RC=alive; set +e; wait "$_gp"; set -e; else set +e; wait "$_gp"; RC=$?; set -e; fi
+  chmod 700 "$STATE/otel"
+  assert_equals "쓸 수 없는 상태 디렉터리에서는 시작을 포기하고 종료코드 1" "1" "$RC"
+  assert_equals "지우지 못한 이전 하트비트가 남아 있다" "yes" "$([ -f "$HEARTBEAT" ] && echo yes || echo no)"
+  assert_equals "지우지 못한 이전 세대 파일이 남아 있다" "yes" "$([ -f "$STATE/otel/generation" ] && echo yes || echo no)"
+  assert_contains "그래도 상태줄은 이메일 뒤에 ?" " e@example.com? ⧉ s2" "$(first_line s2)"
 fi
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"

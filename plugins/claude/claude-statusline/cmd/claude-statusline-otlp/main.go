@@ -14,12 +14,14 @@
 // Exit codes: 0 after SIGINT or SIGTERM; 75 when the executable at its own path was
 // replaced, so a supervisor that restarts on failure brings up the new build; 1 when the
 // address is not a loopback address, the port cannot be bound, or the state directory
-// cannot be prepared or read. A start that fails after binding withdraws the generation and
-// the heartbeat first, so the statusline doubts every anchor at once.
+// cannot be prepared or read, or another receiver holds the lock. The lock the receiver holds
+// while it runs is what tells the statusline a receiver is there, so a start that gives up
+// leaves none to trust.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -84,30 +86,46 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 		return exitFailed
 	}
 	defer ln.Close()
-	// Past the bind this process owns the state. A start that cannot settle it gives up
-	// with the previous run's generation and heartbeat withdrawn, so a reader doubts every
-	// anchor now instead of trusting a receiver that is not there until the heartbeat goes
-	// stale, and exits 1 so that the supervisor tries again.
-	giveUp := func(msg string) int {
-		anchor.Withdraw(cfg.StateDir)
-		say(msg)
+	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "otel", "sessions"), 0o700); err != nil {
+		say("state directory unavailable")
 		return exitFailed
 	}
-	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "otel", "sessions"), 0o700); err != nil {
-		return giveUp("state directory unavailable")
+	// The lock tells the statusline a receiver runs, for as long as this process lives, and
+	// goes with it however it ends. A start that fails below, even one that cannot write
+	// anything, therefore leaves no receiver for a reader to trust. Another receiver holding
+	// it (on another port) keeps its state: nothing is touched.
+	lock, err := anchor.LockReceiver(cfg.StateDir)
+	if err != nil {
+		if errors.Is(err, anchor.ErrReceiverRunning) {
+			say("another receiver is running")
+		} else {
+			say("lock unavailable")
+		}
+		return exitFailed
+	}
+	defer lock.Close()
+	// From here the previous run's generation and heartbeat would only mislead: a reader that
+	// finds none doubts every anchor until this run has written its own.
+	if err := anchor.Withdraw(cfg.StateDir); err != nil {
+		say("state unavailable")
+		return exitFailed
 	}
 	// Events sent while no receiver ran are gone, so every anchor stored before this
 	// start is doubted until a later event replaces it: this run's generation is past every
 	// number the state holds, which no setting of the clock changes.
 	gen, err := anchor.NextGeneration(cfg.StateDir) // guarded by mu once the server runs
 	if err != nil {
-		return giveUp("generation unavailable")
+		say("generation unavailable")
+		return exitFailed
 	}
 	if err := anchor.WriteGeneration(cfg.StateDir, gen); err != nil {
-		return giveUp("generation unavailable")
+		say("generation unavailable")
+		return exitFailed
 	}
+	// The heartbeat comes last: it says this run is ready.
 	if err := anchor.TouchHeartbeat(cfg.StateDir, time.Now()); err != nil {
-		return giveUp("heartbeat unavailable")
+		say("heartbeat unavailable")
+		return exitFailed
 	}
 	anchor.Sweep(cfg.StateDir, time.Now())
 
@@ -119,7 +137,12 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 	// degraded and withholds its heartbeat until recovered writes it. The count in memory
 	// still moves, so an anchor stored from now on is of the later generation.
 	loss := func() {
-		gen++
+		next, ok := anchor.NextLoss(gen)
+		if !ok { // no number is left to count with: stay degraded rather than stamp one the reader refuses
+			degraded.Store(true)
+			return
+		}
+		gen = next
 		if anchor.WriteGeneration(cfg.StateDir, gen) != nil {
 			degraded.Store(true)
 		}

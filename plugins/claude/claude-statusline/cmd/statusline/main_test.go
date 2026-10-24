@@ -61,8 +61,8 @@ func TestCompactStatusKeepsGHAlwaysAndAWSOnlyWhenNotHealthy(t *testing.T) {
 // testGen is the receiver generation the fixtures store their anchors under.
 const testGen = int64(1)
 
-// accountFixture is a state directory with the receiver "installed": its sessions
-// directory exists and its heartbeat is fresh.
+// accountFixture is a state directory with the receiver "installed" and running: its sessions
+// directory exists, its heartbeat is fresh and its lock is held.
 func accountFixture(t *testing.T, now time.Time) (stateDir, configDir string) {
 	t.Helper()
 	stateDir, configDir = t.TempDir(), t.TempDir()
@@ -75,6 +75,11 @@ func accountFixture(t *testing.T, now time.Time) (stateDir, configDir string) {
 	if err := anchor.WriteGeneration(stateDir, testGen); err != nil {
 		t.Fatal(err)
 	}
+	lock, err := anchor.LockReceiver(stateDir) // a running receiver holds the lock
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { lock.Close() })
 	return stateDir, configDir
 }
 
