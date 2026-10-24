@@ -1,17 +1,14 @@
 package main
 
 import (
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestClaudePathsMatchShellFixtures(t *testing.T) {
+func TestClaudeConfigDirMatchesShellFixtures(t *testing.T) {
 	data, err := os.ReadFile("../../tests/config-paths.json")
 	if err != nil {
 		t.Fatal(err)
@@ -31,16 +28,8 @@ func TestClaudePathsMatchShellFixtures(t *testing.T) {
 			config, want := expand.Replace(tc.Config), expand.Replace(tc.Want)
 			t.Setenv("HOME", home)
 			t.Setenv("CLAUDE_CONFIG_DIR", config)
-			cache := filepath.Join(home, "cache", "claude-statusline")
-			account, oauth := cache, want
-			if tc.Default {
-				oauth = home
-			} else {
-				account = filepath.Join(cache, "accounts", fmt.Sprintf("%x", sha256.Sum256([]byte(want))))
-			}
-			got := resolveClaudePaths(home, cache)
-			if got.AccountCache != account || got.OAuthDir != oauth {
-				t.Fatalf("paths=%+v want %s %s", got, account, oauth)
+			if got := resolveConfigDir(home); got != want {
+				t.Fatalf("config dir=%q want %q", got, want)
 			}
 			cmd := exec.Command("sh", "-c", `. ../../scripts/config-paths.sh; printf '%s\n' "$CLAUDE_SETTINGS_DIR"`)
 			out, err := cmd.CombinedOutput()
