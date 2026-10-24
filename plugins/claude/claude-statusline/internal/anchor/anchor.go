@@ -39,7 +39,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -207,7 +206,7 @@ func Read(stateDir, id string) (Anchor, bool) {
 	if !validID(id) {
 		return Anchor{}, false
 	}
-	b, err := os.ReadFile(filepath.Join(sessionsDir(stateDir), id+".env"))
+	b, err := readRegular(filepath.Join(sessionsDir(stateDir), id+".env"))
 	if err != nil {
 		return Anchor{}, false
 	}
@@ -321,10 +320,11 @@ func NextGeneration(stateDir string) (int64, error) {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ".env") {
 				continue
 			}
-			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			b, err := readRegular(filepath.Join(dir, e.Name()))
 			if err != nil {
-				// A link to a directory is no anchor: the reader cannot read it either.
-				if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.EISDIR) {
+				// Something that is not a regular file (a link to a directory, a FIFO) is no
+				// anchor: the reader cannot read it either.
+				if errors.Is(err, fs.ErrNotExist) || errors.Is(err, errNotRegular) {
 					continue
 				}
 				return 0, err
@@ -340,11 +340,11 @@ func NextGeneration(stateDir string) (int64, error) {
 	return top + 1, nil
 }
 
-// Withdraw removes the generation and the heartbeat, so that a reader has no generation to
-// trust from a new run's first moment until the run has written its own. It reports a file it
-// could not remove. It is not what keeps a reader from trusting a stopped receiver: removing
-// needs a writable directory, which a failing start may not have, and the receiver's lock
-// does that.
+// Withdraw removes the previous run's generation and heartbeat: a damaged or unreadable
+// generation file must not be counted from, and a heartbeat must not outlive the run it
+// belonged to. It reports a file it could not remove. It is not what keeps a reader from
+// trusting a receiver that has stopped or is still starting: removing needs a writable
+// directory, which a failing start may not have, and the live lock does that.
 func Withdraw(stateDir string) error {
 	var first error
 	for _, path := range []string{generationPath(stateDir), filepath.Join(stateDir, "otel", "heartbeat")} {
@@ -369,10 +369,13 @@ func Writable(stateDir string) error {
 // when it cannot be read or holds something that is not a generation (a number from 1 up to
 // MaxGeneration).
 func loadGeneration(stateDir string) (int64, error) {
-	b, err := os.ReadFile(generationPath(stateDir))
+	b, err := readRegular(generationPath(stateDir))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return 0, nil
+		}
+		if errors.Is(err, errNotRegular) {
+			return 0, errDamagedGeneration
 		}
 		return 0, err
 	}

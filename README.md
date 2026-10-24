@@ -298,7 +298,7 @@ Neither `.claude.json` nor `oauthAccount` is read.
 |---|---|
 | `a@example.com` | confirmed: a `/login` inside this session named the account, and the process that runs the session is known |
 | `~a@example.com` | estimate: the account the settings file held when the session began; the file is shared by every session of the config directory and the session's credentials may belong to another account. A `/login` anchor shows as an estimate too while the running process cannot be found, because the anchor may then belong to an earlier process of the same conversation |
-| `a@example.com?`, `~a@example.com?` | may have changed unseen: no receiver holds its lock (it stopped, or the lock cannot be told), the receiver's heartbeat is older than 120 seconds (it hangs), the anchor was stored before the receiver's current run (it may have missed a `/login` while it was down), or a rate-limit window of the session has differed from its baseline for over a minute before the baseline window ended |
+| `a@example.com?`, `~a@example.com?` | may have changed unseen: no ready receiver holds the live lock (it stopped, is still starting, or the lock cannot be told), the receiver's heartbeat is older than 120 seconds (it hangs), the anchor was stored before the receiver's current run (it may have missed a `/login` while it was down), or a rate-limit window of the session has differed from its baseline for over a minute before the baseline window ended |
 | `?` | the receiver runs but nothing says which account this session uses |
 | *(empty)* | the receiver never ran on this machine (`otel/sessions` does not exist) |
 
@@ -388,17 +388,28 @@ record; stderr says what happened (start, stop, failure kinds), never a value. E
 codes: 0 after SIGINT or SIGTERM; 75 when the file at its own path was replaced (it
 checks every 30 seconds), so the supervisor starts the new build; 1 when the address is
 not loopback, the port cannot be bound, the state directory cannot be prepared or read, or
-another receiver holds the lock (see below). While it runs it holds a lock
-(`otel/receiver.lock`, a `flock`), and the statusline trusts an anchor only while it finds
-that lock held. The kernel drops the lock when the process ends however it ends (exit 0, 75,
-a crash, SIGKILL), so a stopped receiver is noticed at once and needs no write to the state
-directory to say so, which a failing start may not be able to make. A missing lock file, a lock nobody holds
-and a lock that cannot be probed all count as no receiver, so the statusline puts `?` behind
-the account. The state directory has to be on a filesystem that supports `flock` (a local
-one); where the lock cannot be taken the receiver does not start. It also touches the
-heartbeat every 30 seconds, except while it cannot store an anchor, which is what shows a
-receiver that hangs (it still holds the lock): the heartbeat older than 120 seconds puts `?`
-too. A failed write moves the receiver to the next generation (`otel/generation`, a counter) and
+another receiver holds the lock (see below). While it runs it holds two `flock`s. The
+start lock (`otel/receiver.lock`) keeps a second receiver out and is taken before the receiver
+touches any state; the live lock (`otel/receiver.live`) is taken last, once the generation and
+the heartbeat are written, and the statusline trusts an anchor only while it finds the live lock
+held. Until then, whatever the previous run left behind is not trusted, so there is no moment of
+a start in which an earlier run's anchor passes as current. The kernel drops the locks when the
+process ends however it ends (exit 0, 75, a crash, SIGKILL), so a stopped receiver is noticed at
+once and needs no write to the state directory to say so, which a failing start may not be able
+to make. A missing lock file, a lock nobody holds, a lock file that is not a regular file (a FIFO
+or a link left in its place: the statusline opens it without blocking and without following a
+link) and a lock that cannot be probed all count as no receiver, so the statusline puts `?`
+behind the account. The state directory has to be on a filesystem that supports `flock` (a
+local one); where the lock cannot be taken the receiver does not start. Before it stores an
+anchor or writes the generation or the heartbeat, and on every heartbeat tick, the receiver
+checks that its locks are still on the files at their paths; if a lock file was removed or
+replaced (which would let a second receiver lock a new file and write the same state) it
+writes nothing more and exits 1, and the supervisor's restart creates a fresh one. The check
+and the write are not one step, so a write that is already under way when the file is replaced
+can still land. A start also replaces a lock file that is a FIFO, a link or a directory. The
+receiver touches the heartbeat every 30 seconds, except while it cannot store an anchor, which
+is what shows a receiver that hangs (it still holds the locks): the heartbeat older than 120
+seconds puts `?` too. A failed write moves the receiver to the next generation (`otel/generation`, a counter) and
 withholds the heartbeat until a probe write succeeds. Every anchor carries the generation
 it was stored under (`gen=`), and the statusline puts `?` behind an anchor of an earlier
 generation than the file names. The generation the recovery writes is the one of the last
@@ -410,11 +421,11 @@ false alarm costs an extra `?`. A request of another media type (415, for exampl
 protobuf) is not counted: Claude Code is set to JSON, so it is another exporter's, and one
 that kept sending would hold every account in doubt. A generation that cannot be written
 counts as a loss that is not recorded yet, so the heartbeat stays withheld until it is.
-A start takes the lock after it binds the port and before it touches any state: a receiver
-that finds the lock held (one on another port) exits 1 and leaves the running one's files
-alone. It then removes the generation file and the heartbeat, so from its first moment until
-it has written its own generation the statusline finds none and doubts every anchor, and
-writes the heartbeat last. Every start moves to the next generation, past the highest number
+A start takes the start lock after it binds the port and before it touches any state: a
+receiver that finds either lock held (one on another port, or one whose start lock file was
+removed) exits 1 and leaves the running one's files alone. It then removes the generation file
+(a damaged or unreadable one must not be counted from) and the heartbeat, writes its own, and
+takes the live lock last. Every start moves to the next generation, past the highest number
 in the stored anchors, so what an earlier run stored is doubted whatever the clock reads and
 whether or not a generation file survived (a damaged one is replaced the same way). A start
 answers only when it has seen all of that state: a directory or file that is missing counts as
@@ -436,7 +447,7 @@ kept, is the supervisor's setting.
 | Path | Written by | Holds | Kept |
 |---|---|---|---|
 | `${XDG_STATE_HOME:-$HOME/.local/state}/claude-statusline/otel/sessions/<session.id>.env` | receiver | email, kind, event time, time the receiver stored it, generation it was stored under (0600) | 30 days, 2,000 files |
-| `.../otel/receiver.lock` | receiver | nothing: a `flock` it holds while it runs | one file |
+| `.../otel/receiver.lock`, `.../otel/receiver.live` | receiver | nothing: the start lock and the live lock, `flock`s it holds while it runs | two files |
 | `.../otel/heartbeat` | receiver | its mtime | one file |
 | `.../otel/generation` | receiver | its current generation number: one more than before at each start and each loss | one file |
 | `.../pids/<pid>-<startedAt>.env`, `.../pids/session-<id>.ref` | statusline | the anchor a process carries, which pid file a session uses | 30 days, 2,000 files |

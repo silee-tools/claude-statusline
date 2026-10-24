@@ -928,3 +928,152 @@ func TestAStartWithoutRoomBelowTheBoundGivesUp(t *testing.T) {
 		t.Fatalf("종료코드 %d, want %d", code, exitFailed)
 	}
 }
+
+func lockPaths(cfg config) (start, live string) {
+	otel := filepath.Join(cfg.StateDir, "otel")
+	return filepath.Join(otel, "receiver.lock"), filepath.Join(otel, "receiver.live")
+}
+
+func removeLocks(t *testing.T, cfg config) {
+	t.Helper()
+	start, live := lockPaths(cfg)
+	for _, p := range []string{start, live} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+}
+
+func readState(t *testing.T, cfg config, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(cfg.StateDir, "otel", name))
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	return string(b)
+}
+
+// A lock file that is deleted or replaced leaves a receiver whose lock no one can see, and the
+// next receiver on another port locks the new file. The first must not write a thing after
+// that: the next write it tries ends it with the supervisor's code.
+func TestAReceiverWhoseLockFilesWereReplacedWritesNothingAndStops(t *testing.T) {
+	cfg := baseConfig(t)
+	cfg.BeatEvery = time.Hour // only a write can find out; the heartbeat tick must not
+	addr1, exit1, _, cancel1 := start(t, cfg)
+	defer cancel1()
+	removeLocks(t, cfg)
+	cfg2 := baseConfig(t)
+	cfg2.StateDir = cfg.StateDir
+	addr2, exit2, _, cancel2 := start(t, cfg2)
+	defer func() { cancel2(); waitExit(t, exit2, 3*time.Second) }()
+	gen := readState(t, cfg, "generation")
+	if code := postLogin(t, addr2, "s2", "b@example.com", 1_700_000_000_000); code != 200 {
+		t.Fatalf("둘째 수신기 상태 %d", code)
+	}
+	if code := postLogin(t, addr1, "s1", "a@example.com", 1_700_000_000_000); code != http.StatusServiceUnavailable {
+		t.Errorf("잠금 파일이 바뀐 첫 수신기가 저장했다: 상태 %d, want 503", code)
+	}
+	if c := waitExit(t, exit1, 3*time.Second); c != exitFailed {
+		t.Errorf("첫 수신기 종료코드 %d, want %d", c, exitFailed)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, "otel", "sessions", "s1.env")); !os.IsNotExist(err) {
+		t.Errorf("첫 수신기의 앵커가 둘째의 상태에 남았다: %v", err)
+	}
+	if got := readState(t, cfg, "generation"); got != gen {
+		t.Errorf("첫 수신기가 세대를 건드렸다: %q → %q", gen, got)
+	}
+	if res, doubt := suspect(t, cfg, "s2"); res.Email != "b@example.com" || doubt {
+		t.Errorf("둘째 수신기가 저장한 앵커가 신뢰되지 않는다: %+v 의심=%v", res, doubt)
+	}
+}
+
+// A batch the receiver refuses counts as a loss and moves the generation. A receiver whose lock
+// files were replaced must not move the generation of the receiver that replaced it.
+func TestAReceiverWhoseLockFilesWereReplacedRecordsNoLoss(t *testing.T) {
+	cfg := baseConfig(t)
+	cfg.BeatEvery = time.Hour
+	addr1, exit1, _, cancel1 := start(t, cfg)
+	defer cancel1()
+	removeLocks(t, cfg)
+	cfg2 := baseConfig(t)
+	cfg2.StateDir = cfg.StateDir
+	_, exit2, _, cancel2 := start(t, cfg2)
+	defer func() { cancel2(); waitExit(t, exit2, 3*time.Second) }()
+	gen := readState(t, cfg, "generation")
+	if code := postRaw(t, addr1, "{"); code != http.StatusBadRequest {
+		t.Fatalf("읽을 수 없는 요청 상태 %d, want 400", code)
+	}
+	if c := waitExit(t, exit1, 3*time.Second); c != exitFailed {
+		t.Errorf("첫 수신기 종료코드 %d, want %d", c, exitFailed)
+	}
+	if got := readState(t, cfg, "generation"); got != gen {
+		t.Errorf("잠금 파일이 바뀐 첫 수신기가 유실을 계상해 세대를 옮겼다: %q → %q", gen, got)
+	}
+}
+
+// The same replaced lock also stops a receiver that is asked to write nothing: the heartbeat
+// tick looks, so a deleted lock does not leave every account "?" until someone restarts it.
+func TestAReceiverWhoseLockFileIsGoneStopsOnItsOwn(t *testing.T) {
+	for _, name := range []string{"receiver.lock", "receiver.live"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := baseConfig(t)
+			_, exit, _, cancel := start(t, cfg)
+			defer cancel()
+			if err := os.Remove(filepath.Join(cfg.StateDir, "otel", name)); err != nil {
+				t.Fatal(err)
+			}
+			if c := waitExit(t, exit, 3*time.Second); c != exitFailed {
+				t.Errorf("종료코드 %d, want %d", c, exitFailed)
+			}
+		})
+	}
+}
+
+// With only the start lock's file gone, a second receiver locks a new file, but a ready
+// receiver still holds the live lock: the second gives up before it writes anything.
+func TestASecondReceiverFindsTheLiveLockAndTouchesNothing(t *testing.T) {
+	cfg := baseConfig(t)
+	addr, exit, _, cancel := start(t, cfg)
+	defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+	if code := postLogin(t, addr, "s1", "a@example.com", 1_700_000_000_000); code != 200 {
+		t.Fatalf("정상 상태 %d", code)
+	}
+	startLock, _ := lockPaths(cfg)
+	if err := os.Remove(startLock); err != nil {
+		t.Fatal(err)
+	}
+	genBefore, hbBefore := readState(t, cfg, "generation"), func() time.Time {
+		fi, err := os.Stat(filepath.Join(cfg.StateDir, "otel", "heartbeat"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi.ModTime()
+	}()
+	if code := failedStart(t, cfg); code != exitFailed {
+		t.Fatalf("둘째 수신기 종료코드 %d, want %d", code, exitFailed)
+	}
+	if got := readState(t, cfg, "generation"); got != genBefore {
+		t.Errorf("둘째 수신기가 떠 있는 수신기의 세대를 덮어썼다: %q → %q", genBefore, got)
+	}
+	if fi, err := os.Stat(filepath.Join(cfg.StateDir, "otel", "heartbeat")); err != nil || fi.ModTime().Before(hbBefore) {
+		t.Errorf("둘째 수신기가 떠 있는 수신기의 하트비트를 지웠다: %v", err)
+	}
+}
+
+// Until a start has written its generation and its heartbeat it is not a receiver the statusline
+// can go by: with the previous run's files still in place and the start lock held, a reader
+// finds no live receiver.
+func TestAReaderFindsNoReceiverWhileAStartStillHoldsOnlyTheStartLock(t *testing.T) {
+	cfg := afterARun(t)
+	var res anchor.Result
+	var doubt, called bool
+	cfg.OnLocked = func() { called = true; res, doubt = suspect(t, cfg, "s1") }
+	_, exit, _, cancel := start(t, cfg)
+	defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+	if !called {
+		t.Fatal("시작 잠금 뒤 콜백이 불리지 않았다")
+	}
+	if res.Email != "a@example.com" || !doubt {
+		t.Errorf("시작 중에 이전 실행의 앵커가 의심 없이 보인다: %+v 의심=%v", res, doubt)
+	}
+}

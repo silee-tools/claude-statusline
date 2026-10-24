@@ -154,10 +154,13 @@ assert_contains "loopback 검사로 거부했다고 stderr 에 남김" "loopback
 # --- 하트비트: 도는 수신기의 하트비트가 정체되면(걸린 수신기) 120초가 지난 뒤 이메일 뒤에 ? ---
 HEARTBEAT="$STATE/otel/heartbeat"
 assert_equals "수신기가 도는 동안 하트비트가 있다" "yes" "$([ -f "$HEARTBEAT" ] && echo yes || echo no)"
+# 걸린 수신기: 잠금은 쥔 채 하트비트를 더 갱신하지 않는다. 멈추지 않으면 200ms 박동이 touch 와 렌더 사이에 끼어든다.
+kill -STOP "$RECV_PID"
 touch -t 200001010000 "$HEARTBEAT"
 assert_contains "수신기가 돌아도 하트비트가 정체되면 이메일 뒤에 ?" " ~b@example.com? ⧉ s2" "$(first_line s2)"
 touch "$HEARTBEAT"
 assert_contains "하트비트가 신선하면 ? 가 없다" " ~b@example.com ⧉ s2" "$(first_line s2)"
+kill -CONT "$RECV_PID"
 
 # --- 수신기가 끝나면 잠금이 풀려, 하트비트가 신선해도 곧바로 이메일 뒤에 ? ---
 kill "$RECV_PID"
