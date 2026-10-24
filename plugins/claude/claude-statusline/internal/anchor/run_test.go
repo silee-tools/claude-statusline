@@ -113,6 +113,60 @@ func TestARunTheLiveLockDoesNotNameIsNotTrustedEvenWhenTheFilesAgree(t *testing.
 	}
 }
 
+// A receiver of an earlier development build takes the locks and names neither its run nor its
+// address. What also names nothing, the files it left and an address setting that cannot be read,
+// then compares equal as empty text, so a lock that names too little must be told from a receiver
+// before anything is compared with it. The last case is the control: with everything named and
+// agreeing, the same setup is trusted, so the others are doubted for what they lack.
+func TestAReceiverThatNamesNoRunOrNoAddressIsNotTrusted(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string // what the receiver wrote into the live lock
+		run     string // the run the generation file and the anchor name; empty when they name none
+		addr    string // the reader's address setting
+		trusted bool
+	}{
+		{"nothing is named", "", "", "", false},
+		{"nothing is named and the address setting cannot be read", "", "", "garbage", false},
+		{"a run without an address", "run=" + testRun + "\n", testRun, "garbage", false},
+		{"an address without a run", "addr=" + DefaultAddr + "\n", "", "", false},
+		{"a run and an address that agree", "run=" + testRun + "\naddr=" + DefaultAddr + "\n", testRun, "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			now := at(t0 + 60_000)
+			if err := os.MkdirAll(sessionsDir(f.state), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := TouchHeartbeat(f.state, now); err != nil {
+				t.Fatal(err)
+			}
+			generation, anchorRun := "1\n", ""
+			if c.run != "" {
+				generation, anchorRun = "1\nrun="+c.run+"\n", "run="+c.run+"\n"
+			}
+			writeFile(t, generationPath(f.state), generation)
+			for _, path := range []string{startLockPath(f.state), liveLockPath(f.state)} {
+				l, err := lockFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { l.f.Close() })
+			}
+			writeFile(t, liveLockPath(f.state), c.content)
+			ts := strconv.FormatInt(t0+900, 10)
+			writeFile(t, filepath.Join(sessionsDir(f.state), "s1.env"),
+				"email=a@example.com\nkind=login\nts="+ts+"\nseen="+ts+"\ngen=1\n"+anchorRun)
+			f.proc(11, t0, "s1")
+			got := Resolve(Input{StateDir: f.state, ConfigDir: f.config, SessionID: "s1", Now: now, Addr: c.addr})
+			if got.Email != "a@example.com" || got.Suspect == c.trusted {
+				t.Errorf("Resolve = %+v, want the account %s", got, map[bool]string{true: "trusted", false: "doubted"}[c.trusted])
+			}
+		})
+	}
+}
+
 // A receiver listening where the sessions do not send their events is not the one the
 // statusline can go by.
 func TestAReceiverListeningElsewhereThanExpectedIsNotTrusted(t *testing.T) {

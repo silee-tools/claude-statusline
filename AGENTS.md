@@ -132,7 +132,10 @@ temp root. A Claude Code session exports `CLAUDE_CONFIG_DIR` and it wins over `H
 so a `SessionStart` run that isolates only `HOME` rewrites the real `settings.json`;
 a shell setup can export `XDG_DATA_HOME` and `XDG_STATE_HOME`, so isolating only
 `HOME` would let a build publish over the live receiver and a render write the real
-anchors. A call that forgets an override still lands in the temp root.
+anchors. A call that forgets an override still lands in the temp root. The suites that render
+also unset `CLAUDE_STATUSLINE_OTLP_ADDR`: a shell that exports it for a receiver on another port
+would otherwise make the statusline distrust the receiver stand-in, which listens at the default
+address.
 
 `statusline.test.sh` builds the binary, points the shim at it, and asserts both
 layouts, gauges, colors, and indicators against fixture JSON. It fails outright

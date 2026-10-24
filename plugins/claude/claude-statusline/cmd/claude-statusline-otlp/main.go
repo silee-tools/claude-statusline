@@ -145,7 +145,7 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 		return exitFailed
 	}
 	if err := lock.Ready(anchor.Receiver{Run: run, Addr: ln.Addr().String()}); err != nil {
-		say("lock unavailable")
+		say(readyFailure(err))
 		return exitFailed
 	}
 	if lock.Held() != nil {
@@ -297,6 +297,21 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 	defer cancel()
 	srv.Shutdown(shutdown)
 	return code
+}
+
+// readyFailure names why a start could not become ready, for whoever runs the receiver by hand
+// to see what stopped it: a supervised run writes its standard error to /dev/null.
+func readyFailure(err error) string {
+	switch {
+	case errors.Is(err, anchor.ErrReceiverRunning):
+		return "live lock is held" // by another receiver, or by a process that probes it without letting go
+	case errors.Is(err, anchor.ErrLockLost):
+		return "lock file removed or replaced"
+	case errors.Is(err, anchor.ErrNotReady):
+		return "state to publish is not this run's"
+	default:
+		return "lock unavailable"
+	}
 }
 
 // loopback accepts only an IP literal that is a loopback address, so the receiver can

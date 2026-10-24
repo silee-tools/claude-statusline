@@ -39,6 +39,8 @@ HOME="$TMPROOT/home"; CLAUDE_CONFIG_DIR="$TMPROOT"
 XDG_DATA_HOME="$TMPROOT/data"; XDG_CACHE_HOME="$TMPROOT/cache"; XDG_CONFIG_HOME="$TMPROOT"
 XDG_STATE_HOME="$TMPROOT/state-none"
 export HOME CLAUDE_CONFIG_DIR XDG_DATA_HOME XDG_CACHE_HOME XDG_CONFIG_HOME XDG_STATE_HOME
+# 개발자 셸이 내보낸 수신기 주소가 lockholder 의 기본 주소와 어긋나 거짓 실패를 만들지 않게 한다.
+unset CLAUDE_STATUSLINE_OTLP_ADDR
 for _v in "$HOME" "$CLAUDE_CONFIG_DIR" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"; do
   case "$_v" in "$TMPROOT"*) ;; *) echo "FATAL: 격리되지 않은 경로 $_v" >&2; exit 1;; esac
 done
