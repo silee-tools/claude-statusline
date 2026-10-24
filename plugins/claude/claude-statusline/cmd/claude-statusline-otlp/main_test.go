@@ -35,18 +35,22 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
+// listening is where the receiver that started on a state directory listens, which the
+// statusline expects to be told when it is not the default address.
+var listening sync.Map
+
 // start runs serve on an ephemeral loopback port and returns its address, the exit code
 // channel and the cancel function.
 func start(t *testing.T, cfg config) (addr string, exit <-chan int, stderr *syncBuffer, cancel context.CancelFunc) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	stderr = &syncBuffer{}
-	listening := make(chan string, 1)
-	cfg.OnListen = func(a net.Addr) { listening <- a.String() }
+	heard := make(chan string, 1)
+	cfg.OnListen = func(a net.Addr) { listening.Store(cfg.StateDir, a.String()); heard <- a.String() }
 	code := make(chan int, 1)
 	go func() { code <- serve(ctx, cfg, stderr) }()
 	select {
-	case addr = <-listening:
+	case addr = <-heard:
 	case c := <-code:
 		t.Fatalf("수신기가 바로 끝났다: 종료코드 %d, stderr=%q", c, stderr.String())
 	case <-time.After(5 * time.Second):
@@ -325,7 +329,9 @@ func TestServeAnswers503AndDoubtsItselfWhileItCannotStoreThenRecovers(t *testing
 // suspect reads how the statusline would show the anchor of a session the receiver stored.
 func suspect(t *testing.T, cfg config, id string) (anchor.Result, bool) {
 	t.Helper()
-	res := anchor.Resolve(anchor.Input{StateDir: cfg.StateDir, ConfigDir: t.TempDir(), SessionID: id, Now: time.Now()})
+	v, _ := listening.Load(cfg.StateDir)
+	addr, _ := v.(string)
+	res := anchor.Resolve(anchor.Input{StateDir: cfg.StateDir, ConfigDir: t.TempDir(), SessionID: id, Now: time.Now(), Addr: addr})
 	return res, res.Suspect
 }
 
@@ -541,6 +547,12 @@ func TestAnUnreadableEncodingIsALossButAnotherMediaTypeIsNot(t *testing.T) {
 			}
 		})
 	}
+}
+
+// firstLine is the generation number of a generation file, whose second line names the run.
+func firstLine(s string) string {
+	first, _, _ := strings.Cut(s, "\n")
+	return strings.TrimSpace(first)
 }
 
 // seed stores an anchor file the way an earlier run of the receiver left it.
@@ -763,7 +775,7 @@ func TestADamagedGenerationFileIsReplacedByTheStartFromTheAnchors(t *testing.T) 
 				t.Errorf("다시 시작한 뒤 이전 세대의 앵커가 믿어진다: %+v 의심=%v", res, doubt)
 			}
 			b, err := os.ReadFile(gen)
-			if n, perr := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64); err != nil || perr != nil || n != 2 {
+			if n, perr := strconv.ParseInt(firstLine(string(b)), 10, 64); err != nil || perr != nil || n != 2 {
 				t.Errorf("시작이 쓴 세대 파일 = %q (%v %v), want 앵커의 번호 1 다음인 2", b, err, perr)
 			}
 		})
@@ -903,13 +915,13 @@ func TestAStartNearTheBoundStoresAnchorsTheReaderAccepts(t *testing.T) {
 	addr, exit, _, cancel := start(t, cfg)
 	defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
 	genFile := filepath.Join(cfg.StateDir, "otel", "generation")
-	if b, _ := os.ReadFile(genFile); strings.TrimSpace(string(b)) != strconv.FormatInt(near+1, 10) {
+	if b, _ := os.ReadFile(genFile); firstLine(string(b)) != strconv.FormatInt(near+1, 10) {
 		t.Fatalf("시작이 센 세대 = %q, want 앵커의 번호 다음인 %d", b, near+1)
 	}
 	if code := postRaw(t, addr, `{broken`); code != http.StatusBadRequest { // a loss moves the generation on
 		t.Fatalf("깨진 요청 상태 %d", code)
 	}
-	if b, _ := os.ReadFile(genFile); strings.TrimSpace(string(b)) != strconv.FormatInt(near+2, 10) {
+	if b, _ := os.ReadFile(genFile); firstLine(string(b)) != strconv.FormatInt(near+2, 10) {
 		t.Fatalf("유실 뒤 세대 = %q, want %d", b, near+2)
 	}
 	if code := postLogin(t, addr, "s1", "a@example.com", 1_700_000_000_000); code != 200 {

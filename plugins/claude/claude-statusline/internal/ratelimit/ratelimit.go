@@ -74,7 +74,7 @@ func Load(file string) Pair {
 // load also returns the boundary the file was written under, "" when it names none.
 func load(file string) (Pair, string) {
 	var p Pair
-	b, err := os.ReadFile(file)
+	b, err := statefile.Read(file)
 	if err != nil {
 		return p, ""
 	}

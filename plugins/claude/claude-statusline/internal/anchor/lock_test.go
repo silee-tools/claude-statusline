@@ -21,15 +21,28 @@ func otelDir(t *testing.T) string {
 
 func readyReceiver(t *testing.T, state string) *ReceiverLock {
 	t.Helper()
+	publish(t, state, testRun)
 	lock, err := LockReceiver(state)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := lock.Ready(); err != nil {
+	if err := lock.Ready(Receiver{Run: testRun, Addr: DefaultAddr}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { lock.Close() })
 	return lock
+}
+
+// publish writes what a receiver writes before it is ready: its generation naming the run, and
+// a heartbeat.
+func publish(t *testing.T, state, run string) {
+	t.Helper()
+	if err := WriteGeneration(state, testGen, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := TouchHeartbeat(state, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // within runs f and says whether it returned in time. A call that blocks is reported as a
@@ -94,7 +107,8 @@ func TestReceiverAliveOnlyWhileTheLiveLockIsHeld(t *testing.T) {
 	if receiverAlive(state) {
 		t.Error("시작 잠금만 쥐었는데 수신기가 산다고 한다")
 	}
-	if err := lock.Ready(); err != nil {
+	publish(t, state, testRun)
+	if err := lock.Ready(Receiver{Run: testRun, Addr: DefaultAddr}); err != nil {
 		t.Fatal(err)
 	}
 	if !receiverAlive(state) {

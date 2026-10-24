@@ -298,7 +298,7 @@ Neither `.claude.json` nor `oauthAccount` is read.
 |---|---|
 | `a@example.com` | confirmed: a `/login` inside this session named the account, and the process that runs the session is known |
 | `~a@example.com` | estimate: the account the settings file held when the session began; the file is shared by every session of the config directory and the session's credentials may belong to another account. A `/login` anchor shows as an estimate too while the running process cannot be found, because the anchor may then belong to an earlier process of the same conversation |
-| `a@example.com?`, `~a@example.com?` | may have changed unseen: no ready receiver holds the live lock (it stopped, is still starting, or the lock cannot be told), the receiver's heartbeat is older than 120 seconds (it hangs), the anchor was stored before the receiver's current run (it may have missed a `/login` while it was down), or a rate-limit window of the session has differed from its baseline for over a minute before the baseline window ended |
+| `a@example.com?`, `~a@example.com?` | may have changed unseen: no ready receiver holds the live lock (it stopped, is still starting, or the lock cannot be told), the receiver listens somewhere other than `127.0.0.1:14318` or `CLAUDE_STATUSLINE_OTLP_ADDR`, the receiver's heartbeat is older than 120 seconds (it hangs), the anchor was stored before the receiver's current generation or by another run than the one that holds the lock (it may have missed a `/login`), or a rate-limit window of the session has differed from its baseline for over a minute before the baseline window ended |
 | `?` | the receiver runs but nothing says which account this session uses |
 | *(empty)* | the receiver never ran on this machine (`otel/sessions` does not exist) |
 
@@ -378,6 +378,10 @@ OTEL_LOGS_EXPORT_INTERVAL=1000
 Leave the content-logging variables (`OTEL_LOG_USER_PROMPTS` and similar) and
 `OTEL_EXPORTER_OTLP_COMPRESSION` unset: the receiver answers a gzip body with 415.
 
+The statusline expects the receiver at `127.0.0.1:14318`. For another port, start the receiver
+with that `-addr` and give the statusline `CLAUDE_STATUSLINE_OTLP_ADDR=127.0.0.1:<port>` in the
+same environment (not an `OTEL_*` name: Claude Code does not pass those on to it).
+
 **The receiver.** Run the published `claude-statusline-otlp` under a supervisor that
 restarts it after a non-zero exit. It listens on `127.0.0.1:14318` only (`-addr` must be
 a loopback IP literal), serves `POST /v1/logs` with `Content-Type: application/json` and
@@ -387,8 +391,9 @@ answers `503`, which the exporter retries. It stores no event and reads only
 record; stderr says what happened (start, stop, failure kinds), never a value. Exit
 codes: 0 after SIGINT or SIGTERM; 75 when the file at its own path was replaced (it
 checks every 30 seconds), so the supervisor starts the new build; 1 when the address is
-not loopback, the port cannot be bound, the state directory cannot be prepared or read, or
-another receiver holds the lock (see below). While it runs it holds two `flock`s. The
+not loopback, the port cannot be bound, the state directory cannot be prepared or read,
+another receiver holds the lock, or a lock file is removed or replaced under it (see below).
+While it runs it holds two `flock`s. The
 start lock (`otel/receiver.lock`) keeps a second receiver out and is taken before the receiver
 touches any state; the live lock (`otel/receiver.live`) is taken last, once the generation and
 the heartbeat are written, and the statusline trusts an anchor only while it finds the live lock
@@ -396,7 +401,18 @@ held. Until then, whatever the previous run left behind is not trusted, so there
 a start in which an earlier run's anchor passes as current. The kernel drops the locks when the
 process ends however it ends (exit 0, 75, a crash, SIGKILL), so a stopped receiver is noticed at
 once and needs no write to the state directory to say so, which a failing start may not be able
-to make. A missing lock file, a lock nobody holds, a lock file that is not a regular file (a FIFO
+to make. Each start makes a random run id. It writes the generation file naming that run, then the
+heartbeat, and only then takes the live lock, which it gets only over state that is its own; it
+puts the run and the address it listens on into the live lock's file through the file it holds
+(replacing the file would cost it its own lock), and every anchor it stores carries the run
+(`run=`). A number cannot say whose count it is, because two receivers can arrive at the same one,
+so the statusline reads the run from the lock it found held and trusts an anchor only when the
+anchor's run and the generation file's run both are that run, the anchor's generation is not below
+the file's, and the receiver listens where the sessions send their events: `127.0.0.1:14318`, or
+the `host:port` of `CLAUDE_STATUSLINE_OTLP_ADDR`. Claude Code does not pass its `OTEL_*` settings on to
+the status line command (measured on 2.1.310, for both settings `env` and the shell), so the address
+cannot be read from them; a setting that is not an IP literal and a port matches no receiver. A
+missing lock file, a lock nobody holds, a lock file that is not a regular file (a FIFO
 or a link left in its place: the statusline opens it without blocking and without following a
 link) and a lock that cannot be probed all count as no receiver, so the statusline puts `?`
 behind the account. The state directory has to be on a filesystem that supports `flock` (a
@@ -405,8 +421,10 @@ anchor or writes the generation or the heartbeat, and on every heartbeat tick, t
 checks that its locks are still on the files at their paths; if a lock file was removed or
 replaced (which would let a second receiver lock a new file and write the same state) it
 writes nothing more and exits 1, and the supervisor's restart creates a fresh one. The check
-and the write are not one step, so a write that is already under way when the file is replaced
-can still land. A start also replaces a lock file that is a FIFO, a link or a directory. The
+and the write are not one step: a receiver held up between them writes once more after another
+has taken over. That write carries the replaced receiver's run, so the statusline does not trust
+it, and the new receiver's next beat puts the generation file back if the write changed it. A
+start also replaces a lock file that is a FIFO, a link or an empty directory. The
 receiver touches the heartbeat every 30 seconds, except while it cannot store an anchor, which
 is what shows a receiver that hangs (it still holds the locks): the heartbeat older than 120
 seconds puts `?` too. A failed write moves the receiver to the next generation (`otel/generation`, a counter) and
@@ -423,13 +441,17 @@ that kept sending would hold every account in doubt. A generation that cannot be
 counts as a loss that is not recorded yet, so the heartbeat stays withheld until it is.
 A start takes the start lock after it binds the port and before it touches any state: a
 receiver that finds either lock held (one on another port, or one whose start lock file was
-removed) exits 1 and leaves the running one's files alone. It then removes the generation file
+removed) exits 1 and leaves the running one's files alone. A receiver on another port that holds
+the locks is not trusted either, since the statusline expects the address above: every account
+shows `?` while the receiver for the right port exits 1 at each restart, and `cat otel/receiver.live`
+says which receiver holds the lock. To run one by hand on another port, point `XDG_STATE_HOME` at a
+temporary directory. It then removes the generation file
 (a damaged or unreadable one must not be counted from) and the heartbeat, writes its own, and
 takes the live lock last. Every start moves to the next generation, past the highest number
 in the stored anchors, so what an earlier run stored is doubted whatever the clock reads and
 whether or not a generation file survived (a damaged one is replaced the same way). A start
 answers only when it has seen all of that state: a directory or file that is missing counts as
-empty, a link to a directory is skipped as the reader skips it, but one that cannot be listed
+empty, an entry that is not a regular file (a directory, a link) is skipped as the reader skips it, but one that cannot be listed
 or read makes the start give up with exit 1, which the supervisor retries every 10 seconds
 (about 4 ms of CPU a time, no log). The statusline shows `?` throughout, and the receiver
 starts once the cause is gone. One number bounds everything: the generation file, the number
@@ -442,14 +464,14 @@ generation that is not positive. At start and
 then hourly it removes what is past retention. Where stderr goes, and how long it is
 kept, is the supervisor's setting.
 
-**Files.** State files are kept 30 days with at most 2,000 files in each of `otel/sessions`, `pids/` and `fingerprints/`. The receiver prunes all three at start, hourly and after each write, and a reader ignores an anchor older than 30 days even when nothing pruned it (the cache and data rows below say their own).
+**Files.** State files are kept 30 days with at most 2,000 files in each of `otel/sessions`, `pids/` and `fingerprints/`. The receiver prunes all three at start, hourly and after each write, and a reader ignores an anchor older than 30 days even when nothing pruned it (the cache and data rows below say their own). Both programs write a state file by renaming a temporary file over it, so the statusline reads one only as a regular file, opened without blocking and without following a link: a FIFO, a link or a directory in the place of an anchor, the generation file, a pid file, a rate-limit cache or a fingerprint baseline is no state, and cannot hold the render.
 
 | Path | Written by | Holds | Kept |
 |---|---|---|---|
-| `${XDG_STATE_HOME:-$HOME/.local/state}/claude-statusline/otel/sessions/<session.id>.env` | receiver | email, kind, event time, time the receiver stored it, generation it was stored under (0600) | 30 days, 2,000 files |
-| `.../otel/receiver.lock`, `.../otel/receiver.live` | receiver | nothing: the start lock and the live lock, `flock`s it holds while it runs | two files |
+| `${XDG_STATE_HOME:-$HOME/.local/state}/claude-statusline/otel/sessions/<session.id>.env` | receiver | email, kind, event time, time the receiver stored it, generation and run it was stored under (0600) | 30 days, 2,000 files |
+| `.../otel/receiver.lock`, `.../otel/receiver.live` | receiver | the start lock (empty) and the live lock, `flock`s it holds while it runs; the live lock's file holds `run=` and `addr=` | two files |
 | `.../otel/heartbeat` | receiver | its mtime | one file |
-| `.../otel/generation` | receiver | its current generation number: one more than before at each start and each loss | one file |
+| `.../otel/generation` | receiver | its current generation number (one more than before at each start and each loss), then `run=` | one file |
 | `.../pids/<pid>-<startedAt>.env`, `.../pids/session-<id>.ref` | statusline | the anchor a process carries, which pid file a session uses | 30 days, 2,000 files |
 | `.../fingerprints/<session_id>.env` | statusline | the baseline of the watched rate-limit window | 30 days, 2,000 files |
 | `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/rate-limits/<session_id>.env` | statusline | the windows the session last saw, and the boundary they were seen under | 2 days after the last write, 2,000 files |

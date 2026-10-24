@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"syscall"
 	"testing"
 	"time"
 
@@ -58,8 +59,12 @@ func TestCompactStatusKeepsGHAlwaysAndAWSOnlyWhenNotHealthy(t *testing.T) {
 	}
 }
 
-// testGen is the receiver generation the fixtures store their anchors under.
-const testGen = int64(1)
+// testGen and testRun are the receiver generation and start the fixtures store their anchors
+// under.
+const (
+	testGen = int64(1)
+	testRun = "testrun"
+)
 
 // accountFixture is a state directory with the receiver "installed" and running: its sessions
 // directory exists, its heartbeat is fresh and its lock is held.
@@ -72,14 +77,14 @@ func accountFixture(t *testing.T, now time.Time) (stateDir, configDir string) {
 	if err := anchor.TouchHeartbeat(stateDir, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := anchor.WriteGeneration(stateDir, testGen); err != nil {
+	if err := anchor.WriteGeneration(stateDir, testGen, testRun); err != nil {
 		t.Fatal(err)
 	}
 	lock, err := anchor.LockReceiver(stateDir) // a ready receiver holds both locks
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := lock.Ready(); err != nil {
+	if err := lock.Ready(anchor.Receiver{Run: testRun, Addr: anchor.DefaultAddr}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { lock.Close() })
@@ -121,19 +126,19 @@ func TestAccountSlotFollowsTheSessionsAnchorThroughLoginAndLogout(t *testing.T) 
 	stateDir, configDir := accountFixture(t, now)
 	runningProcess(t, configDir, "s1")
 	status := input.Status{SessionID: "s1"}
-	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000), testGen)
-	anchor.Apply(stateDir, startEvent("s2", "other@example.com", 1000), testGen)
+	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000), testGen, testRun)
+	anchor.Apply(stateDir, startEvent("s2", "other@example.com", 1000), testGen, testRun)
 	if got := slotText(t, stateDir, configDir, status, now); got != "~a@example.com" {
 		t.Fatalf("시작 앵커는 추정이다: %q", got)
 	}
-	anchor.Apply(stateDir, loginEvent("s1", "b@example.com", 2000), testGen)
+	anchor.Apply(stateDir, loginEvent("s1", "b@example.com", 2000), testGen, testRun)
 	if got := slotText(t, stateDir, configDir, status, now); got != "b@example.com" {
 		t.Fatalf("/login 뒤: %q", got)
 	}
 	if got := slotText(t, stateDir, configDir, input.Status{SessionID: "s2"}, now); got != "~other@example.com" {
 		t.Fatalf("다른 세션은 그대로여야 한다: %q", got)
 	}
-	anchor.Apply(stateDir, anchor.Event{Name: "auth", SessionID: "s1", Action: "logout", Success: "true", TS: 3000}, testGen)
+	anchor.Apply(stateDir, anchor.Event{Name: "auth", SessionID: "s1", Action: "logout", Success: "true", TS: 3000}, testGen, testRun)
 	if got := slotText(t, stateDir, configDir, status, now); got != "?" {
 		t.Fatalf("로그아웃 뒤: %q", got)
 	}
@@ -157,7 +162,7 @@ func TestAccountSlotIsEmptyWithoutTheReceiverAndQuestionMarkWithoutAnAnchor(t *t
 func TestAccountSlotDoubtsAStoppedReceiver(t *testing.T) {
 	now := time.Now()
 	stateDir, configDir := accountFixture(t, now.Add(-10*time.Minute))
-	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000), testGen)
+	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000), testGen, testRun)
 	if got := slotText(t, stateDir, configDir, input.Status{SessionID: "s1"}, now); got != "~a@example.com?" {
 		t.Errorf("하트비트 정체: %q", got)
 	}
@@ -167,7 +172,7 @@ func TestAccountSlotDoubtsAWindowThatChangedBeforeItEnded(t *testing.T) {
 	now := time.Now()
 	stateDir, configDir := accountFixture(t, now)
 	runningProcess(t, configDir, "s1")
-	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000), testGen)
+	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000), testGen, testRun)
 	week := func(reset int64) input.Status {
 		return input.Status{SessionID: "s1", SevenDay: input.Window{Present: true, HasReset: true, Pct: 10, ResetsAt: reset}}
 	}
@@ -183,7 +188,7 @@ func TestAccountSlotDoubtsAWindowThatChangedBeforeItEnded(t *testing.T) {
 		t.Fatalf("60초 넘게 다른 값: %q", got)
 	}
 	// 새 로그인은 새 기준선이다.
-	anchor.Apply(stateDir, loginEvent("s1", "b@example.com", 2000), testGen)
+	anchor.Apply(stateDir, loginEvent("s1", "b@example.com", 2000), testGen, testRun)
 	if got := slotText(t, stateDir, configDir, week(end+5000), later(90)); got != "b@example.com" {
 		t.Fatalf("로그인 뒤: %q", got)
 	}
@@ -192,7 +197,7 @@ func TestAccountSlotDoubtsAWindowThatChangedBeforeItEnded(t *testing.T) {
 func TestAccountSlotDoubtsAFiveHourWindowThatChangedBeforeItEnded(t *testing.T) {
 	now := time.Now()
 	stateDir, configDir := accountFixture(t, now)
-	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000), testGen)
+	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000), testGen, testRun)
 	five := func(reset int64) input.Status {
 		return input.Status{SessionID: "s1", FiveHour: input.Window{Present: true, HasReset: true, Pct: 10, ResetsAt: reset}}
 	}
@@ -256,5 +261,66 @@ func TestWindowsDropTheCachedOnesWhenANewProcessResumesTheConversation(t *testin
 	proc(second, now.UnixMilli()-1000) // claude --continue: 새 프로세스, 같은 session id
 	if got := windows(cacheDir, in, input.Status{SessionID: "s1"}); got.Five.Present || got.Week.Present {
 		t.Fatalf("이전 프로세스의 창이 그려졌다: %+v", got)
+	}
+}
+
+// The account slot reads the session's fingerprint baseline; a FIFO left in its place must not
+// hold the render, and the slot must still show the account.
+func TestAFifoWhereTheFingerprintBaselineShouldBeDoesNotHoldTheAccountSlot(t *testing.T) {
+	now := time.Now()
+	stateDir, configDir := accountFixture(t, now)
+	runningProcess(t, configDir, "s1")
+	if _, err := anchor.Apply(stateDir, loginEvent("s1", "a@example.com", 1000), testGen, testRun); err != nil {
+		t.Fatal(err)
+	}
+	fp := filepath.Join(stateDir, "fingerprints")
+	if err := os.MkdirAll(fp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(fp, "s1.env")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan string, 1)
+	go func() {
+		done <- slotText(t, stateDir, configDir, input.Status{SessionID: "s1"}, now)
+	}()
+	select {
+	case got := <-done:
+		if got != "a@example.com" {
+			t.Errorf("계정 칸 = %q, want a@example.com", got)
+		}
+	case <-time.After(3 * time.Second):
+		if f, err := os.OpenFile(fifo, os.O_RDWR|syscall.O_NONBLOCK, 0); err == nil {
+			f.Close()
+		}
+		t.Fatal("지문 기준선 자리의 FIFO 에서 계정 칸이 멈췄다")
+	}
+}
+
+// The gauges read the session's cached windows from the cache directory; a FIFO left there must
+// not hold the render either.
+func TestAFifoWhereTheSessionsCachedWindowsShouldBeDoesNotHoldTheGauges(t *testing.T) {
+	now := time.Now()
+	stateDir, configDir := accountFixture(t, now)
+	runningProcess(t, configDir, "s1")
+	cacheDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cacheDir, "rate-limits"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(cacheDir, "rate-limits", "s1.env")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	session := anchor.Input{StateDir: stateDir, ConfigDir: configDir, SessionID: "s1", Parent: os.Getpid(), Now: now}
+	done := make(chan struct{})
+	go func() { windows(cacheDir, session, input.Status{SessionID: "s1"}); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		if f, err := os.OpenFile(fifo, os.O_RDWR|syscall.O_NONBLOCK, 0); err == nil {
+			f.Close()
+		}
+		t.Fatal("세션 한도 캐시 자리의 FIFO 에서 게이지가 멈췄다")
 	}
 }

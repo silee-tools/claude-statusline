@@ -2,14 +2,24 @@ package anchor
 
 import (
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
 
+// DefaultAddr is where the receiver listens unless told otherwise, and where the statusline
+// expects it to: the OpenTelemetry settings of the machine send there.
+const DefaultAddr = "127.0.0.1:14318"
+
 // ErrReceiverRunning is another receiver already holding the lock.
 var ErrReceiverRunning = errors.New("anchor: another receiver holds the lock")
+
+// ErrNotReady is a receiver asking to be ready while the state it would publish is not its
+// own: another run's generation, or no heartbeat.
+var ErrNotReady = errors.New("anchor: the state to publish is not this run's")
 
 // ErrLockLost is a lock file that is no longer the file the receiver holds the lock on: it was
 // removed or replaced, so a later receiver can lock the new file while this one still runs.
@@ -62,11 +72,43 @@ func LockReceiver(stateDir string) (*ReceiverLock, error) {
 	return &ReceiverLock{stateDir: stateDir, start: start}, nil
 }
 
-// Ready takes the live lock. The receiver calls it once its generation and heartbeat are
-// written, so the statusline finds a receiver only when the state it goes by is the run's own.
-func (l *ReceiverLock) Ready() error {
+// Receiver is what a ready receiver tells the statusline about itself through the live lock:
+// which start it is (see NewRun) and the address it listens on.
+type Receiver struct {
+	Run  string
+	Addr string
+}
+
+// Ready takes the live lock and puts self in it. The receiver calls it once its generation and
+// heartbeat are written, and it refuses unless they are: the generation file must name
+// self.Run and the heartbeat must exist, so the statusline finds a receiver only when the
+// state it goes by is the run's own, whatever the order the caller took.
+//
+// The content is written through the held file and not by replacing the file, which would give
+// it another inode and cost the receiver its own lock. A reader that meets the lock before the
+// content finds no run and doubts, which is the safe side.
+func (l *ReceiverLock) Ready(self Receiver) error {
+	if !validRun(self.Run) || self.Addr == "" {
+		return errors.New("anchor: a receiver names its run and address")
+	}
 	live, err := lockFile(liveLockPath(l.stateDir))
 	if err != nil {
+		return err
+	}
+	if _, run, err := loadGeneration(l.stateDir); err != nil || run != self.Run {
+		live.f.Close()
+		return ErrNotReady
+	}
+	if _, err := os.Stat(filepath.Join(l.stateDir, "otel", "heartbeat")); err != nil {
+		live.f.Close()
+		return ErrNotReady
+	}
+	if err := live.f.Truncate(0); err != nil {
+		live.f.Close()
+		return err
+	}
+	if _, err := live.f.WriteAt([]byte("run="+self.Run+"\naddr="+self.Addr+"\n"), 0); err != nil {
+		live.f.Close()
 		return err
 	}
 	l.live = live
@@ -154,18 +196,64 @@ func lockFile(path string) (*heldLock, error) {
 	}
 }
 
-// receiverAlive reports whether a receiver holds the live lock. Only a held lock says so: no
-// lock file, a lock nobody holds, a file that is not a regular file (a FIFO, a link) and any
-// error opening or probing it all say the receiver is not known to be running. The open does
-// not block and the shared probe is let go of with the file at once.
+// receiverAlive reports whether a receiver holds the live lock.
 func receiverAlive(stateDir string) bool {
+	held, _ := probeLive(stateDir)
+	return held
+}
+
+// probeLive says whether a receiver holds the live lock and, if one does, what it put there.
+// Only a held lock says a receiver runs: no lock file, a lock nobody holds, a file that is not
+// a regular file (a FIFO, a link) and any error opening or probing it all say the receiver is
+// not known to be running. The open does not block and the shared probe is let go of with the
+// file at once. The content is read through the file the probe met the lock on, so the lock and
+// the run it is read with belong to the same file.
+func probeLive(stateDir string) (held bool, self Receiver) {
 	f, err := os.OpenFile(liveLockPath(stateDir), os.O_RDONLY|openFlags, 0)
 	if err != nil {
-		return false
+		return false, Receiver{}
 	}
 	defer f.Close()
 	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
-		return false
+		return false, Receiver{}
 	}
-	return errors.Is(flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB), syscall.EWOULDBLOCK)
+	if !errors.Is(flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB), syscall.EWOULDBLOCK) {
+		return false, Receiver{}
+	}
+	buf := make([]byte, 256)
+	n, _ := f.Read(buf)
+	return true, parseReceiver(string(buf[:n]))
+}
+
+// parseReceiver reads what Ready wrote. A part that is missing or malformed stays empty, and a
+// reader trusts a receiver only when both parts are there.
+func parseReceiver(s string) Receiver {
+	var r Receiver
+	for _, line := range strings.Split(s, "\n") {
+		k, v, found := strings.Cut(line, "=")
+		switch {
+		case !found:
+		case k == "run" && validRun(v):
+			r.Run = v
+		case k == "addr" && len(v) <= 64 && !strings.ContainsAny(v, " \t\r"):
+			r.Addr = v
+		}
+	}
+	return r
+}
+
+// expectedAddr is the address a receiver must listen on to be trusted: DefaultAddr unless the
+// statusline was told another, written as an IP literal and a port. A value that is not one
+// matches no receiver and does not fall back to the default, so a mistyped setting shows as a
+// doubt instead of being ignored.
+func expectedAddr(want string) string {
+	if want == "" {
+		return DefaultAddr
+	}
+	host, port, err := net.SplitHostPort(want)
+	ip := net.ParseIP(host)
+	if err != nil || ip == nil || port == "" {
+		return ""
+	}
+	return net.JoinHostPort(ip.String(), port)
 }

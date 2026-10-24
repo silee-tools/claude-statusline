@@ -21,9 +21,13 @@
 //
 //	otel/sessions/<session.id>.env   the anchor: email=, kind=, ts= (event time, unix ms),
 //	                                 seen= (when the receiver stored it, unix ms),
-//	                                 gen= (the receiver's generation when it stored it)
+//	                                 gen= (the receiver's generation when it stored it),
+//	                                 run= (which start of the receiver stored it)
 //	otel/heartbeat                   touched by the receiver; its mtime says it is alive
-//	otel/generation                  the receiver's current generation number
+//	otel/generation                  the receiver's current generation number, then run=
+//	otel/receiver.lock               the start lock (exclusivity); no content
+//	otel/receiver.live               the live lock, held while the receiver is ready; its
+//	                                 content says which start (run=) and where it listens (addr=)
 //	pids/<pid>-<startedAt>.env       the anchor a process carries across /clear
 //	pids/session-<session.id>.ref    which pid file a session belongs to
 //
@@ -33,6 +37,8 @@
 package anchor
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"io/fs"
 	"os"
@@ -56,13 +62,16 @@ const (
 // Anchor is one session's latest known account. TS is the event time and Seen the time
 // the receiver stored it, both in unix milliseconds. Gen is the receiver's generation
 // (see WriteGeneration) when it stored the anchor, 0 for a file that carries none; an
-// anchor of an earlier generation may have missed a /login since.
+// anchor of an earlier generation may have missed a /login since. Run is the start of the
+// receiver that stored it (see NewRun), "" for a file that carries none: a number says how
+// recent an anchor is, only the run says whose it is.
 type Anchor struct {
 	Email string
 	Kind  string
 	TS    int64
 	Seen  int64
 	Gen   int64
+	Run   string
 }
 
 // Event is the allowed-keys view of one OTLP log record: nothing else the record
@@ -123,7 +132,23 @@ func NextLoss(gen int64) (int64, bool) {
 	return gen + 1, true
 }
 
+// NewRun is the identity of one start of the receiver: 16 random bytes, opaque. The receiver
+// writes it into everything it stores, and the statusline trusts only what carries the run of
+// the receiver that holds the live lock, so a receiver that was replaced under its lock files
+// and writes late is not mistaken for the current one, whatever number it counts with.
+func NewRun() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
 func sessionsDir(stateDir string) string { return filepath.Join(stateDir, "otel", "sessions") }
+
+// validRun accepts what NewRun makes, and any id-like text for tests: a run is not
+// interpreted, only compared.
+func validRun(run string) bool { return validID(run) }
 
 // validID accepts the characters a session id can carry and nothing that could leave
 // the directory or break the line format.
@@ -153,17 +178,17 @@ func validEmail(s string) bool {
 }
 
 // Apply folds one event into the session's anchor, stamped with the receiver's generation
-// gen, and reports whether it wrote one. Callers serialize Apply: it reads the stored
+// gen and run, and reports whether it wrote one. Callers serialize Apply: it reads the stored
 // anchor before replacing it.
 //
 // A start-only event counts only when the session has no anchor yet, and an event
 // older than the stored one is dropped, so events arriving out of order leave the
 // anchor of the latest event.
-func Apply(stateDir string, ev Event, gen int64) (bool, error) {
+func Apply(stateDir string, ev Event, gen int64, run string) (bool, error) {
 	if !validID(ev.SessionID) {
 		return false, nil
 	}
-	next := Anchor{TS: ev.TS, Seen: clock().UnixMilli(), Gen: gen}
+	next := Anchor{TS: ev.TS, Seen: clock().UnixMilli(), Gen: gen, Run: run}
 	switch strings.TrimPrefix(ev.Name, "claude_code.") {
 	case "managed_settings_resolved", "plugin_loaded":
 		next.Kind = KindStart
@@ -198,7 +223,7 @@ func Apply(stateDir string, ev Event, gen int64) (bool, error) {
 
 func encode(a Anchor) []byte {
 	return []byte("email=" + a.Email + "\nkind=" + a.Kind + "\nts=" + strconv.FormatInt(a.TS, 10) +
-		"\nseen=" + strconv.FormatInt(a.Seen, 10) + "\ngen=" + strconv.FormatInt(a.Gen, 10) + "\n")
+		"\nseen=" + strconv.FormatInt(a.Seen, 10) + "\ngen=" + strconv.FormatInt(a.Gen, 10) + "\nrun=" + a.Run + "\n")
 }
 
 // Read returns the anchor of session id. A missing or damaged file is no anchor.
@@ -206,7 +231,7 @@ func Read(stateDir, id string) (Anchor, bool) {
 	if !validID(id) {
 		return Anchor{}, false
 	}
-	b, err := readRegular(filepath.Join(sessionsDir(stateDir), id+".env"))
+	b, err := statefile.Read(filepath.Join(sessionsDir(stateDir), id+".env"))
 	if err != nil {
 		return Anchor{}, false
 	}
@@ -231,6 +256,10 @@ func decode(s string) (Anchor, bool) {
 			a.Seen, _ = strconv.ParseInt(v, 10, 64)
 		case "gen":
 			a.Gen, _ = parseGeneration(v) // a number that is not one counts as generation 0
+		case "run":
+			if validRun(v) { // a run that is not one counts as no run, which no receiver has
+				a.Run = v
+			}
 		}
 	}
 	switch a.Kind {
@@ -275,20 +304,34 @@ func readFresh(stateDir, id string, now time.Time) (Anchor, bool) {
 
 func generationPath(stateDir string) string { return filepath.Join(stateDir, "otel", "generation") }
 
-// WriteGeneration records the receiver's generation. The receiver moves to the next one
-// when it begins a new stretch of listening or may have lost events (a restart, a failed
-// write, a request it dropped). An anchor stamped with an earlier generation cannot be
-// told from one a lost /login left behind, so a reader doubts it until a later event
-// replaces it.
+// WriteGeneration records the receiver's generation and the run that counts it. The receiver
+// moves to the next generation when it begins a new stretch of listening or may have lost
+// events (a restart, a failed write, a request it dropped). An anchor stamped with an
+// earlier generation cannot be told from one a lost /login left behind, so a reader doubts
+// it until a later event replaces it.
 //
 // A generation is a number, not a time, so no reading of the clock can put it behind the
 // anchors it has to outrank. It is a positive number up to MaxGeneration, so a negative or
-// overflowed one is never recorded.
-func WriteGeneration(stateDir string, gen int64) error {
+// overflowed one is never recorded. The number alone does not say whose count it is: two
+// receivers can arrive at the same one, so the file names the run, and a reader trusts the
+// count only of the run that holds the live lock.
+func WriteGeneration(stateDir string, gen int64, run string) error {
 	if gen <= 0 || gen > MaxGeneration {
 		return errors.New("anchor: generation out of range")
 	}
-	return statefile.Write(generationPath(stateDir), []byte(strconv.FormatInt(gen, 10)+"\n"))
+	if !validRun(run) {
+		return errors.New("anchor: invalid run")
+	}
+	return statefile.Write(generationPath(stateDir), []byte(strconv.FormatInt(gen, 10)+"\nrun="+run+"\n"))
+}
+
+// GenerationIs says whether the generation file holds exactly this number and run. The
+// receiver asks it on each beat: a late write of a receiver that was replaced can leave
+// another run's name there, which a reader answers with a doubt of every account until the
+// receiver writes its own again.
+func GenerationIs(stateDir string, gen int64, run string) bool {
+	n, r, ok := readGeneration(stateDir)
+	return ok && n == gen && r == run
 }
 
 // NextGeneration is the generation of a receiver that starts now: one past the highest the
@@ -301,10 +344,10 @@ func WriteGeneration(stateDir string, gen int64) error {
 // exist counts as empty; one that cannot be listed or read, or a generation file that holds
 // no generation, is an error, because a number chosen without it could fall behind an
 // anchor and let that anchor pass as current. The scan reads what a reader would: an
-// entry that is a directory is not an anchor, a link is followed, and one that vanished
-// meanwhile is skipped.
+// entry that is not a regular file (a directory, a link) is not an anchor, and one that
+// vanished meanwhile is skipped.
 func NextGeneration(stateDir string) (int64, error) {
-	top, err := loadGeneration(stateDir)
+	top, _, err := loadGeneration(stateDir)
 	if err != nil {
 		return 0, err
 	}
@@ -320,11 +363,11 @@ func NextGeneration(stateDir string) (int64, error) {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ".env") {
 				continue
 			}
-			b, err := readRegular(filepath.Join(dir, e.Name()))
+			b, err := statefile.Read(filepath.Join(dir, e.Name()))
 			if err != nil {
-				// Something that is not a regular file (a link to a directory, a FIFO) is no
+				// Something that is not a regular file (a link, a FIFO, a directory) is no
 				// anchor: the reader cannot read it either.
-				if errors.Is(err, fs.ErrNotExist) || errors.Is(err, errNotRegular) {
+				if errors.Is(err, fs.ErrNotExist) || errors.Is(err, statefile.ErrNotRegular) {
 					continue
 				}
 				return 0, err
@@ -365,32 +408,39 @@ func Writable(stateDir string) error {
 	return os.Remove(probe)
 }
 
-// loadGeneration returns the generation the file names: 0 when there is no file, an error
-// when it cannot be read or holds something that is not a generation (a number from 1 up to
-// MaxGeneration).
-func loadGeneration(stateDir string) (int64, error) {
-	b, err := readRegular(generationPath(stateDir))
+// loadGeneration returns the generation the file names and the run that wrote it ("" when it
+// names none): 0 when there is no file, an error when it cannot be read or its first line
+// holds something that is not a generation (a number from 1 up to MaxGeneration).
+func loadGeneration(stateDir string) (int64, string, error) {
+	b, err := statefile.Read(generationPath(stateDir))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return 0, nil
+			return 0, "", nil
 		}
-		if errors.Is(err, errNotRegular) {
-			return 0, errDamagedGeneration
+		if errors.Is(err, statefile.ErrNotRegular) {
+			return 0, "", errDamagedGeneration
 		}
-		return 0, err
+		return 0, "", err
 	}
-	n, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	first, rest, _ := strings.Cut(string(b), "\n")
+	n, err := strconv.ParseInt(strings.TrimSpace(first), 10, 64)
 	if err != nil || n <= 0 || n > MaxGeneration {
-		return 0, errDamagedGeneration
+		return 0, "", errDamagedGeneration
 	}
-	return n, nil
+	var run string
+	for _, line := range strings.Split(rest, "\n") {
+		if k, v, found := strings.Cut(line, "="); found && k == "run" && validRun(v) {
+			run = v
+		}
+	}
+	return n, run, nil
 }
 
-// readGeneration returns the receiver's current generation. A missing, unreadable or
-// damaged file is unknown.
-func readGeneration(stateDir string) (int64, bool) {
-	n, err := loadGeneration(stateDir)
-	return n, err == nil && n > 0
+// readGeneration returns the receiver's current generation and its run. A missing,
+// unreadable or damaged file is unknown.
+func readGeneration(stateDir string) (int64, string, bool) {
+	n, run, err := loadGeneration(stateDir)
+	return n, run, err == nil && n > 0
 }
 
 // Sweep prunes the state directories to the retention and file limits. The receiver runs

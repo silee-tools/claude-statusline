@@ -56,7 +56,8 @@ type Input struct {
 	StateDir  string
 	ConfigDir string // the normalised Claude config directory, whose sessions/ lists its processes
 	SessionID string
-	Parent    int // the pid of the process that started the statusline, 0 when unknown
+	Parent    int    // the pid of the process that started the statusline, 0 when unknown
+	Addr      string // where a receiver must listen to be trusted, "" for DefaultAddr
 	Now       time.Time
 }
 
@@ -82,10 +83,12 @@ func Resolve(in Input) Result {
 	}
 	r := Result{Installed: true}
 	// An anchor is trusted only while a receiver runs (it holds the lock, which a stopped
-	// receiver cannot leave behind) and keeps its heartbeat: a receiver that hangs still holds
-	// the lock.
+	// receiver cannot leave behind), listens where the sessions send their events, and keeps
+	// its heartbeat: a receiver that hangs still holds the lock.
+	held, live := probeLive(in.StateDir)
 	hb, err := os.Stat(filepath.Join(in.StateDir, "otel", "heartbeat"))
-	r.Suspect = !receiverAlive(in.StateDir) || err != nil || in.Now.Sub(hb.ModTime()) > staleHeartbeat
+	known := held && live.Run != "" && live.Addr != ""
+	r.Suspect = !known || live.Addr != expectedAddr(in.Addr) || err != nil || in.Now.Sub(hb.ModTime()) > staleHeartbeat
 	if a, ok, known := sessionAnchor(in); ok && a.Email != "" {
 		r.Email, r.AnchorTS = a.Email, a.TS
 		r.Level = Estimate
@@ -95,8 +98,10 @@ func Resolve(in Input) Result {
 			r.Level = Confirmed
 		}
 		// An anchor of an earlier generation may have missed a /login since, and only a
-		// later event replaces it.
-		if gen, ok := readGeneration(in.StateDir); !ok || a.Gen < gen {
+		// later event replaces it. The number is the count of one run: the anchor and the
+		// generation file must both be the run that holds the live lock, or the count is
+		// not the one the anchor went by.
+		if gen, run, ok := readGeneration(in.StateDir); !ok || a.Gen < gen || run != live.Run || a.Run != live.Run {
 			r.Suspect = true
 		}
 	}
@@ -160,7 +165,7 @@ func scanProcs(configDir string) []procInfo {
 		if !e.Type().IsRegular() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		b, err := readRegular(filepath.Join(dir, e.Name()))
+		b, err := statefile.Read(filepath.Join(dir, e.Name()))
 		if err != nil {
 			continue
 		}
@@ -211,7 +216,7 @@ func refPath(stateDir, id string) string {
 }
 
 func readPidFile(stateDir string, p proc) pidFile {
-	b, err := readRegular(pidPath(stateDir, p))
+	b, err := statefile.Read(pidPath(stateDir, p))
 	if err != nil {
 		return pidFile{}
 	}
@@ -245,7 +250,7 @@ type ref struct {
 }
 
 func readRef(stateDir, id string) (ref, bool) {
-	b, err := readRegular(refPath(stateDir, id))
+	b, err := statefile.Read(refPath(stateDir, id))
 	if err != nil {
 		return ref{}, false
 	}
@@ -275,7 +280,7 @@ func prunedWrite(stateDir string, now time.Time, path, body string) {
 // readProc reads the one file Claude Code keeps for process pid in configDir. It lists
 // nothing and opens no *.key file.
 func readProc(configDir string, pid int) (procInfo, bool) {
-	b, err := readRegular(filepath.Join(configDir, "sessions", strconv.Itoa(pid)+".json"))
+	b, err := statefile.Read(filepath.Join(configDir, "sessions", strconv.Itoa(pid)+".json"))
 	if err != nil {
 		return procInfo{}, false
 	}

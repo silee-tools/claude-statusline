@@ -218,7 +218,7 @@ func realHandler(dir string) http.Handler {
 	return newHandler(func(e anchor.Event) error {
 		mu.Lock()
 		defer mu.Unlock()
-		_, err := anchor.Apply(dir, e, 1)
+		_, err := anchor.Apply(dir, e, 1, "handlerrun")
 		return err
 	}, fixedNow, func(string) {})
 }
@@ -259,7 +259,7 @@ func TestNotLoggedInSessionStillAnchorsOnItsStartEvent(t *testing.T) {
 func wantAnchor(t *testing.T, dir, id string, want anchor.Anchor) {
 	t.Helper()
 	got, ok := anchor.Read(dir, id)
-	got.Seen, got.Gen = 0, 0 // when and under which generation the receiver stored it is checked in the anchor package
+	got.Seen, got.Gen, got.Run = 0, 0, "" // when, under which generation and run the receiver stored it is checked in the anchor package
 	if !ok || got != want {
 		t.Fatalf("Read(%s) = %+v, %v; want %+v", id, got, ok, want)
 	}
