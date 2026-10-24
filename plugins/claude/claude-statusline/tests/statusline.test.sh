@@ -110,12 +110,13 @@ OTEL_DIR="$STATE_ACCT/claude-statusline/otel"
 mkdir -p "$STATE_NONE"
 anchor_file() { printf '%s/sessions/%s.env' "$OTEL_DIR" "$1"; }
 # seed_anchor <session.id> <email> <kind> <event time ms>. 수신기가 저장한 시각(seen)은 지금이고, 앵커는 수신기 세대
-# 1(gen=1)로 저장됐다. 수신기 세대(otel/generation)가 1이라 앵커는 현재 세대이고, 세대 파일의 번호가 더 크면
-# 앞선 세대의 앵커라 이메일 뒤에 ? 가 붙는다.
+# 1(gen=1)과 수신기의 시작 식별자(run=$RUN)로 저장됐다. 세대 파일(otel/generation)이 같은 번호와 같은 식별자라 앵커는
+# 현재 세대이고, 세대 파일의 번호가 더 크거나 식별자가 다르면 이메일 뒤에 ? 가 붙는다.
+RUN=shellrun
 seed_anchor() {
   mkdir -p "$OTEL_DIR/sessions"
-  printf 'email=%s\nkind=%s\nts=%s\nseen=%s000\ngen=1\n' "$2" "$3" "$4" "$(date +%s)" > "$(anchor_file "$1")"
-  printf '1\n' > "$OTEL_DIR/generation"
+  printf 'email=%s\nkind=%s\nts=%s\nseen=%s000\ngen=1\nrun=%s\n' "$2" "$3" "$4" "$(date +%s)" "$RUN" > "$(anchor_file "$1")"
+  printf '1\nrun=%s\n' "$RUN" > "$OTEL_DIR/generation"
 }
 # 수신기가 도는 기계: 계정은 수신기가 쥔 잠금(otel/receiver.lock)이 잡혀 있고 하트비트가 신선할 때만 믿는다.
 # 시험은 수신기 없이 파일을 심으므로 같은 잠금을 쥐는 작은 프로그램을 띄운다. stop_receiver 는 수신기가 끝난 것과 같다.
@@ -123,7 +124,7 @@ HOLD_PID=""
 hold_receiver() {
   [ -z "$HOLD_PID" ] || return 0
   mkdir -p "$OTEL_DIR"
-  "$LOCKHOLD" "$STATE_ACCT/claude-statusline" > "$TMPROOT/lockhold.out" 2>&1 &
+  "$LOCKHOLD" "$STATE_ACCT/claude-statusline" "$RUN" > "$TMPROOT/lockhold.out" 2>&1 &
   HOLD_PID=$!
   LIVE_PIDS="$LIVE_PIDS $HOLD_PID"
   _n=0
@@ -1096,33 +1097,49 @@ OUT=$(run "$SESS_B" 120); assert_contains "T35 하트비트가 정체되면 이�
 beat
 OUT=$(run "$SESS_B" 120); assert_not_contains "T35 하트비트가 신선하면 ? 없음" "b@example.com?" "$(first_line "$OUT")"
 # 수신기 세대(재시작·유실마다 올라가는 번호)가 앵커의 gen 보다 크면 저장 시각과 상관없이 이메일 뒤에 ? 가 붙는다.
-printf '2\n' > "$OTEL_DIR/generation"
+printf '2\nrun=%s\n' "$RUN" > "$OTEL_DIR/generation"
 OUT=$(run "$SESS_B" 120); assert_contains "T35 앞선 세대의 앵커는 이메일 뒤 ?" "b@example.com?" "$(first_line "$OUT")"
-printf '1\n' > "$OTEL_DIR/generation"
+printf '1\nrun=%s\n' "$RUN" > "$OTEL_DIR/generation"
 OUT=$(run "$SESS_B" 120); assert_not_contains "T35 현재 세대의 앵커는 ? 없음" "b@example.com?" "$(first_line "$OUT")"
+# 세대 번호가 같아도 다른 수신기(시작 식별자가 다름)의 세대 파일이면 믿지 않는다.
+printf '1\nrun=otherrun\n' > "$OTEL_DIR/generation"
+OUT=$(run "$SESS_B" 120); assert_contains "T35 다른 수신기의 세대 파일이면 이메일 뒤 ?" "b@example.com?" "$(first_line "$OUT")"
+printf '1\nrun=%s\n' "$RUN" > "$OTEL_DIR/generation"
+# 수신기가 기대한 주소에서 듣지 않으면(다른 포트로 띄운 수신기가 잠금을 쥔 경우) 앵커를 믿지 않는다. 기본 주소와 같다고 알려 주면 믿는다.
+OUT=$(CLAUDE_STATUSLINE_OTLP_ADDR=127.0.0.1:9 run "$SESS_B" 120); assert_contains "T35 다른 주소의 수신기이면 이메일 뒤 ?" "b@example.com?" "$(first_line "$OUT")"
+OUT=$(CLAUDE_STATUSLINE_OTLP_ADDR=127.0.0.1:14318 run "$SESS_B" 120); assert_not_contains "T35 기대한 주소를 그대로 알려 주면 ? 없음" "b@example.com?" "$(first_line "$OUT")"
+OUT=$(CLAUDE_STATUSLINE_OTLP_ADDR=garbage run "$SESS_B" 120); assert_contains "T35 읽히지 않는 주소 설정은 기본으로 떨어지지 않고 ?" "b@example.com?" "$(first_line "$OUT")"
 # 수신기가 끝나면 잠금이 풀려, 하트비트와 세대가 멀쩡해도 앵커를 믿지 않는다(정상 종료·교체 종료·충돌 모두 같다).
 stop_receiver
 OUT=$(run "$SESS_B" 120); assert_contains "T35 수신기가 끝나면 신선한 하트비트에도 이메일 뒤 ?" "b@example.com?" "$(first_line "$OUT")"
 rm -f "$OTEL_DIR/receiver.live"
 OUT=$(run "$SESS_B" 120); assert_contains "T35 잠금 파일이 없으면 이메일 뒤 ?" "b@example.com?" "$(first_line "$OUT")"
-# 잠금 파일 자리에 FIFO 가 있어도(쓰는 쪽이 없음) 렌더가 멈추지 않고 ? 로 끝난다. macOS 에는 timeout 이 없어 직접 기다린다.
-mkfifo "$OTEL_DIR/receiver.live"
-run "$SESS_B" 120 > "$TMPROOT/fifo-render.out" 2>/dev/null &
-_fp=$!
-_n=0
-while kill -0 "$_fp" 2>/dev/null && [ "$_n" -lt 30 ]; do _n=$((_n + 1)); sleep 0.1; done
-if kill -0 "$_fp" 2>/dev/null; then
-  exec 3<>"$OTEL_DIR/receiver.live"; exec 3>&-   # 멈춘 읽기를 풀어 준다
-  kill "$_fp" 2>/dev/null || true
-  bad "T35 잠금 파일이 FIFO 여도 렌더가 3초 안에 끝남" "렌더가 FIFO 에서 멈췄다"
-else
-  ok "T35 잠금 파일이 FIFO 여도 렌더가 3초 안에 끝남"
-fi
-wait "$_fp" 2>/dev/null || true
+# 상태 파일 자리에 FIFO 가 있어도(쓰는 쪽이 없음) 렌더가 멈추지 않는다. macOS 에는 timeout 이 없어 직접 기다린다.
+# fifo_render <시험 이름> <FIFO 경로>: 그 자리에 FIFO 를 두고 세션 B 를 렌더해 3초 안에 끝나는지 본다.
+fifo_render() {
+  mkdir -p "$(dirname "$2")"; rm -f "$2"; mkfifo "$2"
+  run "$SESS_B" 120 > "$TMPROOT/fifo-render.out" 2>/dev/null &
+  _fp=$!
+  _n=0
+  while kill -0 "$_fp" 2>/dev/null && [ "$_n" -lt 30 ]; do _n=$((_n + 1)); sleep 0.1; done
+  if kill -0 "$_fp" 2>/dev/null; then
+    exec 3<>"$2"; exec 3>&-   # 멈춘 읽기를 풀어 준다
+    kill "$_fp" 2>/dev/null || true
+    bad "$1 렌더가 3초 안에 끝남" "렌더가 FIFO 에서 멈췄다"
+  else
+    ok "$1 렌더가 3초 안에 끝남"
+  fi
+  wait "$_fp" 2>/dev/null || true
+}
+fifo_render "T35 잠금 파일이 FIFO 여도" "$OTEL_DIR/receiver.live"
 assert_contains "T35 잠금 파일이 FIFO 면 이메일 뒤 ?" "b@example.com?" "$(first_line "$(cat "$TMPROOT/fifo-render.out")")"
 rm -f "$OTEL_DIR/receiver.live"
 beat
 OUT=$(run "$SESS_B" 120); assert_not_contains "T35 수신기가 다시 잠금을 쥐면 ? 없음" "b@example.com?" "$(first_line "$OUT")"
+# 계정 칸이 읽는 지문 기준선 자리의 FIFO 도 렌더를 잡지 못한다(앵커가 있는 세션이 읽는다).
+fifo_render "T35 지문 기준선 파일이 FIFO 여도" "$STATE_ACCT/claude-statusline/fingerprints/acct-b.env"
+assert_contains "T35 지문 기준선이 FIFO 여도 계정은 그대로" "b@example.com" "$(first_line "$(cat "$TMPROOT/fifo-render.out")")"
+rm -f "$STATE_ACCT/claude-statusline/fingerprints/acct-b.env"
 
 # 압축 레이아웃은 계정을 보이지 않는다.
 OUT=$(run "$SESS_B" 80)

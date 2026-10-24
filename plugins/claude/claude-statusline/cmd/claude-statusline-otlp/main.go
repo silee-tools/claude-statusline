@@ -13,10 +13,10 @@
 //
 // Exit codes: 0 after SIGINT or SIGTERM; 75 when the executable at its own path was
 // replaced, so a supervisor that restarts on failure brings up the new build; 1 when the
-// address is not a loopback address, the port cannot be bound, or the state directory
-// cannot be prepared or read, or another receiver holds the lock. The lock the receiver holds
-// while it runs is what tells the statusline a receiver is there, so a start that gives up
-// leaves none to trust.
+// address is not a loopback address, the port cannot be bound, the state directory cannot be
+// prepared or read, another receiver holds the lock, or a lock file was removed or replaced
+// under a running receiver. The lock the receiver holds while it runs is what tells the
+// statusline a receiver is there, so a start that gives up leaves none to trust.
 package main
 
 import (
@@ -52,10 +52,14 @@ type config struct {
 	SweepEvery time.Duration // how often to remove state past retention; 0 means hourly
 	OnListen   func(net.Addr)
 	OnLocked   func() // tests: called once the start lock is held, before any state is touched
+	// AfterGuard is called, with the kind of write about to follow, once the locks were found
+	// still in place and before the write: the gap tests hold open to replace the lock files
+	// in it.
+	AfterGuard func(op string)
 }
 
 func main() {
-	addr := flag.String("addr", "127.0.0.1:14318", "loopback address to listen on (an IP literal)")
+	addr := flag.String("addr", anchor.DefaultAddr, "loopback address to listen on (an IP literal)")
 	watch := flag.Duration("watch", 30*time.Second, "how often to check whether the executable was replaced")
 	beat := flag.Duration("beat", 30*time.Second, "how often to touch the heartbeat file")
 	flag.Parse()
@@ -96,6 +100,11 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 	// fails below, even one that cannot write anything, leaves no receiver for a reader to
 	// trust. Another receiver holding either (one on another port) keeps its state: nothing is
 	// touched.
+	run, err := anchor.NewRun() // this start, as everything it stores and the live lock name it
+	if err != nil {
+		say("run id unavailable")
+		return exitFailed
+	}
 	lock, err := anchor.LockReceiver(cfg.StateDir)
 	if err != nil {
 		if errors.Is(err, anchor.ErrReceiverRunning) {
@@ -124,30 +133,41 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 		say("generation unavailable")
 		return exitFailed
 	}
-	if err := anchor.WriteGeneration(cfg.StateDir, gen); err != nil {
+	if err := anchor.WriteGeneration(cfg.StateDir, gen, run); err != nil {
 		say("generation unavailable")
 		return exitFailed
 	}
-	// The heartbeat comes last of the state, and the live lock after it: the run is ready.
+	// The heartbeat comes last of the state, and the live lock after it: the run is ready. Ready
+	// takes the lock only over state that is this run's, and the files are checked once more
+	// before anything is served, since a lock file can be replaced between the start and here.
 	if err := anchor.TouchHeartbeat(cfg.StateDir, time.Now()); err != nil {
 		say("heartbeat unavailable")
 		return exitFailed
 	}
-	if err := lock.Ready(); err != nil {
+	if err := lock.Ready(anchor.Receiver{Run: run, Addr: ln.Addr().String()}); err != nil {
 		say("lock unavailable")
+		return exitFailed
+	}
+	if lock.Held() != nil {
+		say("lock file removed or replaced")
 		return exitFailed
 	}
 	anchor.Sweep(cfg.StateDir, time.Now())
 
 	// guard says the locks are still on the files at their paths. If a lock file was removed or
 	// replaced, another receiver can lock the new one and write the same state, so this one
-	// writes nothing more and stops.
+	// writes nothing more and stops. The check and the write after it are two steps: a receiver
+	// held up between them writes once more, which is why everything it stores carries its run
+	// and a reader trusts only the run that holds the live lock.
 	lockLost := make(chan struct{})
 	var lostOnce sync.Once
-	guard := func() bool {
+	guard := func(op string) bool {
 		if lock.Held() != nil {
 			lostOnce.Do(func() { close(lockLost) })
 			return false
+		}
+		if cfg.AfterGuard != nil {
+			cfg.AfterGuard(op)
 		}
 		return true
 	}
@@ -160,7 +180,7 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 	// degraded and withholds its heartbeat until recovered writes it. The count in memory
 	// still moves, so an anchor stored from now on is of the later generation.
 	loss := func() {
-		if !guard() {
+		if !guard("loss") {
 			degraded.Store(true)
 			return
 		}
@@ -170,17 +190,17 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 			return
 		}
 		gen = next
-		if anchor.WriteGeneration(cfg.StateDir, gen) != nil {
+		if anchor.WriteGeneration(cfg.StateDir, gen, run) != nil {
 			degraded.Store(true)
 		}
 	}
 	apply := func(ev anchor.Event) error {
 		mu.Lock()
 		defer mu.Unlock()
-		if !guard() {
+		if !guard("apply") {
 			return anchor.ErrLockLost
 		}
-		_, err := anchor.Apply(cfg.StateDir, ev, gen)
+		_, err := anchor.Apply(cfg.StateDir, ev, gen, run)
 		if err != nil {
 			degraded.Store(true)
 			loss()
@@ -197,17 +217,19 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 	// counted to. That is the generation of the last loss, not a new one: an anchor stored
 	// since the loss (the exporter resends a refused request) carries it and is not doubted,
 	// while what was stored before stays doubted. The count only grows, so a later loss
-	// recorded meanwhile stands.
+	// recorded meanwhile stands. It also puts the receiver's own generation file back when
+	// something else left a different one there (a late write of a receiver that was
+	// replaced), which a reader answers with a doubt of every account until it is mended.
 	recovered := func(now time.Time) bool {
 		mu.Lock()
 		defer mu.Unlock()
-		if !guard() {
+		if !guard("recovered") {
 			return false
 		}
-		if !degraded.Load() {
+		if !degraded.Load() && anchor.GenerationIs(cfg.StateDir, gen, run) {
 			return true
 		}
-		if anchor.Writable(cfg.StateDir) != nil || anchor.WriteGeneration(cfg.StateDir, gen) != nil {
+		if anchor.Writable(cfg.StateDir) != nil || anchor.WriteGeneration(cfg.StateDir, gen, run) != nil {
 			return false
 		}
 		degraded.Store(false)
@@ -216,7 +238,7 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 	sweep := func(now time.Time) {
 		mu.Lock()
 		defer mu.Unlock()
-		if !guard() {
+		if !guard("sweep") {
 			return
 		}
 		anchor.Sweep(cfg.StateDir, now)

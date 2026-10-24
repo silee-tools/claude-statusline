@@ -61,11 +61,18 @@ concurrently, and without the lock a lower version could overwrite a higher one 
 leave `.version` naming a binary that is not there. The receiver holds two `flock`s while
 it runs, a start lock (`otel/receiver.lock`, taken before it touches any state) and a live
 lock (`otel/receiver.live`, taken last), and the render path trusts an anchor only while the
-live lock is held, probed in a few system calls (open, fstat, flock, close) and no child process (opened without
-blocking and without following a link, regular files only): the kernel drops the locks on
-any exit, so a stopped receiver is noticed without a write to the state directory, which a
-heartbeat file needs. The receiver checks before each state write that its locks are still on
-the files at their paths and exits when they are not. The script names no service:
+live lock is held, probed in a few system calls (open, fstat, flock, read, close) and no child
+process (opened without blocking and without following a link, regular files only): the kernel
+drops the locks on any exit, so a stopped receiver is noticed without a write to the state
+directory, which a heartbeat file needs. Each start has a random run id that the receiver writes
+into the live lock's file (with its address, through the held file: replacing it would cost the
+receiver its own lock), the generation file and every anchor, and the render path trusts only what
+carries the run of the receiver that holds the lock and the address the sessions send to
+(`127.0.0.1:14318`, or `CLAUDE_STATUSLINE_OTLP_ADDR`: Claude Code does not pass `OTEL_*` on to the
+status line). The receiver checks before each state write that its locks are still on the files at
+their paths and exits when they are not; a write held up past that check is the replaced
+receiver's run, which is not trusted. State files are read only as regular files, without
+blocking and without following a link (`statefile.Read`). The script names no service:
 starting and restarting the receiver is the supervisor's job, which keeps the source
 publishable.
 
@@ -134,11 +141,13 @@ pass. `shim.test.sh` asserts what the shim does with and without a binary and
 that `build-binary.sh` is idempotent, never blocks session start, and leaves the
 highest version published when publishers of several versions race.
 `otlp.test.sh` starts the receiver on `127.0.0.1:0`, never a fixed port, posts
-requests with `curl`, reads the account slot back through the shim, and stops the
-receiver by the pid it recorded.
+requests with `curl`, reads the account slot back through the shim with
+`CLAUDE_STATUSLINE_OTLP_ADDR` naming that port, and stops the receiver by the pid it recorded.
 `statusline.test.sh` and `config-dir.test.sh` seed anchors without a receiver, so they
-build `tests/testdata/lockholder` (a program that takes the same locks through
-`anchor.LockReceiver` and `Ready`) and keep it running, as a live receiver would.
+build `tests/testdata/lockholder` (a program that writes the generation file for a run
+given as its argument and takes the same locks through `anchor.LockReceiver` and `Ready`,
+listening at the default address) and keep it running, as a live receiver would; the
+anchors they seed carry that run.
 `json.test.sh` and `settings.test.sh` cover the awk parser and rewriter the
 `SessionStart` hook still uses.
 

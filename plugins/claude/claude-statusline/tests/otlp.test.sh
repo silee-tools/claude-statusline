@@ -53,11 +53,13 @@ running_session() {
   printf '{"pid":%s,"sessionId":"%s","startedAt":1}\n' "$!" "$1" > "$CLAUDE_CONFIG_DIR/sessions/$!.json"
 }
 
-# 한 줄짜리 계정 칸: 첫 줄에서 색 코드를 지운다.
-first_line() {
-  printf '{"session_id":"%s","workspace":{"current_dir":"/tmp"},"version":"9.9.9"}' "$1" \
-    | CLAUDE_STATUSLINE_WIDTH=120 sh "$SL" | sed -n '1p' | sed "s/${ESC}\[[0-9;]*m//g"
+# 한 줄짜리 계정 칸: 첫 줄에서 색 코드를 지운다. 상태줄은 수신기가 기본 주소에서 듣는다고 보므로, 임시 포트에서 듣는
+# 이 시험의 수신기 주소를 알려 준다(CLAUDE_STATUSLINE_OTLP_ADDR 는 Claude Code 가 상태줄에 넘기는 환경변수다).
+first_line_at() { # <수신기 주소> <session id>
+  printf '{"session_id":"%s","workspace":{"current_dir":"/tmp"},"version":"9.9.9"}' "$2" \
+    | CLAUDE_STATUSLINE_OTLP_ADDR="$1" CLAUDE_STATUSLINE_WIDTH=120 sh "$SL" | sed -n '1p' | sed "s/${ESC}\[[0-9;]*m//g"
 }
+first_line() { first_line_at "127.0.0.1:${PORT:-}" "$1"; }
 
 # --- 요청 만들기 ---
 TICK=0
@@ -112,6 +114,11 @@ assert_contains "/login 은 s2 를 바꾸지 않는다" " ~b@example.com ⧉ s2"
 # 실패한 로그인은 앵커를 바꾸지 않는다.
 post "$(record auth s2 d@example.com "$(auth_extra login false)")" >/dev/null
 assert_contains "실패한 로그인은 무시" " ~b@example.com ⧉ s2" "$(first_line s2)"
+
+# --- 수신기가 세션들이 보내는 주소에서 듣지 않으면(다른 포트로 띄운 수신기가 잠금을 쥔 경우) 앵커를 믿지 않는다 ---
+assert_contains "다른 주소의 수신기이면 이메일 뒤 ?" " ~b@example.com? ⧉ s2" "$(first_line_at 127.0.0.1:9 s2)"
+assert_contains "수신기가 듣는 주소를 알려 주면 ? 없음" " ~b@example.com ⧉ s2" "$(first_line_at "127.0.0.1:$PORT" s2)"
+assert_contains "기본 주소가 아닌 수신기를 설정 없이 보면 ?" " ~b@example.com? ⧉ s2" "$(printf '{"session_id":"s2","workspace":{"current_dir":"/tmp"},"version":"9.9.9"}' | CLAUDE_STATUSLINE_WIDTH=120 sh "$SL" | sed -n '1p' | sed "s/${ESC}\[[0-9;]*m//g")"
 
 # --- 로그아웃 → ? ---
 post "$(record auth s1 '' "$(auth_extra logout true)")" >/dev/null

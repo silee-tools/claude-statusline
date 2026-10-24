@@ -1,7 +1,6 @@
 package ratelimit
 
 import (
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -47,7 +46,7 @@ var windowKeys = [2][2]string{{"five", "fiveSince"}, {"week", "weekSince"}}
 
 func loadFingerprint(file string) fingerprintState {
 	var st fingerprintState
-	b, err := os.ReadFile(file)
+	b, err := statefile.Read(file)
 	if err != nil {
 		return st
 	}

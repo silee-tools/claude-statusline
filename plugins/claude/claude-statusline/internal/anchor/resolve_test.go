@@ -28,13 +28,15 @@ type fixture struct {
 	t      *testing.T
 	state  string
 	config string
-	gen    int64 // the receiver generation apply stores anchors under
+	gen    int64  // the receiver generation apply stores anchors under
+	run    string // the start of the receiver apply stores anchors for
+	listen string // where the receiver says it listens
 	lock   *ReceiverLock
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	f := &fixture{t: t, state: t.TempDir(), config: t.TempDir(), gen: testGen}
+	f := &fixture{t: t, state: t.TempDir(), config: t.TempDir(), gen: testGen, run: testRun, listen: DefaultAddr}
 	if err := os.MkdirAll(filepath.Join(f.config, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +47,7 @@ func newFixture(t *testing.T) *fixture {
 // as two Claude config directories of one user do.
 func (f *fixture) otherProfile() *fixture {
 	f.t.Helper()
-	g := &fixture{t: f.t, state: f.state, config: f.t.TempDir(), gen: f.gen}
+	g := &fixture{t: f.t, state: f.state, config: f.t.TempDir(), gen: f.gen, run: f.run, listen: f.listen}
 	if err := os.MkdirAll(filepath.Join(g.config, "sessions"), 0o755); err != nil {
 		f.t.Fatal(err)
 	}
@@ -59,25 +61,28 @@ func (f *fixture) install(heartbeatAge time.Duration, now time.Time) {
 	if err := os.MkdirAll(sessionsDir(f.state), 0o700); err != nil {
 		f.t.Fatal(err)
 	}
+	if err := WriteGeneration(f.state, f.gen, f.run); err != nil {
+		f.t.Fatal(err)
+	}
+	// A receiver is ready over a heartbeat; a test that wants none takes it away afterwards.
+	if err := TouchHeartbeat(f.state, now.Add(-max(heartbeatAge, 0))); err != nil {
+		f.t.Fatal(err)
+	}
 	if f.lock == nil {
 		lock, err := LockReceiver(f.state)
 		if err != nil {
 			f.t.Fatal(err)
 		}
-		if err := lock.Ready(); err != nil {
+		if err := lock.Ready(Receiver{Run: f.run, Addr: f.listen}); err != nil {
 			f.t.Fatal(err)
 		}
 		f.lock = lock
 		f.t.Cleanup(func() { lock.Close() })
 	}
-	if err := WriteGeneration(f.state, f.gen); err != nil {
-		f.t.Fatal(err)
-	}
 	if heartbeatAge < 0 {
-		return
-	}
-	if err := TouchHeartbeat(f.state, now.Add(-heartbeatAge)); err != nil {
-		f.t.Fatal(err)
+		if err := os.Remove(filepath.Join(f.state, "otel", "heartbeat")); err != nil {
+			f.t.Fatal(err)
+		}
 	}
 }
 
@@ -121,7 +126,13 @@ func (f *fixture) dead(pids ...int) {
 
 func (f *fixture) apply(e Event) {
 	f.t.Helper()
-	if _, err := Apply(f.state, e, f.gen); err != nil {
+	f.applyAs(f.run, e)
+}
+
+// applyAs stores an anchor as the receiver of another start would.
+func (f *fixture) applyAs(run string, e Event) {
+	f.t.Helper()
+	if _, err := Apply(f.state, e, f.gen, run); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -290,7 +301,7 @@ func TestAnAnchorStoredBeforeTheReceiversGenerationIsSuspectUntilAnEventReplaces
 	}
 	// The receiver restarted: it may have missed a /login while it was down.
 	f.gen++
-	if err := WriteGeneration(f.state, f.gen); err != nil {
+	if err := WriteGeneration(f.state, f.gen, f.run); err != nil {
 		t.Fatal(err)
 	}
 	got := f.resolve("s1", now)
@@ -327,7 +338,7 @@ func TestACarriedAnchorKeepsTheGenerationItWasStoredIn(t *testing.T) {
 	f.proc(11, t0, "s1")
 	f.apply(login("s1", "a@example.com", t0+900))
 	f.wantEmail("s1", now, "a@example.com")
-	if err := WriteGeneration(f.state, f.gen+1); err != nil {
+	if err := WriteGeneration(f.state, f.gen+1, f.run); err != nil {
 		t.Fatal(err)
 	}
 	f.proc(11, t0, "s2") // /clear
@@ -893,7 +904,7 @@ func TestAnAnchorOfAnEarlierGenerationIsSuspectWhateverItsTimeSays(t *testing.T)
 	f.apply(login("s1", "a@example.com", t0+900))
 	f.wantEmail("s1", now, "a@example.com")
 	f.gen++
-	if err := WriteGeneration(f.state, f.gen); err != nil {
+	if err := WriteGeneration(f.state, f.gen, f.run); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.wantEmail("s1", now, "a@example.com"); !got.Suspect {
@@ -917,13 +928,13 @@ func TestAnAnchorWithoutAGenerationNumberIsSuspect(t *testing.T) {
 
 func TestAnAppliedAnchorCarriesTheGenerationItWasStoredIn(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := Apply(dir, login("s1", "a@example.com", t0), 7); err != nil {
+	if _, err := Apply(dir, login("s1", "a@example.com", t0), 7, testRun); err != nil {
 		t.Fatal(err)
 	}
 	if got, ok := Read(dir, "s1"); !ok || got.Gen != 7 {
 		t.Errorf("Read = %+v, %v; want gen 7", got, ok)
 	}
-	if _, err := Apply(dir, login("s1", "b@example.com", t0+1000), 9); err != nil {
+	if _, err := Apply(dir, login("s1", "b@example.com", t0+1000), 9, testRun); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := Read(dir, "s1"); got.Gen != 9 {
@@ -980,7 +991,8 @@ func TestNextGenerationIsPastTheFileAndEveryStoredAnchor(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, 1},
-		{"a link is followed as a reader follows it", func(t *testing.T, state string) {
+		// A reader does not follow a link, so what it points to is no anchor and counts for nothing.
+		{"a link to an anchor is not an anchor", func(t *testing.T, state string) {
 			target := filepath.Join(t.TempDir(), "elsewhere.env")
 			writeFile(t, target, anchorBody("9"))
 			if err := os.MkdirAll(sessionsDir(state), 0o700); err != nil {
@@ -989,7 +1001,7 @@ func TestNextGenerationIsPastTheFileAndEveryStoredAnchor(t *testing.T) {
 			if err := os.Symlink(target, filepath.Join(sessionsDir(state), "s1.env")); err != nil {
 				t.Fatal(err)
 			}
-		}, 10},
+		}, 1},
 		{"a link whose target is gone is skipped", func(t *testing.T, state string) {
 			writeFile(t, generationPath(state), "5\n")
 			if err := os.MkdirAll(sessionsDir(state), 0o700); err != nil {
@@ -1116,7 +1128,7 @@ func TestNextGenerationFailsWhenTheStateCannotBeSeenWhole(t *testing.T) {
 func TestWriteGenerationRecordsOnlyAGeneration(t *testing.T) {
 	for _, bad := range []int64{0, -1, math.MinInt64, math.MaxInt64, MaxGeneration + 1} {
 		state := t.TempDir()
-		if err := WriteGeneration(state, bad); err == nil {
+		if err := WriteGeneration(state, bad, testRun); err == nil {
 			t.Errorf("WriteGeneration(%d) 가 기록했다", bad)
 		}
 		if _, err := os.Stat(generationPath(state)); err == nil {
@@ -1125,7 +1137,7 @@ func TestWriteGenerationRecordsOnlyAGeneration(t *testing.T) {
 	}
 	for _, good := range []int64{1, 2, MaxGeneration} {
 		state := t.TempDir()
-		if err := WriteGeneration(state, good); err != nil {
+		if err := WriteGeneration(state, good, testRun); err != nil {
 			t.Errorf("WriteGeneration(%d): %v", good, err)
 		}
 	}

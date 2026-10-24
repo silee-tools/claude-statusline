@@ -38,7 +38,7 @@ OTEL="$XDG_STATE_HOME/claude-statusline/otel"
 mkdir -p "$CACHE" "$OTEL/sessions"
 touch "$OTEL/heartbeat"
 # 계정은 수신기가 쥔 잠금이 잡혀 있을 때만 믿는다. 시험은 수신기 없이 파일을 심으므로 같은 잠금을 쥐는 프로그램을 띄운다.
-"$WORK/lockholder" "$XDG_STATE_HOME/claude-statusline" > "$WORK/lockhold.out" 2>&1 &
+"$WORK/lockholder" "$XDG_STATE_HOME/claude-statusline" cfgrun > "$WORK/lockhold.out" 2>&1 &
 LOCK_PID=$!
 _n=0
 until grep -q locked "$WORK/lockhold.out" 2>/dev/null; do _n=$((_n + 1)); [ "$_n" -lt 100 ] || { echo "FATAL: 잠금 보유자가 뜨지 않았다" >&2; exit 1; }; sleep 0.05; done
@@ -46,9 +46,9 @@ until grep -q locked "$WORK/lockhold.out" 2>/dev/null; do _n=$((_n + 1)); [ "$_n
 printf '{"oauthAccount":{"emailAddress":"custom@example.com"}}' > "$HOME/.claude.json"
 printf '{"oauthAccount":{"emailAddress":"default@example.com"}}' > "$CUSTOM/.claude.json"
 SEEN="$(date +%s)000"
-printf '1\n' > "$OTEL/generation"
-printf 'email=default@example.com\nkind=start\nts=1700000000000\nseen=%s\ngen=1\n' "$SEEN" > "$OTEL/sessions/sess-default.env"
-printf 'email=custom@example.com\nkind=start\nts=1700000001000\nseen=%s\ngen=1\n' "$SEEN" > "$OTEL/sessions/sess-custom.env"
+printf '1\nrun=cfgrun\n' > "$OTEL/generation"
+printf 'email=default@example.com\nkind=start\nts=1700000000000\nseen=%s\ngen=1\nrun=cfgrun\n' "$SEEN" > "$OTEL/sessions/sess-default.env"
+printf 'email=custom@example.com\nkind=start\nts=1700000001000\nseen=%s\ngen=1\nrun=cfgrun\n' "$SEEN" > "$OTEL/sessions/sess-custom.env"
 # 한도 캐시는 실행 프로세스별이다. 프로세스는 각 설정 폴더의 sessions/<pid>.json 으로 알아내고, 실행 중인 pid 만
 # 프로세스로 인정하므로 시험의 프로세스는 살아 있는 sleep 이다.
 mkdir -p "$HOME/.claude/sessions" "$CUSTOM/sessions"

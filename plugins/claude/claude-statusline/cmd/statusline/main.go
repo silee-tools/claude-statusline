@@ -60,6 +60,10 @@ func main() {
 	session := anchor.Input{
 		StateDir: claudeStateDir(home), ConfigDir: configDir, SessionID: status.SessionID,
 		Parent: os.Getppid(), Now: now,
+		// Claude Code does not pass its OTEL_* settings on to the status line, so the address the
+		// events go to cannot be read from there: a receiver is expected where the settings of
+		// this machine send them, or where the user says.
+		Addr: os.Getenv("CLAUDE_STATUSLINE_OTLP_ADDR"),
 	}
 	limits := windows(cacheDir, session, status)
 	var usage []agentstatus.Window

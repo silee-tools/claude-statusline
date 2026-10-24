@@ -13,8 +13,12 @@ func ev(name, id, email string, ts int64) Event {
 	return Event{Name: name, SessionID: id, Email: email, TS: ts}
 }
 
-// testGen is the receiver generation the tests store their anchors under.
-const testGen = int64(1)
+// testGen and testRun are the receiver generation and start the tests store their anchors
+// under.
+const (
+	testGen = int64(1)
+	testRun = "testrun"
+)
 
 func login(id, email string, ts int64) Event {
 	return Event{Name: "auth", SessionID: id, Email: email, Action: "login", Success: "true", TS: ts}
@@ -26,7 +30,7 @@ func logout(id string, ts int64) Event {
 
 func mustApply(t *testing.T, dir string, e Event) bool {
 	t.Helper()
-	changed, err := Apply(dir, e, testGen)
+	changed, err := Apply(dir, e, testGen, testRun)
 	if err != nil {
 		t.Fatalf("Apply(%+v): %v", e, err)
 	}
@@ -36,7 +40,7 @@ func mustApply(t *testing.T, dir string, e Event) bool {
 func wantAnchor(t *testing.T, dir, id string, want Anchor) {
 	t.Helper()
 	got, ok := Read(dir, id)
-	got.Seen, got.Gen = 0, 0 // when and under which generation the receiver stored it is checked on its own
+	got.Seen, got.Gen, got.Run = 0, 0, "" // when, under which generation and by which start the receiver stored it is checked on its own
 	if !ok || got != want {
 		t.Fatalf("Read(%s) = %+v, %v; want %+v", id, got, ok, want)
 	}
@@ -159,7 +163,7 @@ func TestInvalidSessionIDsAndEmailsAreIgnored(t *testing.T) {
 	}
 }
 
-func TestAnchorFileIsPrivateAndHoldsOnlyTheFiveFields(t *testing.T) {
+func TestAnchorFileIsPrivateAndHoldsOnlyItsFields(t *testing.T) {
 	dir := t.TempDir()
 	old := clock
 	t.Cleanup(func() { clock = old })
@@ -170,7 +174,7 @@ func TestAnchorFileIsPrivateAndHoldsOnlyTheFiveFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(b) != "email=a@example.com\nkind=start\nts=1234\nseen=5678\ngen=1\n" {
+	if string(b) != "email=a@example.com\nkind=start\nts=1234\nseen=5678\ngen=1\nrun=testrun\n" {
 		t.Errorf("파일 내용 = %q", b)
 	}
 	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
