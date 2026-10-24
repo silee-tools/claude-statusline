@@ -207,14 +207,18 @@ func receiverAlive(stateDir string) bool {
 // a regular file (a FIFO, a link) and any error opening or probing it all say the receiver is
 // not known to be running. The open does not block and the shared probe is let go of with the
 // file at once. The content is read through the file the probe met the lock on, so the lock and
-// the run it is read with belong to the same file.
+// the run it is read with belong to the same file, and that file counts only if the path still
+// leads to it once both are read: a lock file replaced or removed in between belongs to a
+// receiver the statusline no longer finds there. A replacement after this check is not seen.
 func probeLive(stateDir string) (held bool, self Receiver) {
-	f, err := os.OpenFile(liveLockPath(stateDir), os.O_RDONLY|openFlags, 0)
+	path := liveLockPath(stateDir)
+	f, err := os.OpenFile(path, os.O_RDONLY|openFlags, 0)
 	if err != nil {
 		return false, Receiver{}
 	}
 	defer f.Close()
-	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() {
 		return false, Receiver{}
 	}
 	if !errors.Is(flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB), syscall.EWOULDBLOCK) {
@@ -222,6 +226,9 @@ func probeLive(stateDir string) (held bool, self Receiver) {
 	}
 	buf := make([]byte, 256)
 	n, _ := f.Read(buf)
+	if now, err := os.Lstat(path); err != nil || !os.SameFile(fi, now) {
+		return false, Receiver{}
+	}
 	return true, parseReceiver(string(buf[:n]))
 }
 

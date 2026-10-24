@@ -456,22 +456,73 @@ func TestAStateFileThatIsALinkIsNotRead(t *testing.T) {
 	}
 }
 
-// The run is read from the file the probe met the lock on. Opening the path again would pair the
-// lock of one file with the run of another when the path changes in between.
-func TestTheRunIsReadFromTheFileTheLockWasMetOn(t *testing.T) {
-	state := otelDir(t)
-	readyReceiver(t, state)
+// What happens to the live lock's path at the instant a probe has met the lock on the file it
+// opened. A path that leads elsewhere, or nowhere, is told only by looking at it again after the
+// lock and the content were read.
+var liveLockPathChanges = []struct {
+	name    string
+	change  func(path string) // nil leaves the path alone: the control
+	trusted bool
+}{
+	{"replaced by another file", func(path string) {
+		os.Remove(path)
+		os.WriteFile(path, []byte("run=other\naddr="+DefaultAddr+"\n"), 0o600)
+	}, false},
+	{"removed", func(path string) { os.Remove(path) }, false},
+	{"left alone", nil, true},
+}
+
+func changeLiveLockUnderTheProbe(t *testing.T, state string, change func(path string)) {
+	t.Helper()
 	old := flock
 	t.Cleanup(func() { flock = old })
 	flock = func(fd, how int) error {
 		err := old(fd, how)
-		os.Remove(liveLockPath(state)) // the path now holds another file, with another run
-		os.WriteFile(liveLockPath(state), []byte("run=other\naddr="+DefaultAddr+"\n"), 0o600)
+		if change != nil {
+			change(liveLockPath(state))
+		}
 		return err
 	}
-	held, self := probeLive(state)
-	if !held || self.Run != testRun {
-		t.Fatalf("probeLive = %v, %+v; want the run of the file that was locked", held, self)
+}
+
+// The run is read from the file the probe met the lock on, so the lock and the run belong to one
+// file. That file counts only while the path still leads to it: a receiver whose lock file was
+// replaced or removed is not what the statusline finds at the path, however the old file reads.
+func TestALiveLockWhosePathChangedUnderTheProbeIsNotAReceiver(t *testing.T) {
+	for _, c := range liveLockPathChanges {
+		t.Run(c.name, func(t *testing.T) {
+			state := otelDir(t)
+			readyReceiver(t, state)
+			changeLiveLockUnderTheProbe(t, state, c.change)
+			held, self := probeLive(state)
+			want := Receiver{}
+			if c.trusted {
+				want = Receiver{Run: testRun, Addr: DefaultAddr}
+			}
+			if held != c.trusted || self != want {
+				t.Errorf("probeLive = %v, %+v; want %v, %+v", held, self, c.trusted, want)
+			}
+		})
+	}
+}
+
+// The same change through Resolve. The generation file, the anchor and the heartbeat all name the
+// run of the file that was locked, so only the live lock's path says that receiver is gone: the
+// account stays, with the doubt behind it.
+func TestAnAccountIsDoubtedWhenTheLiveLockPathChangedUnderTheProbe(t *testing.T) {
+	for _, c := range liveLockPathChanges {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			now := at(t0 + 60_000)
+			f.install(0, now)
+			f.proc(11, t0, "s1")
+			f.clockAt(t0 + 1000)
+			f.apply(login("s1", "a@example.com", t0+900))
+			changeLiveLockUnderTheProbe(t, f.state, c.change)
+			if got := f.wantEmail("s1", now, "a@example.com"); got.Suspect == c.trusted {
+				t.Errorf("Resolve = %+v, want the account %s", got, map[bool]string{true: "trusted", false: "doubted"}[c.trusted])
+			}
+		})
 	}
 }
 
