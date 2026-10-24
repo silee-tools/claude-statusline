@@ -61,7 +61,7 @@ concurrently, and without the lock a lower version could overwrite a higher one 
 leave `.version` naming a binary that is not there. The receiver holds two `flock`s while
 it runs, a start lock (`otel/receiver.lock`, taken before it touches any state) and a live
 lock (`otel/receiver.live`, taken last), and the render path trusts an anchor only while the
-live lock is held, probed in a few system calls (open, fstat, flock, read, close) and no child
+live lock is held, probed in a few system calls (open, fstat, flock, read, lstat, close) and no child
 process (opened without blocking and without following a link, regular files only): the kernel
 drops the locks on any exit, so a stopped receiver is noticed without a write to the state
 directory, which a heartbeat file needs. Each start has a random run id that the receiver writes
