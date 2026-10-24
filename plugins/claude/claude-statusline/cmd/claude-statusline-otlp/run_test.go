@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -333,7 +335,34 @@ func TestAStartThatCannotTakeTheLiveLockGivesUp(t *testing.T) {
 	if code := serve(ctx, cfg, stderr); code != exitFailed {
 		t.Fatalf("종료코드 %d, want %d (stderr=%q)", code, exitFailed, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "lock unavailable") {
+	if !strings.Contains(stderr.String(), "live lock is held") {
 		t.Errorf("포기한 이유가 stderr 에 없다: %q", stderr.String())
+	}
+}
+
+// A run started by hand is told apart what stopped it from becoming ready: who holds the lock, a
+// lock file that was replaced, state that is not this run's (a late write of a receiver that was
+// replaced put its own there) and anything else. The log of a supervised run is /dev/null.
+func TestTheReasonAStartCouldNotBecomeReadyIsNamed(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{anchor.ErrReceiverRunning, "live lock is held"},
+		{anchor.ErrLockLost, "lock file removed or replaced"},
+		{anchor.ErrNotReady, "state to publish is not this run's"},
+		{fmt.Errorf("wrapped: %w", anchor.ErrNotReady), "state to publish is not this run's"},
+		{errors.New("open: permission denied"), "lock unavailable"},
+	}
+	seen := map[string]bool{}
+	for _, c := range cases {
+		got := readyFailure(c.err)
+		if got != c.want {
+			t.Errorf("readyFailure(%v) = %q, want %q", c.err, got, c.want)
+		}
+		seen[got] = true
+	}
+	if len(seen) != 4 {
+		t.Errorf("원인 네 가지가 서로 다른 문구여야 한다: %v", seen)
 	}
 }

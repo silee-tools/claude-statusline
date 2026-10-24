@@ -17,6 +17,8 @@ HOME="$TMPROOT/home"; CLAUDE_CONFIG_DIR="$TMPROOT/claude-config"
 XDG_DATA_HOME="$TMPROOT/data"; XDG_CACHE_HOME="$TMPROOT/cache"; XDG_CONFIG_HOME="$TMPROOT/config"
 XDG_STATE_HOME="$TMPROOT/state"; AWS_LOGIN_CACHE_DIR="$TMPROOT/no-aws"
 export HOME CLAUDE_CONFIG_DIR XDG_DATA_HOME XDG_CACHE_HOME XDG_CONFIG_HOME XDG_STATE_HOME AWS_LOGIN_CACHE_DIR
+# 개발자 셸이 내보낸 수신기 주소가 '설정 없이 보면 ?' 단언을 뒤집지 않게 한다. 주소는 호출마다 직접 준다.
+unset CLAUDE_STATUSLINE_OTLP_ADDR
 for _v in "$HOME" "$CLAUDE_CONFIG_DIR" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"; do
   case "$_v" in "$TMPROOT"*) ;; *) echo "FATAL: 격리되지 않은 경로 $_v" >&2; exit 1;; esac
 done

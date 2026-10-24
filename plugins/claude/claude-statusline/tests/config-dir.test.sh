@@ -16,6 +16,8 @@ XDG_DATA_HOME="$WORK/data"; export XDG_DATA_HOME
 CLAUDE_CONFIG_DIR="$WORK/claude-config"; export CLAUDE_CONFIG_DIR
 AWS_LOGIN_CACHE_DIR="$WORK/no-aws"; export AWS_LOGIN_CACHE_DIR
 CLAUDE_STATUSLINE_WIDTH=120; export CLAUDE_STATUSLINE_WIDTH
+# 개발자 셸이 내보낸 수신기 주소가 lockholder 의 기본 주소와 어긋나 거짓 실패를 만들지 않게 한다.
+unset CLAUDE_STATUSLINE_OTLP_ADDR
 ROOT="$WORK/plugin"
 CUSTOM="$HOME/별도 계정"
 mkdir -p "$ROOT/scripts" "$HOME/.claude" "$CUSTOM"
