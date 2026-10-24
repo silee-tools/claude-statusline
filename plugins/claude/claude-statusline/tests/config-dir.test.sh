@@ -41,8 +41,8 @@ printf '{"oauthAccount":{"emailAddress":"custom@example.com"}}' > "$HOME/.claude
 printf '{"oauthAccount":{"emailAddress":"default@example.com"}}' > "$CUSTOM/.claude.json"
 SEEN="$(date +%s)000"
 printf '1\n' > "$OTEL/generation"
-printf 'email=default@example.com\nkind=start\nts=1700000000000\nseen=%s\n' "$SEEN" > "$OTEL/sessions/sess-default.env"
-printf 'email=custom@example.com\nkind=start\nts=1700000001000\nseen=%s\n' "$SEEN" > "$OTEL/sessions/sess-custom.env"
+printf 'email=default@example.com\nkind=start\nts=1700000000000\nseen=%s\ngen=1\n' "$SEEN" > "$OTEL/sessions/sess-default.env"
+printf 'email=custom@example.com\nkind=start\nts=1700000001000\nseen=%s\ngen=1\n' "$SEEN" > "$OTEL/sessions/sess-custom.env"
 # 한도 캐시는 실행 프로세스별이다. 프로세스는 각 설정 폴더의 sessions/<pid>.json 으로 알아내고, 실행 중인 pid 만
 # 프로세스로 인정하므로 시험의 프로세스는 살아 있는 sleep 이다.
 mkdir -p "$HOME/.claude/sessions" "$CUSTOM/sessions"

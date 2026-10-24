@@ -5,11 +5,11 @@
 // and a heartbeat the statusline reads to tell whether anyone is listening. stderr carries
 // only what happened (start, stop, failure kinds), never a value from a request.
 //
-// Anything it could not store makes it answer 503 so the exporter retries, bumps the
-// generation (otel/generation) so the anchors it holds are doubted, and stops touching the
-// heartbeat until a write succeeds again. The same bump marks every start, because a
-// /login that arrived while it was down is lost. Once an hour it removes what is past
-// retention.
+// Anything it could not store makes it answer 503 so the exporter retries, moves to the next
+// generation (otel/generation, a counter) so the anchors it holds are doubted, and stops
+// touching the heartbeat until a write succeeds again. Every start moves to the next
+// generation too, because a /login that arrived while it was down is lost. Once an hour it
+// removes what is past retention.
 //
 // Exit codes: 0 after SIGINT or SIGTERM; 75 when the executable at its own path was
 // replaced, so a supervisor that restarts on failure brings up the new build; 1 when the
@@ -88,8 +88,10 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 		return exitFailed
 	}
 	// Events sent while no receiver ran are gone, so every anchor stored before this
-	// start is doubted until a later event replaces it.
-	if err := anchor.WriteGeneration(cfg.StateDir, time.Now()); err != nil {
+	// start is doubted until a later event replaces it: this run's generation is past every
+	// number the state holds, which no setting of the clock changes.
+	gen := anchor.NextGeneration(cfg.StateDir) // guarded by mu once the server runs
+	if err := anchor.WriteGeneration(cfg.StateDir, gen); err != nil {
 		say("generation unavailable")
 		return exitFailed
 	}
@@ -102,20 +104,20 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 	// Apply reads the stored anchor before replacing it, so concurrent requests take turns.
 	var mu sync.Mutex
 	var degraded atomic.Bool
-	var lastFailure time.Time // guarded by mu: when an event was last lost
-	// loss records that events may have been lost now. When the generation cannot be
-	// written the loss is unrecorded, so the receiver counts as degraded and withholds its
-	// heartbeat until recovered writes it.
+	// loss records that events may have been lost: the receiver moves to the next generation.
+	// When the number cannot be written the loss is unrecorded, so the receiver counts as
+	// degraded and withholds its heartbeat until recovered writes it. The count in memory
+	// still moves, so an anchor stored from now on is of the later generation.
 	loss := func() {
-		lastFailure = time.Now()
-		if anchor.RaiseGeneration(cfg.StateDir, lastFailure) != nil {
+		gen++
+		if anchor.WriteGeneration(cfg.StateDir, gen) != nil {
 			degraded.Store(true)
 		}
 	}
 	apply := func(ev anchor.Event) error {
 		mu.Lock()
 		defer mu.Unlock()
-		_, err := anchor.Apply(cfg.StateDir, ev)
+		_, err := anchor.Apply(cfg.StateDir, ev, gen)
 		if err != nil {
 			degraded.Store(true)
 			loss()
@@ -128,18 +130,18 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 		defer mu.Unlock()
 		loss()
 	}
-	// recovered says state can be written again. The generation it settles on is the time of
-	// the last loss, not the time of recovery: an anchor stored since the loss (the exporter
-	// resends a refused request) came after it and must not be doubted by it, while what was
-	// stored before stays doubted. The generation never moves back, so a later loss recorded
-	// meanwhile stands.
+	// recovered says state can be written again, and writes the generation the receiver has
+	// counted to. That is the generation of the last loss, not a new one: an anchor stored
+	// since the loss (the exporter resends a refused request) carries it and is not doubted,
+	// while what was stored before stays doubted. The count only grows, so a later loss
+	// recorded meanwhile stands.
 	recovered := func(now time.Time) bool {
 		mu.Lock()
 		defer mu.Unlock()
 		if !degraded.Load() {
 			return true
 		}
-		if anchor.Writable(cfg.StateDir) != nil || anchor.RaiseGeneration(cfg.StateDir, lastFailure) != nil {
+		if anchor.Writable(cfg.StateDir) != nil || anchor.WriteGeneration(cfg.StateDir, gen) != nil {
 			return false
 		}
 		degraded.Store(false)
@@ -153,10 +155,12 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 	srv := &http.Server{
 		Handler: newHandler(apply, time.Now, func(kind string) {
 			say("request failed: " + kind)
-			// A request refused as oversized or unreadable is a batch dropped whole, a /login
-			// with it, whatever the sender. A process that can post here could also write the
-			// anchors, so the cost of a false alarm is an extra "?".
-			if kind == logTooLarge || kind == logBadRequest {
+			// A request refused as oversized, unreadable or compressed is a batch dropped whole,
+			// a /login with it, whatever the sender. A process that can post here could also
+			// write the anchors, so the cost of a false alarm is an extra "?". A request of
+			// another media type is not counted: Claude Code is pinned to JSON, so it is some
+			// other exporter's, and one that kept sending would hold every account in doubt.
+			if kind == logTooLarge || kind == logBadRequest || kind == logUnreadableEncoding {
 				lost()
 			}
 		}),
@@ -170,12 +174,19 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 		cfg.OnListen(ln.Addr())
 	}
 
+	// serve returns only after the workers stopped, so nothing writes the state after it.
 	stop := make(chan struct{})
+	var workers sync.WaitGroup
+	defer workers.Wait()
 	defer close(stop)
-	go heartbeat(stop, cfg, recovered)
-	go sweeper(stop, cfg, sweep)
+	work := func(f func()) {
+		workers.Add(1)
+		go func() { defer workers.Done(); f() }()
+	}
+	work(func() { heartbeat(stop, cfg, recovered) })
+	work(func() { sweeper(stop, cfg, sweep) })
 	replaced := make(chan struct{})
-	go watchExecutable(stop, cfg, replaced)
+	work(func() { watchExecutable(stop, cfg, replaced) })
 
 	code := 0
 	select {

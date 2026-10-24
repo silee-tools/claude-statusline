@@ -183,8 +183,8 @@ var fingerprintWindows = []ratelimit.Window{ratelimit.WindowFive, ratelimit.Wind
 
 // accountSlot is the Claude account of the first row: the session's anchor, marked as an
 // estimate unless an in-session /login named it, with a question mark when the account
-// may have changed unseen: the receiver looks stopped, the anchor predates its current
-// run, or a rate-limit window of the session changed before it ended.
+// may have changed unseen: the receiver looks stopped, the anchor is of an earlier receiver
+// generation, or a rate-limit window of the session changed before it ended.
 func accountSlot(in anchor.Input, status input.Status) string {
 	res := anchor.Resolve(in)
 	if res.Email != "" {
