@@ -351,10 +351,12 @@ previous boundary saw. Where the process cannot be told, nothing is kept.
   email until a `/login` inside it is seen again. Events sent while the receiver was down
   are lost, and a `/login` among them would otherwise go unseen. A generation is a counter,
   not a time, so correcting the system clock cannot make a stored anchor look current.
-- The statusline looks at the live lock's path again after it has read the lock, and a change
-  there counts as no receiver. A change after that look, within the same render, is not seen:
-  that one render still shows the account as confirmed. The next render finds the path changed
-  and puts `?` behind it, and the replaced receiver exits 1 at its next heartbeat tick or write.
+- The statusline looks at the live lock's path again after it has read the lock, and a path that
+  no longer leads to that file counts as no receiver. A change after that look, within the same
+  render, is not seen: that one render still shows the account as confirmed. A path that is still
+  changed at the next render gets `?` behind the account, and the replaced receiver exits 1 if it
+  finds the path changed at its next heartbeat tick or write. Only the path at the moment of each
+  look counts: a file moved away and put back before then is trusted again.
 - Two Claude Code processes that run the same session id at the same time share one anchor.
 - A session that quietly takes over another session's credentials at a token refresh
   emits no event. The only trace is a rate-limit window changing before it ends, which
@@ -418,8 +420,8 @@ the status line command (measured on 2.1.310, for both settings `env` and the sh
 cannot be read from them; a setting that is not an IP literal and a port matches no receiver. A
 missing lock file, a lock nobody holds, a lock file that is not a regular file (a FIFO
 or a link left in its place: the statusline opens it without blocking and without following a
-link), a lock file replaced or removed while it is probed and a lock that cannot be probed all
-count as no receiver, so the statusline puts `?` behind the account. The state directory has to
+link), a lock file found replaced or removed when the probe looks at its path again and a lock
+that cannot be probed all count as no receiver, so the statusline puts `?` behind the account. The state directory has to
 be on a filesystem that supports `flock` (a local one); where the lock cannot be taken the receiver does not start. Before it stores an
 anchor or writes the generation or the heartbeat, and on every heartbeat tick, the receiver
 checks that its locks are still on the files at their paths; if a lock file was removed or

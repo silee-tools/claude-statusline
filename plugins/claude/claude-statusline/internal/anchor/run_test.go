@@ -469,6 +469,12 @@ var liveLockPathChanges = []struct {
 		os.WriteFile(path, []byte("run=other\naddr="+DefaultAddr+"\n"), 0o600)
 	}, false},
 	{"removed", func(path string) { os.Remove(path) }, false},
+	// The same file under another name, with a link to it where it was: only looking at the link
+	// itself (Lstat) tells this from a path that still leads to the file.
+	{"moved away with a link to it left in its place", func(path string) {
+		os.Rename(path, path+".moved")
+		os.Symlink(path+".moved", path)
+	}, false},
 	{"left alone", nil, true},
 }
 
