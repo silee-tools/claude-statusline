@@ -13,6 +13,9 @@ func ev(name, id, email string, ts int64) Event {
 	return Event{Name: name, SessionID: id, Email: email, TS: ts}
 }
 
+// testGen is the receiver generation the tests store their anchors under.
+const testGen = int64(1)
+
 func login(id, email string, ts int64) Event {
 	return Event{Name: "auth", SessionID: id, Email: email, Action: "login", Success: "true", TS: ts}
 }
@@ -23,7 +26,7 @@ func logout(id string, ts int64) Event {
 
 func mustApply(t *testing.T, dir string, e Event) bool {
 	t.Helper()
-	changed, err := Apply(dir, e)
+	changed, err := Apply(dir, e, testGen)
 	if err != nil {
 		t.Fatalf("Apply(%+v): %v", e, err)
 	}
@@ -33,7 +36,7 @@ func mustApply(t *testing.T, dir string, e Event) bool {
 func wantAnchor(t *testing.T, dir, id string, want Anchor) {
 	t.Helper()
 	got, ok := Read(dir, id)
-	got.Seen = 0 // when the receiver stored it is checked on its own
+	got.Seen, got.Gen = 0, 0 // when and under which generation the receiver stored it is checked on its own
 	if !ok || got != want {
 		t.Fatalf("Read(%s) = %+v, %v; want %+v", id, got, ok, want)
 	}
@@ -156,7 +159,7 @@ func TestInvalidSessionIDsAndEmailsAreIgnored(t *testing.T) {
 	}
 }
 
-func TestAnchorFileIsPrivateAndHoldsOnlyTheFourFields(t *testing.T) {
+func TestAnchorFileIsPrivateAndHoldsOnlyTheFiveFields(t *testing.T) {
 	dir := t.TempDir()
 	old := clock
 	t.Cleanup(func() { clock = old })
@@ -167,7 +170,7 @@ func TestAnchorFileIsPrivateAndHoldsOnlyTheFourFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(b) != "email=a@example.com\nkind=start\nts=1234\nseen=5678\n" {
+	if string(b) != "email=a@example.com\nkind=start\nts=1234\nseen=5678\ngen=1\n" {
 		t.Errorf("파일 내용 = %q", b)
 	}
 	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
@@ -221,8 +224,7 @@ func TestApplyPrunesBeyondRetentionAndFileLimit(t *testing.T) {
 }
 
 func TestAnAppliedAnchorRecordsWhenTheReceiverStoredIt(t *testing.T) {
-	// 앵커는 이벤트 시각(ts)과 별개로 수신기가 저장한 시각(seen)을 가진다. 수신기 세대와 보존 기간의
-	// 기준은 seen 이다.
+	// 앵커는 이벤트 시각(ts)과 별개로 수신기가 저장한 시각(seen)을 가진다. 보존 기간의 기준은 seen 이다.
 	old := clock
 	t.Cleanup(func() { clock = old })
 	clock = func() time.Time { return time.UnixMilli(5000) }

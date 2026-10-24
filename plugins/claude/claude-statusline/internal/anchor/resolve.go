@@ -64,8 +64,8 @@ type Input struct {
 // run on this machine, which leaves the slot empty instead of a permanent "?". Email is
 // empty when the account cannot be told, and Level says how well it is established.
 // Suspect says the account may have changed unseen: the receiver looks stopped, or the
-// anchor predates the receiver's current generation. AnchorTS identifies the anchor the
-// email came from.
+// anchor is of an earlier generation than the receiver's current one. AnchorTS identifies
+// the anchor the email came from.
 type Result struct {
 	Installed bool
 	Email     string
@@ -91,9 +91,9 @@ func Resolve(in Input) Result {
 		if a.Kind == KindLogin && known {
 			r.Level = Confirmed
 		}
-		// An anchor stored before the receiver's current generation may have missed a
-		// /login since, and only a later event replaces it.
-		if gen, ok := readGeneration(in.StateDir); !ok || a.stored() < gen {
+		// An anchor of an earlier generation may have missed a /login since, and only a
+		// later event replaces it.
+		if gen, ok := readGeneration(in.StateDir); !ok || a.Gen < gen {
 			r.Suspect = true
 		}
 	}

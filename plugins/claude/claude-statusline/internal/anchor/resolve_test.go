@@ -2,6 +2,7 @@ package anchor
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,11 +23,12 @@ type fixture struct {
 	t      *testing.T
 	state  string
 	config string
+	gen    int64 // the receiver generation apply stores anchors under
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	f := &fixture{t: t, state: t.TempDir(), config: t.TempDir()}
+	f := &fixture{t: t, state: t.TempDir(), config: t.TempDir(), gen: testGen}
 	if err := os.MkdirAll(filepath.Join(f.config, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -37,21 +39,21 @@ func newFixture(t *testing.T) *fixture {
 // as two Claude config directories of one user do.
 func (f *fixture) otherProfile() *fixture {
 	f.t.Helper()
-	g := &fixture{t: f.t, state: f.state, config: f.t.TempDir()}
+	g := &fixture{t: f.t, state: f.state, config: f.t.TempDir(), gen: f.gen}
 	if err := os.MkdirAll(filepath.Join(g.config, "sessions"), 0o755); err != nil {
 		f.t.Fatal(err)
 	}
 	return g
 }
 
-// install makes the receiver's directory, a fresh heartbeat and a generation older than
-// every anchor the tests store exist.
+// install makes the receiver's directory, a fresh heartbeat and the generation the tests
+// store their anchors under exist.
 func (f *fixture) install(heartbeatAge time.Duration, now time.Time) {
 	f.t.Helper()
 	if err := os.MkdirAll(sessionsDir(f.state), 0o700); err != nil {
 		f.t.Fatal(err)
 	}
-	if err := WriteGeneration(f.state, time.UnixMilli(1)); err != nil {
+	if err := WriteGeneration(f.state, f.gen); err != nil {
 		f.t.Fatal(err)
 	}
 	if heartbeatAge < 0 {
@@ -93,7 +95,7 @@ func (f *fixture) dead(pids ...int) {
 
 func (f *fixture) apply(e Event) {
 	f.t.Helper()
-	if _, err := Apply(f.state, e); err != nil {
+	if _, err := Apply(f.state, e, f.gen); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -247,7 +249,8 @@ func TestWithoutAnAnchorTheSlotStaysUnknownWhateverTheHeartbeat(t *testing.T) {
 }
 
 // R11 — a restart of the receiver, or a failed write, may have lost a /login. An anchor
-// stored before the receiver's current generation is doubted until an event replaces it.
+// of an earlier generation than the receiver's current one is doubted until an event
+// replaces it.
 
 func TestAnAnchorStoredBeforeTheReceiversGenerationIsSuspectUntilAnEventReplacesIt(t *testing.T) {
 	f := newFixture(t)
@@ -260,7 +263,8 @@ func TestAnAnchorStoredBeforeTheReceiversGenerationIsSuspectUntilAnEventReplaces
 		t.Fatalf("같은 세대의 앵커는 의심하지 않는다: %+v", got)
 	}
 	// The receiver restarted: it may have missed a /login while it was down.
-	if err := WriteGeneration(f.state, at(t0+30_000)); err != nil {
+	f.gen++
+	if err := WriteGeneration(f.state, f.gen); err != nil {
 		t.Fatal(err)
 	}
 	got := f.resolve("s1", now)
@@ -297,7 +301,7 @@ func TestACarriedAnchorKeepsTheGenerationItWasStoredIn(t *testing.T) {
 	f.proc(11, t0, "s1")
 	f.apply(login("s1", "a@example.com", t0+900))
 	f.wantEmail("s1", now, "a@example.com")
-	if err := WriteGeneration(f.state, at(t0+30_000)); err != nil {
+	if err := WriteGeneration(f.state, f.gen+1); err != nil {
 		t.Fatal(err)
 	}
 	f.proc(11, t0, "s2") // /clear
@@ -853,32 +857,110 @@ func TestTheLivenessCheckSeesThisProcessAndAnEndedOne(t *testing.T) {
 	}
 }
 
-func TestRaiseGenerationNeverMovesTheGenerationBack(t *testing.T) {
-	state := t.TempDir()
-	os.MkdirAll(filepath.Join(state, "otel"), 0o700)
-	if err := RaiseGeneration(state, at(t0+5_000)); err != nil {
+// 세대는 시각이 아니라 번호라서 시계가 어디를 가리키든 앞선 세대의 앵커는 의심받는다.
+func TestAnAnchorOfAnEarlierGenerationIsSuspectWhateverItsTimeSays(t *testing.T) {
+	f := newFixture(t)
+	now := at(t0 + 60_000)
+	f.install(0, now)
+	f.proc(11, t0, "s1")
+	f.clockAt(t0 + 1_000_000_000) // the receiver's clock ran far ahead before it was corrected back
+	f.apply(login("s1", "a@example.com", t0+900))
+	f.wantEmail("s1", now, "a@example.com")
+	f.gen++
+	if err := WriteGeneration(f.state, f.gen); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := readGeneration(state); got != t0+5_000 {
-		t.Fatalf("파일이 없으면 기록한다: %d", got)
+	if got := f.wantEmail("s1", now, "a@example.com"); !got.Suspect {
+		t.Errorf("시각이 더 늦어도 앞선 세대의 앵커는 의심해야 한다: %+v", got)
 	}
-	if err := RaiseGeneration(state, at(t0+1_000)); err != nil {
+}
+
+func TestAnAnchorWithoutAGenerationNumberIsSuspect(t *testing.T) {
+	f := newFixture(t)
+	now := at(t0 + 60_000)
+	f.install(0, now)
+	f.proc(11, t0, "s1")
+	body := fmt.Sprintf("email=a@example.com\nkind=login\nts=%d\nseen=%d\n", t0+900, t0+900)
+	if err := os.WriteFile(filepath.Join(sessionsDir(f.state), "s1.env"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := readGeneration(state); got != t0+5_000 {
-		t.Errorf("이른 시각이 세대를 되돌렸다: %d", got)
+	if got := f.wantEmail("s1", now, "a@example.com"); !got.Suspect {
+		t.Errorf("세대 번호가 없는 앵커는 어느 세대의 것인지 알 수 없다: %+v", got)
 	}
-	if err := RaiseGeneration(state, at(t0+9_000)); err != nil {
+}
+
+func TestAnAppliedAnchorCarriesTheGenerationItWasStoredIn(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Apply(dir, login("s1", "a@example.com", t0), 7); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := readGeneration(state); got != t0+9_000 {
-		t.Errorf("늦은 시각은 세대를 올린다: %d", got)
+	if got, ok := Read(dir, "s1"); !ok || got.Gen != 7 {
+		t.Errorf("Read = %+v, %v; want gen 7", got, ok)
 	}
-	// 시작은 WriteGeneration 으로 이전 실행의 값을 그대로 덮는다.
-	if err := WriteGeneration(state, at(t0)); err != nil {
+	if _, err := Apply(dir, login("s1", "b@example.com", t0+1000), 9); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := readGeneration(state); got != t0 {
-		t.Errorf("WriteGeneration 은 덮어쓴다: %d", got)
+	if got, _ := Read(dir, "s1"); got.Gen != 9 {
+		t.Errorf("다시 저장한 앵커는 그때의 세대를 따른다: %+v", got)
+	}
+}
+
+// 시작하는 수신기의 세대는 파일이 가리키는 번호와 이미 저장된 모든 앵커의 번호보다 크다.
+func TestNextGenerationIsPastTheFileAndEveryStoredAnchor(t *testing.T) {
+	write := func(t *testing.T, path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	anchorBody := func(gen int) string {
+		return fmt.Sprintf("email=a@example.com\nkind=login\nts=%d\nseen=%d\ngen=%d\n", t0, t0, gen)
+	}
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, state string)
+		want  int64
+	}{
+		{"nothing stored", func(*testing.T, string) {}, 1},
+		{"the file alone", func(t *testing.T, state string) { write(t, generationPath(state), "5\n") }, 6},
+		{"an old file that holds a time", func(t *testing.T, state string) { write(t, generationPath(state), "1700000000000\n") }, 1_700_000_000_001},
+		{"an anchor ahead of the file", func(t *testing.T, state string) {
+			write(t, generationPath(state), "5\n")
+			write(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody(9))
+		}, 10},
+		{"an anchor when the file is gone", func(t *testing.T, state string) {
+			write(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody(9))
+		}, 10},
+		{"an anchor when the file is damaged", func(t *testing.T, state string) {
+			write(t, generationPath(state), "soon\n")
+			write(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody(9))
+		}, 10},
+		{"a carried anchor in the pid files", func(t *testing.T, state string) {
+			write(t, generationPath(state), "5\n")
+			write(t, filepath.Join(state, "pids", "11-1.env"), "session=s1\nsrc=x\n"+anchorBody(12))
+		}, 13},
+		{"the highest of several", func(t *testing.T, state string) {
+			write(t, generationPath(state), "20\n")
+			write(t, filepath.Join(sessionsDir(state), "a.env"), anchorBody(9))
+			write(t, filepath.Join(sessionsDir(state), "b.env"), anchorBody(30))
+			write(t, filepath.Join(sessionsDir(state), "c.env"), anchorBody(4))
+		}, 31},
+		{"files that are not anchors", func(t *testing.T, state string) {
+			write(t, filepath.Join(sessionsDir(state), "s1.env"), "email=\nkind=login\nts=1\ngen=99\n") // no email: no anchor
+			write(t, filepath.Join(sessionsDir(state), "s2.env.tmp"), anchorBody(99))
+			write(t, filepath.Join(state, "pids", "session-s1.ref"), "proc=11-1\nts=1\ngen=99\n")
+		}, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			state := t.TempDir()
+			c.setup(t, state)
+			if got := NextGeneration(state); got != c.want {
+				t.Errorf("NextGeneration = %d, want %d", got, c.want)
+			}
+		})
 	}
 }

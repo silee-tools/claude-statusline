@@ -18,9 +18,10 @@ const maxBody = 1 << 20
 // Failure kinds the handler reports. They name what failed and never carry request
 // content.
 const (
-	logBadRequest  = "bad-request"
-	logTooLarge    = "body-too-large"
-	logApplyFailed = "apply-failed"
+	logBadRequest         = "bad-request"
+	logTooLarge           = "body-too-large"
+	logUnreadableEncoding = "unreadable-encoding"
+	logApplyFailed        = "apply-failed"
 )
 
 type applier func(anchor.Event) error
@@ -75,6 +76,7 @@ func newHandler(apply applier, now func() time.Time, logf func(kind string)) htt
 			return
 		}
 		if enc := r.Header.Get("Content-Encoding"); enc != "" && enc != "identity" {
+			logf(logUnreadableEncoding)
 			http.Error(w, "unsupported content encoding", http.StatusUnsupportedMediaType)
 			return
 		}

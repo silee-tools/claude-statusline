@@ -231,7 +231,7 @@ func readFields(line string, n int) []string {
 //     its email behind a dim "~", because nothing shows the session's credentials are
 //     that account's;
 //   - either is followed by "?" when suspect, that is when the receiver looks stopped, the
-//     anchor predates the receiver's current run, or the session's rate-limit window
+//     anchor is of an earlier receiver generation, or the session's rate-limit window
 //     changed under it.
 func Account(installed bool, email string, estimate, suspect bool) string {
 	if !installed {

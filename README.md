@@ -349,7 +349,8 @@ previous boundary saw. Where the process cannot be told, nothing is kept.
 - Restarting the receiver (a new plugin version replaces it, or the supervisor restarts
   it after a failure) starts a new generation, so every session shows `?` behind its
   email until a `/login` inside it is seen again. Events sent while the receiver was down
-  are lost, and a `/login` among them would otherwise go unseen.
+  are lost, and a `/login` among them would otherwise go unseen. A generation is a counter,
+  not a time, so correcting the system clock cannot make a stored anchor look current.
 - Two Claude Code processes that run the same session id at the same time share one anchor.
 - A session that quietly takes over another session's credentials at a token refresh
   emits no event. The only trace is a rate-limit window changing before it ends, which
@@ -388,15 +389,22 @@ codes: 0 after SIGINT or SIGTERM; 75 when the file at its own path was replaced 
 checks every 30 seconds), so the supervisor starts the new build; 1 when the address is
 not loopback, the port cannot be bound, or the state directory cannot be prepared. It
 touches the heartbeat every 30 seconds, except while it cannot store an anchor: a
-failed write starts a new generation (`otel/generation`) and withholds the heartbeat
-until a probe write succeeds, and the generation it then settles on is the time of the
-last loss, so an anchor stored by the exporter's retry in between is not doubted. A
-request refused as oversized (413) or unreadable (400) is a batch dropped whole, a `/login`
-with it, so each starts a generation too, whoever sent it: a process that can post to the
-receiver could also write the anchors, so a false alarm costs an extra `?`. A generation
-that cannot be written counts as a loss that is not recorded yet, so the heartbeat stays
-withheld until it is. A generation never moves back while the receiver runs. Every start
-writes a new generation too. At start and
+failed write moves the receiver to the next generation (`otel/generation`, a counter) and
+withholds the heartbeat until a probe write succeeds. Every anchor carries the generation
+it was stored under (`gen=`), and the statusline puts `?` behind an anchor of an earlier
+generation than the file names. The generation the recovery writes is the one of the last
+loss, so an anchor stored by the exporter's retry in between is not doubted. A request
+refused as oversized (413), unreadable (400) or compressed (415 for its `Content-Encoding`)
+is a batch dropped whole, a `/login` with it, so each moves to the next generation too,
+whoever sent it: a process that can post to the receiver could also write the anchors, so a
+false alarm costs an extra `?`. A request of another media type (415, for example
+protobuf) is not counted: Claude Code is set to JSON, so it is another exporter's, and one
+that kept sending would hold every account in doubt. A generation that cannot be written
+counts as a loss that is not recorded yet, so the heartbeat stays withheld until it is.
+Every start moves to the next generation too, past the highest number in the generation
+file and in the stored anchors, so what an earlier run stored is doubted whatever the
+clock reads and whether or not the file survived; an anchor with no `gen=` counts as
+generation 0. At start and
 then hourly it removes what is past retention. Where stderr goes, and how long it is
 kept, is the supervisor's setting.
 
@@ -404,9 +412,9 @@ kept, is the supervisor's setting.
 
 | Path | Written by | Holds | Kept |
 |---|---|---|---|
-| `${XDG_STATE_HOME:-$HOME/.local/state}/claude-statusline/otel/sessions/<session.id>.env` | receiver | email, kind, event time, time the receiver stored it (0600) | 30 days, 2,000 files |
+| `${XDG_STATE_HOME:-$HOME/.local/state}/claude-statusline/otel/sessions/<session.id>.env` | receiver | email, kind, event time, time the receiver stored it, generation it was stored under (0600) | 30 days, 2,000 files |
 | `.../otel/heartbeat` | receiver | its mtime | one file |
-| `.../otel/generation` | receiver | when its current run began, or when it last failed to store | one file |
+| `.../otel/generation` | receiver | its current generation number: one more than before at each start and each loss | one file |
 | `.../pids/<pid>-<startedAt>.env`, `.../pids/session-<id>.ref` | statusline | the anchor a process carries, which pid file a session uses | 30 days, 2,000 files |
 | `.../fingerprints/<session_id>.env` | statusline | the baseline of the watched rate-limit window | 30 days, 2,000 files |
 | `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/rate-limits/<session_id>.env` | statusline | the windows the session last saw, and the boundary they were seen under | 2 days after the last write, 2,000 files |

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -370,7 +371,6 @@ func TestAnAnchorStoredByARetryAfterAFailureIsNotDoubtedByTheRecovery(t *testing
 	if code := postLogin(t, addr, "s0", "a@example.com", 1_700_000_000_000); code != 200 {
 		t.Fatalf("정상 상태 %d", code)
 	}
-	time.Sleep(5 * time.Millisecond) // 세대와 저장 시각은 밀리초 단위라 같은 밀리초면 앞선 앵커를 가리지 못한다
 	breakStore(t, cfg)
 	if code := postLogin(t, addr, "s1", "b@example.com", 1_700_000_001_000); code != http.StatusServiceUnavailable {
 		t.Fatalf("저장 실패 상태 %d, want 503", code)
@@ -428,7 +428,6 @@ func TestARefusedBatchIsDroppedWholeSoItsLoginIsDoubted(t *testing.T) {
 			if _, doubt := suspect(t, cfg, "s1"); doubt {
 				t.Fatal("정상 저장 직후에는 의심하지 않는다")
 			}
-			time.Sleep(5 * time.Millisecond)
 			if code := postRaw(t, addr, c.body); code != c.want {
 				t.Fatalf("상태 %d, want %d", code, c.want)
 			}
@@ -436,7 +435,6 @@ func TestARefusedBatchIsDroppedWholeSoItsLoginIsDoubted(t *testing.T) {
 				t.Error("버려진 배치 안의 로그인이 유실됐을 수 있으니 앞서 저장된 앵커를 의심해야 한다")
 			}
 			// 이후에 도착한 새 이벤트는 다시 믿는다.
-			time.Sleep(5 * time.Millisecond)
 			if code := postLogin(t, addr, "s1", "a@example.com", 1_700_000_005_000); code != 200 {
 				t.Fatalf("새 이벤트 %d", code)
 			}
@@ -459,11 +457,9 @@ func TestALossRecordedWhileDegradedSurvivesTheRecovery(t *testing.T) {
 		t.Fatalf("저장 실패 상태 %d, want 503", code)
 	}
 	mendStore(t, cfg)
-	time.Sleep(5 * time.Millisecond)
 	if code := postLogin(t, addr, "s1", "b@example.com", 1_700_000_001_000); code != 200 { // stored between the two losses
 		t.Fatalf("재시도 상태 %d, want 200", code)
 	}
-	time.Sleep(5 * time.Millisecond)
 	if code := postRaw(t, addr, `{broken`); code != http.StatusBadRequest { // a later loss, before the recovery beat
 		t.Fatalf("깨진 본문 상태 %d", code)
 	}
@@ -487,7 +483,6 @@ func TestALossThatCannotBeRecordedWithholdsTheHeartbeatUntilItIs(t *testing.T) {
 	if code := postLogin(t, addr, "s1", "a@example.com", 1_700_000_000_000); code != 200 {
 		t.Fatalf("정상 상태 %d", code)
 	}
-	time.Sleep(5 * time.Millisecond)
 	os.Chmod(otel, 0o500) // the generation and the heartbeat cannot be written
 	postRaw(t, addr, `{broken`)
 	os.Chmod(otel, 0o700)
@@ -495,5 +490,153 @@ func TestALossThatCannotBeRecordedWithholdsTheHeartbeatUntilItIs(t *testing.T) {
 	waitHeartbeatAfter(t, cfg, before.ModTime())
 	if _, doubt := suspect(t, cfg, "s1"); !doubt {
 		t.Error("세대를 기록하지 못한 유실이 복구 때에도 기록되지 않았다")
+	}
+}
+
+// postWith posts body to /v1/logs with the given headers and returns the status.
+func postWith(t *testing.T, addr, body string, header map[string]string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/v1/logs", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range header {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+// An exporter with compression on sends a body this receiver does not read, so a /login in
+// it is lost like one in a batch dropped for size. A request of another media type is not
+// attributed to Claude Code, which PR B pins to JSON, so it leaves the anchors alone.
+func TestAnUnreadableEncodingIsALossButAnotherMediaTypeIsNot(t *testing.T) {
+	login := string(request(record("auth", 1_700_000_005_000*ms, str("session.id", "s1"), str("user.email", "b@example.com"), str("action", "login"), boolean("success", true))))
+	for name, c := range map[string]struct {
+		header map[string]string
+		doubt  bool
+	}{
+		"gzip":     {map[string]string{"Content-Type": "application/json", "Content-Encoding": "gzip"}, true},
+		"protobuf": {map[string]string{"Content-Type": "application/x-protobuf"}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := baseConfig(t)
+			addr, exit, _, cancel := start(t, cfg)
+			defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+			if code := postLogin(t, addr, "s1", "a@example.com", 1_700_000_000_000); code != 200 {
+				t.Fatalf("정상 상태 %d", code)
+			}
+			if code := postWith(t, addr, login, c.header); code != http.StatusUnsupportedMediaType {
+				t.Fatalf("상태 %d, want 415", code)
+			}
+			res, doubt := suspect(t, cfg, "s1")
+			if res.Email != "a@example.com" || doubt != c.doubt {
+				t.Errorf("거부된 뒤 앵커 %+v 의심=%v, want 의심=%v", res, doubt, c.doubt)
+			}
+		})
+	}
+}
+
+// seed stores an anchor file the way an earlier run of the receiver left it.
+func seed(t *testing.T, cfg config, id, email string, ms, gen int64) {
+	t.Helper()
+	dir := filepath.Join(cfg.StateDir, "otel", "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf("email=%s\nkind=login\nts=%d\nseen=%d\ngen=%d\n", email, ms, ms, gen)
+	if err := os.WriteFile(filepath.Join(dir, id+".env"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// What a restart doubts does not depend on the clock: an anchor the previous run stored
+// with a time ahead of the clock the new run reads (the clock was corrected back in
+// between) is still from before the restart.
+func TestAnAnchorStoredBeforeARestartIsDoubtedWhateverTheClockSays(t *testing.T) {
+	cfg := baseConfig(t)
+	ahead := time.Now().Add(24 * time.Hour).UnixMilli()
+	seed(t, cfg, "s1", "a@example.com", ahead, 1)
+	if err := os.WriteFile(filepath.Join(cfg.StateDir, "otel", "generation"), []byte("1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, exit, _, cancel := start(t, cfg)
+	defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+	if res, doubt := suspect(t, cfg, "s1"); res.Email != "a@example.com" || !doubt {
+		t.Errorf("시계보다 앞선 시각으로 저장된 앵커가 재시작 뒤에도 믿어진다: %+v 의심=%v", res, doubt)
+	}
+}
+
+// A loss the receiver could not record leaves the generation file behind its own count;
+// an anchor stored meanwhile carries that count, and a restart must still pass it.
+func TestARestartAfterAnUnrecordedLossStillDoubtsTheAnchorStoredMeanwhile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root 는 쓰기 권한 제한을 받지 않아 저장 실패를 만들 수 없다")
+	}
+	cfg := baseConfig(t)
+	otel := filepath.Join(cfg.StateDir, "otel")
+	addr, exit, _, cancel := start(t, cfg)
+	t.Cleanup(func() { os.Chmod(otel, 0o700) })
+	os.Chmod(otel, 0o500) // the generation cannot be written, the anchors still can
+	postRaw(t, addr, `{broken`)
+	if code := postLogin(t, addr, "s1", "a@example.com", 1_700_000_000_000); code != 200 {
+		t.Fatalf("상태 %d, want 200", code)
+	}
+	cancel()
+	waitExit(t, exit, 3*time.Second)
+	os.Chmod(otel, 0o700)
+
+	_, exit, _, cancel = start(t, cfg)
+	defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+	if res, doubt := suspect(t, cfg, "s1"); res.Email != "a@example.com" || !doubt {
+		t.Errorf("기록하지 못한 유실 사이에 저장된 앵커가 재시작 뒤 믿어진다: %+v 의심=%v", res, doubt)
+	}
+}
+
+// A generation file that is gone does not let a restart start counting from the beginning
+// again under anchors that carry higher numbers.
+func TestARestartPassesTheNumberOfEveryStoredAnchorWhenTheGenerationFileIsGone(t *testing.T) {
+	cfg := baseConfig(t)
+	seed(t, cfg, "s1", "a@example.com", time.Now().Add(-time.Hour).UnixMilli(), 7)
+	_, exit, _, cancel := start(t, cfg)
+	defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+	if res, doubt := suspect(t, cfg, "s1"); res.Email != "a@example.com" || !doubt {
+		t.Errorf("세대 파일이 없던 재시작 뒤 앵커가 믿어진다: %+v 의심=%v", res, doubt)
+	}
+}
+
+// While the generation cannot be written the receiver keeps counting in memory and stamps the
+// anchors it stores with that count, so the recovery that writes it down doubts what was stored
+// before the loss and not what was stored after.
+func TestAnAnchorStoredWhileALossCannotBeRecordedIsNotDoubtedByTheRecovery(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root 는 쓰기 권한 제한을 받지 않아 저장 실패를 만들 수 없다")
+	}
+	cfg := baseConfig(t)
+	otel := filepath.Join(cfg.StateDir, "otel")
+	addr, exit, _, cancel := start(t, cfg)
+	defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+	t.Cleanup(func() { os.Chmod(otel, 0o700) })
+
+	if code := postLogin(t, addr, "s0", "a@example.com", 1_700_000_000_000); code != 200 {
+		t.Fatalf("정상 상태 %d", code)
+	}
+	os.Chmod(otel, 0o500) // the generation cannot be written, the anchors still can
+	postRaw(t, addr, `{broken`)
+	if code := postLogin(t, addr, "s1", "b@example.com", 1_700_000_001_000); code != 200 {
+		t.Fatalf("세대를 기록하지 못하는 동안의 저장 %d, want 200", code)
+	}
+	os.Chmod(otel, 0o700)
+	hb, _ := os.Stat(filepath.Join(otel, "heartbeat"))
+	waitHeartbeatAfter(t, cfg, hb.ModTime())
+	if res, doubt := suspect(t, cfg, "s1"); res.Email != "b@example.com" || doubt {
+		t.Errorf("유실을 기록하지 못하던 동안 저장된 앵커가 복구 때문에 의심받는다: %+v", res)
+	}
+	if _, doubt := suspect(t, cfg, "s0"); !doubt {
+		t.Error("유실 전에 저장된 앵커는 의심해야 한다")
 	}
 }

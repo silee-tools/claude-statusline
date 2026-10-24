@@ -58,6 +58,9 @@ func TestCompactStatusKeepsGHAlwaysAndAWSOnlyWhenNotHealthy(t *testing.T) {
 	}
 }
 
+// testGen is the receiver generation the fixtures store their anchors under.
+const testGen = int64(1)
+
 // accountFixture is a state directory with the receiver "installed": its sessions
 // directory exists and its heartbeat is fresh.
 func accountFixture(t *testing.T, now time.Time) (stateDir, configDir string) {
@@ -69,7 +72,7 @@ func accountFixture(t *testing.T, now time.Time) (stateDir, configDir string) {
 	if err := anchor.TouchHeartbeat(stateDir, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := anchor.WriteGeneration(stateDir, time.UnixMilli(1)); err != nil {
+	if err := anchor.WriteGeneration(stateDir, testGen); err != nil {
 		t.Fatal(err)
 	}
 	return stateDir, configDir
@@ -110,19 +113,19 @@ func TestAccountSlotFollowsTheSessionsAnchorThroughLoginAndLogout(t *testing.T) 
 	stateDir, configDir := accountFixture(t, now)
 	runningProcess(t, configDir, "s1")
 	status := input.Status{SessionID: "s1"}
-	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000))
-	anchor.Apply(stateDir, startEvent("s2", "other@example.com", 1000))
+	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000), testGen)
+	anchor.Apply(stateDir, startEvent("s2", "other@example.com", 1000), testGen)
 	if got := slotText(t, stateDir, configDir, status, now); got != "~a@example.com" {
 		t.Fatalf("시작 앵커는 추정이다: %q", got)
 	}
-	anchor.Apply(stateDir, loginEvent("s1", "b@example.com", 2000))
+	anchor.Apply(stateDir, loginEvent("s1", "b@example.com", 2000), testGen)
 	if got := slotText(t, stateDir, configDir, status, now); got != "b@example.com" {
 		t.Fatalf("/login 뒤: %q", got)
 	}
 	if got := slotText(t, stateDir, configDir, input.Status{SessionID: "s2"}, now); got != "~other@example.com" {
 		t.Fatalf("다른 세션은 그대로여야 한다: %q", got)
 	}
-	anchor.Apply(stateDir, anchor.Event{Name: "auth", SessionID: "s1", Action: "logout", Success: "true", TS: 3000})
+	anchor.Apply(stateDir, anchor.Event{Name: "auth", SessionID: "s1", Action: "logout", Success: "true", TS: 3000}, testGen)
 	if got := slotText(t, stateDir, configDir, status, now); got != "?" {
 		t.Fatalf("로그아웃 뒤: %q", got)
 	}
@@ -146,7 +149,7 @@ func TestAccountSlotIsEmptyWithoutTheReceiverAndQuestionMarkWithoutAnAnchor(t *t
 func TestAccountSlotDoubtsAStoppedReceiver(t *testing.T) {
 	now := time.Now()
 	stateDir, configDir := accountFixture(t, now.Add(-10*time.Minute))
-	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000))
+	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000), testGen)
 	if got := slotText(t, stateDir, configDir, input.Status{SessionID: "s1"}, now); got != "~a@example.com?" {
 		t.Errorf("하트비트 정체: %q", got)
 	}
@@ -156,7 +159,7 @@ func TestAccountSlotDoubtsAWindowThatChangedBeforeItEnded(t *testing.T) {
 	now := time.Now()
 	stateDir, configDir := accountFixture(t, now)
 	runningProcess(t, configDir, "s1")
-	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000))
+	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000), testGen)
 	week := func(reset int64) input.Status {
 		return input.Status{SessionID: "s1", SevenDay: input.Window{Present: true, HasReset: true, Pct: 10, ResetsAt: reset}}
 	}
@@ -172,7 +175,7 @@ func TestAccountSlotDoubtsAWindowThatChangedBeforeItEnded(t *testing.T) {
 		t.Fatalf("60초 넘게 다른 값: %q", got)
 	}
 	// 새 로그인은 새 기준선이다.
-	anchor.Apply(stateDir, loginEvent("s1", "b@example.com", 2000))
+	anchor.Apply(stateDir, loginEvent("s1", "b@example.com", 2000), testGen)
 	if got := slotText(t, stateDir, configDir, week(end+5000), later(90)); got != "b@example.com" {
 		t.Fatalf("로그인 뒤: %q", got)
 	}
@@ -181,7 +184,7 @@ func TestAccountSlotDoubtsAWindowThatChangedBeforeItEnded(t *testing.T) {
 func TestAccountSlotDoubtsAFiveHourWindowThatChangedBeforeItEnded(t *testing.T) {
 	now := time.Now()
 	stateDir, configDir := accountFixture(t, now)
-	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000))
+	anchor.Apply(stateDir, startEvent("s1", "a@example.com", 1000), testGen)
 	five := func(reset int64) input.Status {
 		return input.Status{SessionID: "s1", FiveHour: input.Window{Present: true, HasReset: true, Pct: 10, ResetsAt: reset}}
 	}

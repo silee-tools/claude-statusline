@@ -104,11 +104,12 @@ STATE_HOME="$STATE_NONE"
 OTEL_DIR="$STATE_ACCT/claude-statusline/otel"
 mkdir -p "$STATE_NONE"
 anchor_file() { printf '%s/sessions/%s.env' "$OTEL_DIR" "$1"; }
-# seed_anchor <session.id> <email> <kind> <event time ms>. 수신기가 저장한 시각(seen)은 지금이고, 수신기 세대
-# (otel/generation)는 그보다 이르다 — 세대보다 먼저 저장된 앵커는 이메일 뒤에 ? 가 붙는다.
+# seed_anchor <session.id> <email> <kind> <event time ms>. 수신기가 저장한 시각(seen)은 지금이고, 앵커는 수신기 세대
+# 1(gen=1)로 저장됐다. 수신기 세대(otel/generation)가 1이라 앵커는 현재 세대이고, 세대 파일의 번호가 더 크면
+# 앞선 세대의 앵커라 이메일 뒤에 ? 가 붙는다.
 seed_anchor() {
   mkdir -p "$OTEL_DIR/sessions"
-  printf 'email=%s\nkind=%s\nts=%s\nseen=%s000\n' "$2" "$3" "$4" "$(date +%s)" > "$(anchor_file "$1")"
+  printf 'email=%s\nkind=%s\nts=%s\nseen=%s000\ngen=1\n' "$2" "$3" "$4" "$(date +%s)" > "$(anchor_file "$1")"
   printf '1\n' > "$OTEL_DIR/generation"
 }
 beat()       { mkdir -p "$OTEL_DIR"; touch "$OTEL_DIR/heartbeat"; }
@@ -1072,6 +1073,11 @@ stale_beat
 OUT=$(run "$SESS_B" 120); assert_contains "T35 하트비트가 정체되면 이메일 뒤 ?" "b@example.com?" "$(first_line "$OUT")"
 beat
 OUT=$(run "$SESS_B" 120); assert_not_contains "T35 하트비트가 신선하면 ? 없음" "b@example.com?" "$(first_line "$OUT")"
+# 수신기 세대(재시작·유실마다 올라가는 번호)가 앵커의 gen 보다 크면 저장 시각과 상관없이 이메일 뒤에 ? 가 붙는다.
+printf '2\n' > "$OTEL_DIR/generation"
+OUT=$(run "$SESS_B" 120); assert_contains "T35 앞선 세대의 앵커는 이메일 뒤 ?" "b@example.com?" "$(first_line "$OUT")"
+printf '1\n' > "$OTEL_DIR/generation"
+OUT=$(run "$SESS_B" 120); assert_not_contains "T35 현재 세대의 앵커는 ? 없음" "b@example.com?" "$(first_line "$OUT")"
 
 # 압축 레이아웃은 계정을 보이지 않는다.
 OUT=$(run "$SESS_B" 80)
