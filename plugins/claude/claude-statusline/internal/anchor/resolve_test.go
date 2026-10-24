@@ -2,6 +2,7 @@ package anchor
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"math"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -19,13 +21,17 @@ const t0 = int64(1_700_000_000_000)
 
 // The fixtures name pids no machine is known to run, so every process is taken as running
 // unless a test says it ended (fixture.dead).
-func init() { alive = func(int) bool { return true } }
+func init() {
+	alive = func(int) bool { return true }
+	lockWait = 50 * time.Millisecond
+}
 
 type fixture struct {
 	t      *testing.T
 	state  string
 	config string
 	gen    int64 // the receiver generation apply stores anchors under
+	lock   *ReceiverLock
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -49,11 +55,19 @@ func (f *fixture) otherProfile() *fixture {
 }
 
 // install makes the receiver's directory, a fresh heartbeat and the generation the tests
-// store their anchors under exist.
+// store their anchors under exist, and holds the lock a running receiver holds.
 func (f *fixture) install(heartbeatAge time.Duration, now time.Time) {
 	f.t.Helper()
 	if err := os.MkdirAll(sessionsDir(f.state), 0o700); err != nil {
 		f.t.Fatal(err)
+	}
+	if f.lock == nil {
+		lock, err := LockReceiver(f.state)
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		f.lock = lock
+		f.t.Cleanup(func() { lock.Close() })
 	}
 	if err := WriteGeneration(f.state, f.gen); err != nil {
 		f.t.Fatal(err)
@@ -63,6 +77,15 @@ func (f *fixture) install(heartbeatAge time.Duration, now time.Time) {
 	}
 	if err := TouchHeartbeat(f.state, now.Add(-heartbeatAge)); err != nil {
 		f.t.Fatal(err)
+	}
+}
+
+// stopReceiver lets go of the lock, as a receiver that exits does.
+func (f *fixture) stopReceiver() {
+	f.t.Helper()
+	if f.lock != nil {
+		f.lock.Close()
+		f.lock = nil
 	}
 }
 
@@ -990,15 +1013,15 @@ func TestNextGenerationIsPastTheFileAndEveryStoredAnchor(t *testing.T) {
 			writeFile(t, generationPath(state), "5\n")
 			writeFile(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody("soon"))
 		}, 6},
-		{"the highest number an anchor may carry", func(t *testing.T, state string) {
-			writeFile(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody(strconv.FormatInt(maxGeneration/2, 10)))
-		}, maxGeneration/2 + 1},
-		{"one past the highest number an anchor may carry", func(t *testing.T, state string) {
-			writeFile(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody(strconv.FormatInt(maxGeneration/2+1, 10)))
+		{"the highest anchor a start counts on", func(t *testing.T, state string) {
+			writeFile(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody(strconv.FormatInt(MaxGeneration-GenerationRunway, 10)))
+		}, MaxGeneration - GenerationRunway + 1},
+		{"one past the bound is no number", func(t *testing.T, state string) {
+			writeFile(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody(strconv.FormatInt(MaxGeneration+1, 10)))
 		}, 1},
-		{"the highest generation a file may name", func(t *testing.T, state string) {
-			writeFile(t, generationPath(state), strconv.FormatInt(maxGeneration-1, 10)+"\n")
-		}, maxGeneration},
+		{"the highest file a start counts on", func(t *testing.T, state string) {
+			writeFile(t, generationPath(state), strconv.FormatInt(MaxGeneration-GenerationRunway, 10)+"\n")
+		}, MaxGeneration - GenerationRunway + 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1027,7 +1050,16 @@ func TestNextGenerationFailsWhenTheStateCannotBeSeenWhole(t *testing.T) {
 		{"a generation out of range", func(t *testing.T, state string) { writeFile(t, generationPath(state), "99999999999999999999\n") }, false},
 		{"the largest int64 as the generation", func(t *testing.T, state string) { writeFile(t, generationPath(state), "9223372036854775807\n") }, false},
 		{"a generation with nothing above it", func(t *testing.T, state string) {
-			writeFile(t, generationPath(state), strconv.FormatInt(maxGeneration, 10)+"\n")
+			writeFile(t, generationPath(state), strconv.FormatInt(MaxGeneration, 10)+"\n")
+		}, false},
+		{"a generation without the runway a run counts in", func(t *testing.T, state string) {
+			writeFile(t, generationPath(state), strconv.FormatInt(MaxGeneration-GenerationRunway+1, 10)+"\n")
+		}, false},
+		{"an anchor without the runway a run counts in", func(t *testing.T, state string) {
+			writeFile(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody(strconv.FormatInt(MaxGeneration-GenerationRunway+1, 10)))
+		}, false},
+		{"an anchor at the bound", func(t *testing.T, state string) {
+			writeFile(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody(strconv.FormatInt(MaxGeneration, 10)))
 		}, false},
 		{"a generation file that cannot be read", func(t *testing.T, state string) {
 			writeFile(t, generationPath(state), "5\n")
@@ -1081,7 +1113,7 @@ func TestNextGenerationFailsWhenTheStateCannotBeSeenWhole(t *testing.T) {
 
 // 쓸 수 없는 세대(0, 음수, 범위 밖)는 기록하지 않는다.
 func TestWriteGenerationRecordsOnlyAGeneration(t *testing.T) {
-	for _, bad := range []int64{0, -1, math.MinInt64, math.MaxInt64, maxGeneration + 1} {
+	for _, bad := range []int64{0, -1, math.MinInt64, math.MaxInt64, MaxGeneration + 1} {
 		state := t.TempDir()
 		if err := WriteGeneration(state, bad); err == nil {
 			t.Errorf("WriteGeneration(%d) 가 기록했다", bad)
@@ -1090,7 +1122,7 @@ func TestWriteGenerationRecordsOnlyAGeneration(t *testing.T) {
 			t.Errorf("WriteGeneration(%d) 가 파일을 남겼다", bad)
 		}
 	}
-	for _, good := range []int64{1, 2, maxGeneration} {
+	for _, good := range []int64{1, 2, MaxGeneration} {
 		state := t.TempDir()
 		if err := WriteGeneration(state, good); err != nil {
 			t.Errorf("WriteGeneration(%d): %v", good, err)
@@ -1098,7 +1130,7 @@ func TestWriteGenerationRecordsOnlyAGeneration(t *testing.T) {
 	}
 }
 
-// 수신기가 시작하지 못하고 물러날 때 읽는 쪽이 모든 앵커를 의심하도록 세대와 하트비트를 거둔다.
+// 새 실행은 자기 세대를 쓰기 전까지 읽는 쪽이 믿을 세대와 하트비트가 없게 거둔다.
 func TestWithdrawTakesBackTheGenerationAndTheHeartbeat(t *testing.T) {
 	f := newFixture(t)
 	now := at(t0 + 60_000)
@@ -1108,16 +1140,58 @@ func TestWithdrawTakesBackTheGenerationAndTheHeartbeat(t *testing.T) {
 	if got := f.wantEmail("s1", now, "a@example.com"); got.Suspect {
 		t.Fatalf("거두기 전에는 의심하지 않는다: %+v", got)
 	}
-	Withdraw(f.state)
+	if err := Withdraw(f.state); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{generationPath(f.state), filepath.Join(f.state, "otel", "heartbeat")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("거두지 않은 파일이 남았다: %s (%v)", path, err)
+		}
+	}
 	if got := f.wantEmail("s1", now, "a@example.com"); !got.Suspect {
 		t.Errorf("세대와 하트비트를 거둔 뒤에는 의심해야 한다: %+v", got)
 	}
-	Withdraw(f.state) // 이미 없어도 오류 없이 끝난다
+	if err := Withdraw(f.state); err != nil { // 이미 없어도 오류 없이 끝난다
+		t.Errorf("이미 없는 파일을 거두려다 오류: %v", err)
+	}
+}
+
+// 지울 수 없는 파일은 오류로 알린다(쓸 수 없는 디렉터리).
+func TestWithdrawReportsAFileItCannotRemove(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root 는 쓰기 권한 제한을 받지 않는다")
+	}
+	f := newFixture(t)
+	f.install(0, at(t0))
+	otel := filepath.Join(f.state, "otel")
+	if err := os.Chmod(otel, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(otel, 0o700)
+	if err := Withdraw(f.state); err == nil {
+		t.Error("지울 수 없는 파일을 오류 없이 지나쳤다")
+	}
+	if _, err := os.Stat(generationPath(f.state)); err != nil {
+		t.Errorf("지우지 못한 세대 파일이 사라졌다: %v", err)
+	}
+}
+
+// 수신기가 상한을 넘는 번호를 찍지 못한다.
+func TestNextLossStopsAtTheBound(t *testing.T) {
+	if n, ok := NextLoss(1); !ok || n != 2 {
+		t.Errorf("NextLoss(1) = %d, %v", n, ok)
+	}
+	if n, ok := NextLoss(MaxGeneration - 1); !ok || n != MaxGeneration {
+		t.Errorf("NextLoss(Max-1) = %d, %v", n, ok)
+	}
+	if n, ok := NextLoss(MaxGeneration); ok || n != MaxGeneration {
+		t.Errorf("NextLoss(Max) = %d, %v; want the bound back and false", n, ok)
+	}
 }
 
 // 쓸 수 없는 번호가 적힌 앵커는 세대 0 의 앵커처럼 의심한다(범위 오류가 가장 큰 번호로 읽히지 않는다).
 func TestAnAnchorWhoseGenerationIsNotANumberIsSuspect(t *testing.T) {
-	for _, gen := range []string{"99999999999999999999", "9223372036854775807", "-5", "soon", "", strconv.FormatInt(maxGeneration/2+1, 10)} {
+	for _, gen := range []string{"99999999999999999999", "9223372036854775807", "-5", "soon", "", strconv.FormatInt(MaxGeneration+1, 10)} {
 		t.Run(gen, func(t *testing.T) {
 			f := newFixture(t)
 			now := at(t0 + 60_000)
@@ -1128,5 +1202,145 @@ func TestAnAnchorWhoseGenerationIsNotANumberIsSuspect(t *testing.T) {
 				t.Errorf("번호를 읽을 수 없는 앵커는 의심해야 한다: %+v", got)
 			}
 		})
+	}
+}
+
+// 수신기가 멈추면(잠금이 풀리면) 하트비트와 세대가 멀쩡해도 앵커를 믿지 않는다.
+func TestAnAnchorIsDoubtedOnceTheReceiverHoldsNoLock(t *testing.T) {
+	f := newFixture(t)
+	now := at(t0 + 60_000)
+	f.install(0, now)
+	f.proc(11, t0, "s1")
+	f.apply(login("s1", "a@example.com", t0+900))
+	if got := f.wantEmail("s1", now, "a@example.com"); got.Suspect {
+		t.Fatalf("수신기가 도는 동안은 의심하지 않는다: %+v", got)
+	}
+	f.stopReceiver()
+	if got := f.wantEmail("s1", now, "a@example.com"); !got.Suspect {
+		t.Errorf("잠금이 풀렸는데 앵커를 믿는다: %+v", got)
+	}
+}
+
+func TestReceiverAliveOnlyWhileTheLockIsHeld(t *testing.T) {
+	state := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(state, "otel"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if receiverAlive(state) {
+		t.Error("잠금 파일이 없는데 수신기가 산다고 한다")
+	}
+	lock, err := LockReceiver(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !receiverAlive(state) {
+		t.Error("잠금을 쥐고 있는데 수신기가 없다고 한다")
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if receiverAlive(state) {
+		t.Error("잠금을 놓았는데 수신기가 산다고 한다")
+	}
+	if _, err := os.Stat(lockPath(state)); err != nil {
+		t.Errorf("잠금 파일이 사라졌다: %v", err)
+	}
+}
+
+func TestReceiverAliveIsFalseWhenTheLockFileCannotBeOpened(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root 는 읽기 권한 제한을 받지 않는다")
+	}
+	state := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(state, "otel"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := LockReceiver(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := os.Chmod(lockPath(state), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if receiverAlive(state) {
+		t.Error("열 수 없는 잠금 파일을 산 수신기로 본다")
+	}
+}
+
+func TestASecondLockerIsRefusedWhileTheFirstHoldsTheLock(t *testing.T) {
+	state := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(state, "otel"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first, err := LockReceiver(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LockReceiver(state); !errors.Is(err, ErrReceiverRunning) {
+		t.Errorf("둘째 잠금 = %v, want ErrReceiverRunning", err)
+	}
+	first.Close()
+	again, err := LockReceiver(state)
+	if err != nil {
+		t.Fatalf("놓은 뒤에는 잠글 수 있어야 한다: %v", err)
+	}
+	again.Close()
+}
+
+// 읽는 쪽의 짧은 공유 잠금은 수신기가 시작하는 것을 막지 못한다.
+func TestASharedProbeDoesNotKeepAReceiverFromLocking(t *testing.T) {
+	old := lockWait
+	lockWait = 2 * time.Second
+	defer func() { lockWait = old }()
+	state := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(state, "otel"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	probe, err := os.OpenFile(lockPath(state), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(probe.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	go func() { time.Sleep(100 * time.Millisecond); probe.Close() }()
+	lock, err := LockReceiver(state)
+	if err != nil {
+		t.Fatalf("공유 잠금이 풀리기를 기다리지 않고 포기했다: %v", err)
+	}
+	lock.Close()
+}
+
+// 잠금을 조사하지 못하면(잠금을 지원하지 않는 파일시스템 등) 수신기가 산다고 보지 않는다.
+func TestReceiverAliveIsFalseWhenTheProbeFails(t *testing.T) {
+	state := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(state, "otel"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := LockReceiver(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	old := flock
+	flock = func(int, int) error { return syscall.ENOLCK }
+	defer func() { flock = old }()
+	if receiverAlive(state) {
+		t.Error("조사에 실패했는데 수신기가 산다고 본다")
+	}
+}
+
+// 잠금을 얻지 못하는 파일시스템에서는 수신기가 시작하지 못한다(상태를 보증하지 못한다).
+func TestLockReceiverFailsWhenTheFilesystemCannotLock(t *testing.T) {
+	state := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(state, "otel"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := flock
+	flock = func(int, int) error { return syscall.ENOLCK }
+	defer func() { flock = old }()
+	if _, err := LockReceiver(state); err == nil || errors.Is(err, ErrReceiverRunning) {
+		t.Errorf("LockReceiver = %v, want a lock error that is not ErrReceiverRunning", err)
 	}
 }

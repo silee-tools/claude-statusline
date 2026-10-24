@@ -39,6 +39,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -86,25 +87,41 @@ var (
 
 const maxEmailBytes = 254
 
-// maxGeneration is the highest generation the receiver writes and the generation file may
-// name. A number counted up by ones never gets near it, so a file that holds it was
-// tampered with or damaged.
-const maxGeneration = int64(1) << 62
+// MaxGeneration is the highest generation anything reads or writes: the generation file, the
+// number an anchor carries and what WriteGeneration records. One bound for all of them keeps
+// every number the receiver writes a number the reader accepts.
+const MaxGeneration = int64(1) << 62
+
+// GenerationRunway is the room a start must leave below MaxGeneration for the generations
+// the run itself counts (one per loss). A start whose state is closer to the bound gives up.
+const GenerationRunway = int64(1) << 40
 
 // errDamagedGeneration is the generation file holding something that is not a generation.
 var errDamagedGeneration = errors.New("anchor: damaged generation file")
 
-// parseGeneration reads the number in an anchor's gen=: a whole number from 0 up to half of
-// maxGeneration. Anything else (not a number, negative, out of range) is not one and counts
+// errGenerationExhausted is the state holding a generation too close to MaxGeneration to
+// count on from there.
+var errGenerationExhausted = errors.New("anchor: generation range exhausted")
+
+// parseGeneration reads the number in an anchor's gen=: a whole number from 0 to
+// MaxGeneration. Anything else (not a number, negative, out of range) is not one and counts
 // as generation 0, which is doubted, so a damaged anchor neither passes as current nor lifts
-// the count. Anchors are held to half of the bound, so counting one past the highest of
-// them always stays within what the receiver may write.
+// the count.
 func parseGeneration(v string) (int64, bool) {
 	n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
-	if err != nil || n < 0 || n > maxGeneration/2 {
+	if err != nil || n < 0 || n > MaxGeneration {
 		return 0, false
 	}
 	return n, true
+}
+
+// NextLoss is the generation after a loss. It stops at MaxGeneration, so the receiver never
+// stamps a number the reader would not accept.
+func NextLoss(gen int64) (int64, bool) {
+	if gen >= MaxGeneration {
+		return gen, false
+	}
+	return gen + 1, true
 }
 
 func sessionsDir(stateDir string) string { return filepath.Join(stateDir, "otel", "sessions") }
@@ -266,10 +283,10 @@ func generationPath(stateDir string) string { return filepath.Join(stateDir, "ot
 // replaces it.
 //
 // A generation is a number, not a time, so no reading of the clock can put it behind the
-// anchors it has to outrank. It is a positive number up to maxGeneration, so a negative or
+// anchors it has to outrank. It is a positive number up to MaxGeneration, so a negative or
 // overflowed one is never recorded.
 func WriteGeneration(stateDir string, gen int64) error {
-	if gen <= 0 || gen > maxGeneration {
+	if gen <= 0 || gen > MaxGeneration {
 		return errors.New("anchor: generation out of range")
 	}
 	return statefile.Write(generationPath(stateDir), []byte(strconv.FormatInt(gen, 10)+"\n"))
@@ -306,7 +323,8 @@ func NextGeneration(stateDir string) (int64, error) {
 			}
 			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
 			if err != nil {
-				if errors.Is(err, fs.ErrNotExist) {
+				// A link to a directory is no anchor: the reader cannot read it either.
+				if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.EISDIR) {
 					continue
 				}
 				return 0, err
@@ -316,20 +334,25 @@ func NextGeneration(stateDir string) (int64, error) {
 			}
 		}
 	}
-	if top >= maxGeneration {
-		return 0, errDamagedGeneration
+	if top > MaxGeneration-GenerationRunway {
+		return 0, errGenerationExhausted
 	}
 	return top + 1, nil
 }
 
-// Withdraw takes back what readers trust a receiver for: its generation and its heartbeat.
-// A reader then doubts every anchor at once, where it would otherwise trust a receiver that
-// has stopped until the heartbeat goes stale. A start that cannot settle its generation
-// calls it before giving up. Errors are ignored: it is the last thing a failing start can
-// try, and a directory it cannot write is one a reader cannot be misled by through it.
-func Withdraw(stateDir string) {
-	os.Remove(generationPath(stateDir))
-	os.Remove(filepath.Join(stateDir, "otel", "heartbeat"))
+// Withdraw removes the generation and the heartbeat, so that a reader has no generation to
+// trust from a new run's first moment until the run has written its own. It reports a file it
+// could not remove. It is not what keeps a reader from trusting a stopped receiver: removing
+// needs a writable directory, which a failing start may not have, and the receiver's lock
+// does that.
+func Withdraw(stateDir string) error {
+	var first error
+	for _, path := range []string{generationPath(stateDir), filepath.Join(stateDir, "otel", "heartbeat")} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 // Writable reports whether an anchor could be stored now: it writes and removes a probe
@@ -344,7 +367,7 @@ func Writable(stateDir string) error {
 
 // loadGeneration returns the generation the file names: 0 when there is no file, an error
 // when it cannot be read or holds something that is not a generation (a number from 1 up to
-// maxGeneration).
+// MaxGeneration).
 func loadGeneration(stateDir string) (int64, error) {
 	b, err := os.ReadFile(generationPath(stateDir))
 	if err != nil {
@@ -354,7 +377,7 @@ func loadGeneration(stateDir string) (int64, error) {
 		return 0, err
 	}
 	n, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
-	if err != nil || n <= 0 || n > maxGeneration {
+	if err != nil || n <= 0 || n > MaxGeneration {
 		return 0, errDamagedGeneration
 	}
 	return n, nil

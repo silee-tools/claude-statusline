@@ -4,7 +4,8 @@ SRC=${STATUSLINE_TEST_SRC:-$(cd "$(dirname "$0")/.." && pwd)}
 WORK=$(mktemp -d)
 completed=0
 LIVE_PIDS=""
-trap 'rc=$?; kill $LIVE_PIDS 2>/dev/null; rm -rf "$WORK"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
+LOCK_PID=""
+trap 'rc=$?; kill $LIVE_PIDS $LOCK_PID 2>/dev/null; rm -rf "$WORK"; [ "$completed" = 1 ] || rc=1; exit "$rc"' EXIT
 pass=0; fail=0
 check() { if [ "$2" = "$3" ]; then pass=$((pass+1)); else printf 'FAIL %s expected=%s actual=%s\n' "$1" "$2" "$3"; fail=$((fail+1)); fi; }
 HOME="$WORK/home"; export HOME
@@ -31,11 +32,16 @@ case "$(cat "$CUSTOM/settings.json")" in *statusLine*) pass=$((pass+1));; *) fai
 CUSTOM_BEFORE=$(cksum < "$CUSTOM/settings.json")
 printf '{"hook_event_name":"SessionStart"}' | CLAUDE_CONFIG_DIR= CLAUDE_PLUGIN_ROOT="$ROOT" sh "$ROOT/scripts/hook-handler.sh"
 check 'default hook preserves custom settings' "$CUSTOM_BEFORE" "$(cksum < "$CUSTOM/settings.json")"
-(cd "$SRC" && GOPROXY=off go build -o "$WORK/statusline" ./cmd/statusline)
+(cd "$SRC" && GOPROXY=off go build -o "$WORK/statusline" ./cmd/statusline && GOPROXY=off go build -o "$WORK/lockholder" ./tests/testdata/lockholder)
 CACHE="$XDG_CACHE_HOME/claude-statusline"
 OTEL="$XDG_STATE_HOME/claude-statusline/otel"
 mkdir -p "$CACHE" "$OTEL/sessions"
 touch "$OTEL/heartbeat"
+# 계정은 수신기가 쥔 잠금이 잡혀 있을 때만 믿는다. 시험은 수신기 없이 파일을 심으므로 같은 잠금을 쥐는 프로그램을 띄운다.
+"$WORK/lockholder" "$XDG_STATE_HOME/claude-statusline" > "$WORK/lockhold.out" 2>&1 &
+LOCK_PID=$!
+_n=0
+until grep -q locked "$WORK/lockhold.out" 2>/dev/null; do _n=$((_n + 1)); [ "$_n" -lt 100 ] || { echo "FATAL: 잠금 보유자가 뜨지 않았다" >&2; exit 1; }; sleep 0.05; done
 # 계정은 설정 폴더의 .claude.json 이 아니라 세션별 앵커에서 온다. 미끼 .claude.json 은 서로 바꿔 둔다.
 printf '{"oauthAccount":{"emailAddress":"custom@example.com"}}' > "$HOME/.claude.json"
 printf '{"oauthAccount":{"emailAddress":"default@example.com"}}' > "$CUSTOM/.claude.json"

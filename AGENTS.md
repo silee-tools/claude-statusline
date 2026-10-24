@@ -58,7 +58,11 @@ the receiver exits 75 when its file is replaced, so a needless replacement is a
 restart. The compare, the copy and the version write run under a `mkdir` lock in that
 directory, and the version is read again inside it: hooks of different versions run
 concurrently, and without the lock a lower version could overwrite a higher one and
-leave `.version` naming a binary that is not there. The script names no service:
+leave `.version` naming a binary that is not there. The receiver holds a `flock` on
+`otel/receiver.lock` while it runs and the render path trusts an anchor only while that
+lock is held, probed in three system calls and no child process: the kernel drops the
+lock on any exit, so a stopped receiver is noticed without a write to the state
+directory, which a heartbeat file needs. The script names no service:
 starting and restarting the receiver is the supervisor's job, which keeps the source
 publishable.
 
@@ -129,6 +133,9 @@ highest version published when publishers of several versions race.
 `otlp.test.sh` starts the receiver on `127.0.0.1:0`, never a fixed port, posts
 requests with `curl`, reads the account slot back through the shim, and stops the
 receiver by the pid it recorded.
+`statusline.test.sh` and `config-dir.test.sh` seed anchors without a receiver, so they
+build `tests/testdata/lockholder` (a program that takes the same lock through
+`anchor.LockReceiver`) and keep it running, as a live receiver would.
 `json.test.sh` and `settings.test.sh` cover the awk parser and rewriter the
 `SessionStart` hook still uses.
 

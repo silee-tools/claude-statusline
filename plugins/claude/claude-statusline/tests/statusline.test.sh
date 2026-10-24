@@ -68,6 +68,11 @@ if ! command -v go >/dev/null 2>&1; then
   echo "FATAL: go 를 찾지 못해 렌더 바이너리를 빌드할 수 없습니다" >&2
   exit 1
 fi
+LOCKHOLD="$TMPROOT/lockholder"
+if ! ( cd "$SRC" && GOPROXY=off go build -o "$LOCKHOLD" ./tests/testdata/lockholder ) >&2; then
+  echo "FATAL: 잠금 보유자 빌드 실패" >&2
+  exit 1
+fi
 if ! ( cd "$SRC" && GOPROXY=off go build -o "$BINARY" ./cmd/statusline ) >&2; then
   echo "FATAL: 렌더 바이너리 빌드 실패" >&2
   exit 1
@@ -112,8 +117,25 @@ seed_anchor() {
   printf 'email=%s\nkind=%s\nts=%s\nseen=%s000\ngen=1\n' "$2" "$3" "$4" "$(date +%s)" > "$(anchor_file "$1")"
   printf '1\n' > "$OTEL_DIR/generation"
 }
-beat()       { mkdir -p "$OTEL_DIR"; touch "$OTEL_DIR/heartbeat"; }
-stale_beat() { mkdir -p "$OTEL_DIR"; touch -t 200001010000 "$OTEL_DIR/heartbeat"; }
+# 수신기가 도는 기계: 계정은 수신기가 쥔 잠금(otel/receiver.lock)이 잡혀 있고 하트비트가 신선할 때만 믿는다.
+# 시험은 수신기 없이 파일을 심으므로 같은 잠금을 쥐는 작은 프로그램을 띄운다. stop_receiver 는 수신기가 끝난 것과 같다.
+HOLD_PID=""
+hold_receiver() {
+  [ -z "$HOLD_PID" ] || return 0
+  mkdir -p "$OTEL_DIR"
+  "$LOCKHOLD" "$STATE_ACCT/claude-statusline" > "$TMPROOT/lockhold.out" 2>&1 &
+  HOLD_PID=$!
+  LIVE_PIDS="$LIVE_PIDS $HOLD_PID"
+  _n=0
+  until grep -q locked "$TMPROOT/lockhold.out" 2>/dev/null; do
+    _n=$((_n + 1))
+    [ "$_n" -lt 100 ] || { echo "FATAL: 잠금 보유자가 뜨지 않았다" >&2; exit 1; }
+    sleep 0.05
+  done
+}
+stop_receiver() { [ -z "$HOLD_PID" ] || { kill "$HOLD_PID" 2>/dev/null || true; wait "$HOLD_PID" 2>/dev/null || true; HOLD_PID=""; }; }
+beat()       { mkdir -p "$OTEL_DIR"; touch "$OTEL_DIR/heartbeat"; hold_receiver; }
+stale_beat() { mkdir -p "$OTEL_DIR"; touch -t 200001010000 "$OTEL_DIR/heartbeat"; hold_receiver; }
 
 # AWS 세션 fixture: AWS 세그먼트가 개발자의 실제 ~/.aws/login/cache 를 읽지 않도록 전용
 # 디렉터리에 방금 로그인한 캐시 파일 하나를 둔다. 세그먼트는 idToken 의 iat 에 12h 를 더한
@@ -1078,6 +1100,13 @@ printf '2\n' > "$OTEL_DIR/generation"
 OUT=$(run "$SESS_B" 120); assert_contains "T35 앞선 세대의 앵커는 이메일 뒤 ?" "b@example.com?" "$(first_line "$OUT")"
 printf '1\n' > "$OTEL_DIR/generation"
 OUT=$(run "$SESS_B" 120); assert_not_contains "T35 현재 세대의 앵커는 ? 없음" "b@example.com?" "$(first_line "$OUT")"
+# 수신기가 끝나면 잠금이 풀려, 하트비트와 세대가 멀쩡해도 앵커를 믿지 않는다(정상 종료·교체 종료·충돌 모두 같다).
+stop_receiver
+OUT=$(run "$SESS_B" 120); assert_contains "T35 수신기가 끝나면 신선한 하트비트에도 이메일 뒤 ?" "b@example.com?" "$(first_line "$OUT")"
+rm -f "$OTEL_DIR/receiver.lock"
+OUT=$(run "$SESS_B" 120); assert_contains "T35 잠금 파일이 없으면 이메일 뒤 ?" "b@example.com?" "$(first_line "$OUT")"
+beat
+OUT=$(run "$SESS_B" 120); assert_not_contains "T35 수신기가 다시 잠금을 쥐면 ? 없음" "b@example.com?" "$(first_line "$OUT")"
 
 # 압축 레이아웃은 계정을 보이지 않는다.
 OUT=$(run "$SESS_B" 80)

@@ -81,8 +81,11 @@ func Resolve(in Input) Result {
 		return Result{}
 	}
 	r := Result{Installed: true}
+	// An anchor is trusted only while a receiver runs (it holds the lock, which a stopped
+	// receiver cannot leave behind) and keeps its heartbeat: a receiver that hangs still holds
+	// the lock.
 	hb, err := os.Stat(filepath.Join(in.StateDir, "otel", "heartbeat"))
-	r.Suspect = err != nil || in.Now.Sub(hb.ModTime()) > staleHeartbeat
+	r.Suspect = !receiverAlive(in.StateDir) || err != nil || in.Now.Sub(hb.ModTime()) > staleHeartbeat
 	if a, ok, known := sessionAnchor(in); ok && a.Email != "" {
 		r.Email, r.AnchorTS = a.Email, a.TS
 		r.Level = Estimate
