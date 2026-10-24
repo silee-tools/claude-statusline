@@ -387,8 +387,8 @@ answers `503`, which the exporter retries. It stores no event and reads only
 record; stderr says what happened (start, stop, failure kinds), never a value. Exit
 codes: 0 after SIGINT or SIGTERM; 75 when the file at its own path was replaced (it
 checks every 30 seconds), so the supervisor starts the new build; 1 when the address is
-not loopback, the port cannot be bound, or the state directory cannot be prepared. It
-touches the heartbeat every 30 seconds, except while it cannot store an anchor: a
+not loopback, the port cannot be bound, or the state directory cannot be prepared or read
+(see below). It touches the heartbeat every 30 seconds, except while it cannot store an anchor: a
 failed write moves the receiver to the next generation (`otel/generation`, a counter) and
 withholds the heartbeat until a probe write succeeds. Every anchor carries the generation
 it was stored under (`gen=`), and the statusline puts `?` behind an anchor of an earlier
@@ -403,8 +403,17 @@ that kept sending would hold every account in doubt. A generation that cannot be
 counts as a loss that is not recorded yet, so the heartbeat stays withheld until it is.
 Every start moves to the next generation too, past the highest number in the generation
 file and in the stored anchors, so what an earlier run stored is doubted whatever the
-clock reads and whether or not the file survived; an anchor with no `gen=` counts as
-generation 0. At start and
+clock reads and whether or not the file survived. A start answers only when it has seen
+all of that state: a directory or file that is missing counts as empty, but one that
+cannot be listed or read, or a generation file that holds no generation (text, zero,
+negative, out of range), makes the start give up. It removes the generation file and the
+heartbeat first, so the statusline puts `?` behind every anchor at once instead of
+trusting a receiver that stopped until its heartbeat goes stale, and exits 1; the
+supervisor starts it again, and the next start, finding no file, counts from the
+anchors. After a normal stop or an exit 75 the old heartbeat is still trusted for up to
+120 seconds. A `gen=` that is not a number in range counts as generation 0, so the
+anchor is doubted and does not raise the count; the receiver never records a generation
+that is not positive. At start and
 then hourly it removes what is past retention. Where stderr goes, and how long it is
 kept, is the supervisor's setting.
 
