@@ -14,7 +14,8 @@
 // Exit codes: 0 after SIGINT or SIGTERM; 75 when the executable at its own path was
 // replaced, so a supervisor that restarts on failure brings up the new build; 1 when the
 // address is not a loopback address, the port cannot be bound, or the state directory
-// cannot be prepared.
+// cannot be prepared or read. A start that fails after binding withdraws the generation and
+// the heartbeat first, so the statusline doubts every anchor at once.
 package main
 
 import (
@@ -83,21 +84,30 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 		return exitFailed
 	}
 	defer ln.Close()
-	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "otel", "sessions"), 0o700); err != nil {
-		say("state directory unavailable")
+	// Past the bind this process owns the state. A start that cannot settle it gives up
+	// with the previous run's generation and heartbeat withdrawn, so a reader doubts every
+	// anchor now instead of trusting a receiver that is not there until the heartbeat goes
+	// stale, and exits 1 so that the supervisor tries again.
+	giveUp := func(msg string) int {
+		anchor.Withdraw(cfg.StateDir)
+		say(msg)
 		return exitFailed
+	}
+	if err := os.MkdirAll(filepath.Join(cfg.StateDir, "otel", "sessions"), 0o700); err != nil {
+		return giveUp("state directory unavailable")
 	}
 	// Events sent while no receiver ran are gone, so every anchor stored before this
 	// start is doubted until a later event replaces it: this run's generation is past every
 	// number the state holds, which no setting of the clock changes.
-	gen := anchor.NextGeneration(cfg.StateDir) // guarded by mu once the server runs
+	gen, err := anchor.NextGeneration(cfg.StateDir) // guarded by mu once the server runs
+	if err != nil {
+		return giveUp("generation unavailable")
+	}
 	if err := anchor.WriteGeneration(cfg.StateDir, gen); err != nil {
-		say("generation unavailable")
-		return exitFailed
+		return giveUp("generation unavailable")
 	}
 	if err := anchor.TouchHeartbeat(cfg.StateDir, time.Now()); err != nil {
-		say("heartbeat unavailable")
-		return exitFailed
+		return giveUp("heartbeat unavailable")
 	}
 	anchor.Sweep(cfg.StateDir, time.Now())
 

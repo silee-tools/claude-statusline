@@ -180,6 +180,22 @@ RECV_PID=""
 assert_equals "실행 파일이 교체되면 종료코드 75" "75" "$RC"
 assert_contains "교체 종료 이유가 stderr 에 남음" "executable replaced" "$(cat "$TMPROOT/recv2.err")"
 
+# --- 저장된 앵커를 읽을 수 없어 세대를 정하지 못하는 시작은 포기하고, 세대와 하트비트를 거두어 모든 칸이 ? 가 된다 ---
+if [ "$(id -u)" -ne 0 ]; then
+  assert_contains "포기하기 전에는 /login 으로 확인한 계정이 의심 없이 보인다" " e@example.com ⧉ s2" "$(first_line s2)"
+  chmod 300 "$STATE/otel/sessions"
+  "$RECV" -addr 127.0.0.1:0 >/dev/null 2>"$TMPROOT/giveup.err" &
+  _gp=$!
+  _n=0
+  while kill -0 "$_gp" 2>/dev/null && [ "$_n" -lt 50 ]; do _n=$((_n + 1)); sleep 0.1; done
+  if kill -0 "$_gp" 2>/dev/null; then kill "$_gp" 2>/dev/null || true; RC=alive; set +e; wait "$_gp"; set -e; else set +e; wait "$_gp"; RC=$?; set -e; fi
+  chmod 700 "$STATE/otel/sessions"
+  assert_equals "앵커 목록을 읽을 수 없으면 시작을 포기하고 종료코드 1" "1" "$RC"
+  assert_contains "포기한 이유가 stderr 에 종류만 남음" "generation unavailable" "$(cat "$TMPROOT/giveup.err")"
+  assert_equals "포기하면서 이전 하트비트를 거둔다" "no" "$([ -f "$HEARTBEAT" ] && echo yes || echo no)"
+  assert_contains "포기한 뒤에는 하트비트가 신선했던 계정도 ? 가 붙는다" " e@example.com? ⧉ s2" "$(first_line s2)"
+fi
+
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 completed=1
 [ "$fail" -eq 0 ]

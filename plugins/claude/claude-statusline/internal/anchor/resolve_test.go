@@ -3,6 +3,8 @@ package anchor
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -906,60 +908,224 @@ func TestAnAppliedAnchorCarriesTheGenerationItWasStoredIn(t *testing.T) {
 }
 
 // 시작하는 수신기의 세대는 파일이 가리키는 번호와 이미 저장된 모든 앵커의 번호보다 크다.
+func writeFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func anchorBody(gen string) string {
+	return fmt.Sprintf("email=a@example.com\nkind=login\nts=%d\nseen=%d\ngen=%s\n", t0, t0, gen)
+}
+
 func TestNextGenerationIsPastTheFileAndEveryStoredAnchor(t *testing.T) {
-	write := func(t *testing.T, path, body string) {
-		t.Helper()
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	anchorBody := func(gen int) string {
-		return fmt.Sprintf("email=a@example.com\nkind=login\nts=%d\nseen=%d\ngen=%d\n", t0, t0, gen)
-	}
 	cases := []struct {
 		name  string
 		setup func(t *testing.T, state string)
 		want  int64
 	}{
 		{"nothing stored", func(*testing.T, string) {}, 1},
-		{"the file alone", func(t *testing.T, state string) { write(t, generationPath(state), "5\n") }, 6},
-		{"an old file that holds a time", func(t *testing.T, state string) { write(t, generationPath(state), "1700000000000\n") }, 1_700_000_000_001},
+		{"the file alone", func(t *testing.T, state string) { writeFile(t, generationPath(state), "5\n") }, 6},
+		{"an old file that holds a time", func(t *testing.T, state string) { writeFile(t, generationPath(state), "1700000000000\n") }, 1_700_000_000_001},
 		{"an anchor ahead of the file", func(t *testing.T, state string) {
-			write(t, generationPath(state), "5\n")
-			write(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody(9))
+			writeFile(t, generationPath(state), "5\n")
+			writeFile(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody("9"))
 		}, 10},
 		{"an anchor when the file is gone", func(t *testing.T, state string) {
-			write(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody(9))
-		}, 10},
-		{"an anchor when the file is damaged", func(t *testing.T, state string) {
-			write(t, generationPath(state), "soon\n")
-			write(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody(9))
+			writeFile(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody("9"))
 		}, 10},
 		{"a carried anchor in the pid files", func(t *testing.T, state string) {
-			write(t, generationPath(state), "5\n")
-			write(t, filepath.Join(state, "pids", "11-1.env"), "session=s1\nsrc=x\n"+anchorBody(12))
+			writeFile(t, generationPath(state), "5\n")
+			writeFile(t, filepath.Join(state, "pids", "11-1.env"), "session=s1\nsrc=x\n"+anchorBody("12"))
 		}, 13},
 		{"the highest of several", func(t *testing.T, state string) {
-			write(t, generationPath(state), "20\n")
-			write(t, filepath.Join(sessionsDir(state), "a.env"), anchorBody(9))
-			write(t, filepath.Join(sessionsDir(state), "b.env"), anchorBody(30))
-			write(t, filepath.Join(sessionsDir(state), "c.env"), anchorBody(4))
+			writeFile(t, generationPath(state), "20\n")
+			writeFile(t, filepath.Join(sessionsDir(state), "a.env"), anchorBody("9"))
+			writeFile(t, filepath.Join(sessionsDir(state), "b.env"), anchorBody("30"))
+			writeFile(t, filepath.Join(sessionsDir(state), "c.env"), anchorBody("4"))
 		}, 31},
 		{"files that are not anchors", func(t *testing.T, state string) {
-			write(t, filepath.Join(sessionsDir(state), "s1.env"), "email=\nkind=login\nts=1\ngen=99\n") // no email: no anchor
-			write(t, filepath.Join(sessionsDir(state), "s2.env.tmp"), anchorBody(99))
-			write(t, filepath.Join(state, "pids", "session-s1.ref"), "proc=11-1\nts=1\ngen=99\n")
+			writeFile(t, filepath.Join(sessionsDir(state), "s1.env"), "email=\nkind=login\nts=1\ngen=99\n") // no email: no anchor
+			writeFile(t, filepath.Join(sessionsDir(state), "s2.env.tmp"), anchorBody("99"))
+			writeFile(t, filepath.Join(state, "pids", "session-s1.ref"), "proc=11-1\nts=1\ngen=99\n")
+			if err := os.MkdirAll(filepath.Join(sessionsDir(state), "dir.env"), 0o700); err != nil { // a directory is not an anchor
+				t.Fatal(err)
+			}
 		}, 1},
+		{"a link is followed as a reader follows it", func(t *testing.T, state string) {
+			target := filepath.Join(t.TempDir(), "elsewhere.env")
+			writeFile(t, target, anchorBody("9"))
+			if err := os.MkdirAll(sessionsDir(state), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, filepath.Join(sessionsDir(state), "s1.env")); err != nil {
+				t.Fatal(err)
+			}
+		}, 10},
+		{"a link whose target is gone is skipped", func(t *testing.T, state string) {
+			writeFile(t, generationPath(state), "5\n")
+			if err := os.MkdirAll(sessionsDir(state), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(state, "nowhere.env"), filepath.Join(sessionsDir(state), "s1.env")); err != nil {
+				t.Fatal(err)
+			}
+		}, 6},
+		// An anchor number that is not a usable number counts as 0 for the scan, as it does for a
+		// reader, which doubts the anchor: it neither fails the start nor lifts the count.
+		{"a number out of range in an anchor", func(t *testing.T, state string) {
+			writeFile(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody("99999999999999999999"))
+		}, 1},
+		{"the largest int64 in an anchor", func(t *testing.T, state string) {
+			writeFile(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody("9223372036854775807"))
+		}, 1},
+		{"a negative number in an anchor", func(t *testing.T, state string) {
+			writeFile(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody("-5"))
+		}, 1},
+		{"text in an anchor", func(t *testing.T, state string) {
+			writeFile(t, generationPath(state), "5\n")
+			writeFile(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody("soon"))
+		}, 6},
+		{"the highest number an anchor may carry", func(t *testing.T, state string) {
+			writeFile(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody(strconv.FormatInt(maxGeneration/2, 10)))
+		}, maxGeneration/2 + 1},
+		{"one past the highest number an anchor may carry", func(t *testing.T, state string) {
+			writeFile(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody(strconv.FormatInt(maxGeneration/2+1, 10)))
+		}, 1},
+		{"the highest generation a file may name", func(t *testing.T, state string) {
+			writeFile(t, generationPath(state), strconv.FormatInt(maxGeneration-1, 10)+"\n")
+		}, maxGeneration},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			state := t.TempDir()
 			c.setup(t, state)
-			if got := NextGeneration(state); got != c.want {
-				t.Errorf("NextGeneration = %d, want %d", got, c.want)
+			got, err := NextGeneration(state)
+			if err != nil || got != c.want {
+				t.Errorf("NextGeneration = %d, %v; want %d", got, err, c.want)
+			}
+		})
+	}
+}
+
+// 세대를 정할 수 없으면 추측하지 않고 오류를 돌려준다.
+func TestNextGenerationFailsWhenTheStateCannotBeSeenWhole(t *testing.T) {
+	root := os.Geteuid() == 0
+	cases := []struct {
+		name    string
+		setup   func(t *testing.T, state string)
+		needsFS bool // a permission the superuser ignores
+	}{
+		{"a generation file that is text", func(t *testing.T, state string) { writeFile(t, generationPath(state), "soon\n") }, false},
+		{"an empty generation file", func(t *testing.T, state string) { writeFile(t, generationPath(state), "") }, false},
+		{"a negative generation", func(t *testing.T, state string) { writeFile(t, generationPath(state), "-3\n") }, false},
+		{"generation zero", func(t *testing.T, state string) { writeFile(t, generationPath(state), "0\n") }, false},
+		{"a generation out of range", func(t *testing.T, state string) { writeFile(t, generationPath(state), "99999999999999999999\n") }, false},
+		{"the largest int64 as the generation", func(t *testing.T, state string) { writeFile(t, generationPath(state), "9223372036854775807\n") }, false},
+		{"a generation with nothing above it", func(t *testing.T, state string) {
+			writeFile(t, generationPath(state), strconv.FormatInt(maxGeneration, 10)+"\n")
+		}, false},
+		{"a generation file that cannot be read", func(t *testing.T, state string) {
+			writeFile(t, generationPath(state), "5\n")
+			if err := os.Chmod(generationPath(state), 0o000); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+		{"an anchors directory that cannot be listed", func(t *testing.T, state string) {
+			writeFile(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody("9"))
+			if err := os.Chmod(sessionsDir(state), 0o300); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+		{"an anchor that cannot be read", func(t *testing.T, state string) {
+			writeFile(t, filepath.Join(sessionsDir(state), "s1.env"), anchorBody("9"))
+			writeFile(t, filepath.Join(sessionsDir(state), "s2.env"), anchorBody("3"))
+			if err := os.Chmod(filepath.Join(sessionsDir(state), "s2.env"), 0o000); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+		{"a carried-anchors directory that cannot be listed", func(t *testing.T, state string) {
+			writeFile(t, filepath.Join(state, "pids", "11-1.env"), anchorBody("9"))
+			if err := os.Chmod(filepath.Join(state, "pids"), 0o300); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+		{"a carried anchor that cannot be read", func(t *testing.T, state string) {
+			writeFile(t, filepath.Join(state, "pids", "11-1.env"), anchorBody("9"))
+			if err := os.Chmod(filepath.Join(state, "pids", "11-1.env"), 0o000); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.needsFS && root {
+				t.Skip("root 는 읽기 권한 제한을 받지 않는다")
+			}
+			state := t.TempDir()
+			t.Cleanup(func() { // let the temporary directory be removed
+				filepath.WalkDir(state, func(path string, d fs.DirEntry, err error) error { os.Chmod(path, 0o700); return nil })
+				filepath.WalkDir(state, func(path string, d fs.DirEntry, err error) error { os.Chmod(path, 0o700); return nil })
+			})
+			c.setup(t, state)
+			if got, err := NextGeneration(state); err == nil {
+				t.Errorf("NextGeneration = %d, nil; want an error", got)
+			}
+		})
+	}
+}
+
+// 쓸 수 없는 세대(0, 음수, 범위 밖)는 기록하지 않는다.
+func TestWriteGenerationRecordsOnlyAGeneration(t *testing.T) {
+	for _, bad := range []int64{0, -1, math.MinInt64, math.MaxInt64, maxGeneration + 1} {
+		state := t.TempDir()
+		if err := WriteGeneration(state, bad); err == nil {
+			t.Errorf("WriteGeneration(%d) 가 기록했다", bad)
+		}
+		if _, err := os.Stat(generationPath(state)); err == nil {
+			t.Errorf("WriteGeneration(%d) 가 파일을 남겼다", bad)
+		}
+	}
+	for _, good := range []int64{1, 2, maxGeneration} {
+		state := t.TempDir()
+		if err := WriteGeneration(state, good); err != nil {
+			t.Errorf("WriteGeneration(%d): %v", good, err)
+		}
+	}
+}
+
+// 수신기가 시작하지 못하고 물러날 때 읽는 쪽이 모든 앵커를 의심하도록 세대와 하트비트를 거둔다.
+func TestWithdrawTakesBackTheGenerationAndTheHeartbeat(t *testing.T) {
+	f := newFixture(t)
+	now := at(t0 + 60_000)
+	f.install(0, now)
+	f.proc(11, t0, "s1")
+	f.apply(login("s1", "a@example.com", t0+900))
+	if got := f.wantEmail("s1", now, "a@example.com"); got.Suspect {
+		t.Fatalf("거두기 전에는 의심하지 않는다: %+v", got)
+	}
+	Withdraw(f.state)
+	if got := f.wantEmail("s1", now, "a@example.com"); !got.Suspect {
+		t.Errorf("세대와 하트비트를 거둔 뒤에는 의심해야 한다: %+v", got)
+	}
+	Withdraw(f.state) // 이미 없어도 오류 없이 끝난다
+}
+
+// 쓸 수 없는 번호가 적힌 앵커는 세대 0 의 앵커처럼 의심한다(범위 오류가 가장 큰 번호로 읽히지 않는다).
+func TestAnAnchorWhoseGenerationIsNotANumberIsSuspect(t *testing.T) {
+	for _, gen := range []string{"99999999999999999999", "9223372036854775807", "-5", "soon", "", strconv.FormatInt(maxGeneration/2+1, 10)} {
+		t.Run(gen, func(t *testing.T) {
+			f := newFixture(t)
+			now := at(t0 + 60_000)
+			f.install(0, now)
+			f.proc(11, t0, "s1")
+			writeFile(t, filepath.Join(sessionsDir(f.state), "s1.env"), anchorBody(gen))
+			if got := f.wantEmail("s1", now, "a@example.com"); !got.Suspect {
+				t.Errorf("번호를 읽을 수 없는 앵커는 의심해야 한다: %+v", got)
 			}
 		})
 	}

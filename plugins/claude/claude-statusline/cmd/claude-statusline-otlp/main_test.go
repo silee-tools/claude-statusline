@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -560,8 +561,10 @@ func seed(t *testing.T, cfg config, id, email string, ms, gen int64) {
 func TestAnAnchorStoredBeforeARestartIsDoubtedWhateverTheClockSays(t *testing.T) {
 	cfg := baseConfig(t)
 	ahead := time.Now().Add(24 * time.Hour).UnixMilli()
-	seed(t, cfg, "s1", "a@example.com", ahead, 1)
-	if err := os.WriteFile(filepath.Join(cfg.StateDir, "otel", "generation"), []byte("1\n"), 0o600); err != nil {
+	// The earlier run counted from a clock that ran ahead: its generation is a number the
+	// corrected clock has not reached yet, which a restart that reads the clock would undercut.
+	seed(t, cfg, "s1", "a@example.com", ahead, ahead)
+	if err := os.WriteFile(filepath.Join(cfg.StateDir, "otel", "generation"), []byte(strconv.FormatInt(ahead, 10)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, exit, _, cancel := start(t, cfg)
@@ -638,5 +641,130 @@ func TestAnAnchorStoredWhileALossCannotBeRecordedIsNotDoubtedByTheRecovery(t *te
 	}
 	if _, doubt := suspect(t, cfg, "s0"); !doubt {
 		t.Error("유실 전에 저장된 앵커는 의심해야 한다")
+	}
+}
+
+// failedStart runs a start that is expected to give up and returns its exit code. A start
+// that does not give up is stopped after a while with the code of a normal stop.
+func failedStart(t *testing.T, cfg config) int {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return serve(ctx, cfg, &syncBuffer{})
+}
+
+// afterARun leaves the state a receiver that ran and stopped leaves: a login stored under
+// its generation, a fresh heartbeat and the generation file.
+func afterARun(t *testing.T) config {
+	t.Helper()
+	cfg := baseConfig(t)
+	addr, exit, _, cancel := start(t, cfg)
+	if code := postLogin(t, addr, "s1", "a@example.com", 1_700_000_000_000); code != 200 {
+		t.Fatalf("정상 상태 %d", code)
+	}
+	cancel()
+	waitExit(t, exit, 3*time.Second)
+	return cfg
+}
+
+func chmodFor(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	old, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(path, old.Mode().Perm()) })
+}
+
+// A start that cannot tell which generations the stored anchors belong to must not go on
+// with a number it guessed: it withdraws the generation and the heartbeat, so every reader
+// doubts every anchor at once instead of trusting the receiver that stopped, and gives up
+// with the code that makes the supervisor try again.
+func TestAStartThatCannotSettleItsGenerationWithdrawsTheStateSoEveryAnchorIsDoubted(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root 는 읽기 권한 제한을 받지 않아 읽기 실패를 만들 수 없다")
+	}
+	for name, c := range map[string]struct {
+		damage     func(t *testing.T, cfg config)
+		readsEmail bool // the anchor itself can still be read
+	}{
+		"generation file gone and the anchors cannot be listed": {func(t *testing.T, cfg config) {
+			os.Remove(filepath.Join(cfg.StateDir, "otel", "generation"))
+			chmodFor(t, filepath.Join(cfg.StateDir, "otel", "sessions"), 0o300)
+		}, true},
+		"generation file kept and the anchors cannot be listed": {func(t *testing.T, cfg config) {
+			chmodFor(t, filepath.Join(cfg.StateDir, "otel", "sessions"), 0o300)
+		}, true},
+		"an anchor cannot be read": {func(t *testing.T, cfg config) {
+			chmodFor(t, filepath.Join(cfg.StateDir, "otel", "sessions", "s1.env"), 0o000)
+		}, false},
+		"the carried anchors cannot be listed": {func(t *testing.T, cfg config) {
+			pids := filepath.Join(cfg.StateDir, "pids")
+			os.MkdirAll(pids, 0o700)
+			chmodFor(t, pids, 0o300)
+		}, true},
+		"the generation file cannot be read": {func(t *testing.T, cfg config) {
+			chmodFor(t, filepath.Join(cfg.StateDir, "otel", "generation"), 0o000)
+		}, true},
+		"the anchors directory cannot be prepared": {func(t *testing.T, cfg config) {
+			sessions := filepath.Join(cfg.StateDir, "otel", "sessions")
+			os.RemoveAll(sessions)
+			os.WriteFile(sessions, []byte("x"), 0o600)
+		}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := afterARun(t)
+			c.damage(t, cfg)
+			if code := failedStart(t, cfg); code != exitFailed {
+				t.Fatalf("종료코드 %d, want %d", code, exitFailed)
+			}
+			if _, err := os.Stat(filepath.Join(cfg.StateDir, "otel", "heartbeat")); !os.IsNotExist(err) {
+				t.Errorf("시작하지 못했는데 이전 하트비트가 남아 이전 수신기를 믿게 한다: %v", err)
+			}
+			if c.readsEmail {
+				if res, doubt := suspect(t, cfg, "s1"); res.Email != "a@example.com" || !doubt {
+					t.Errorf("읽을 수 있는 앵커가 의심 없이 보인다: %+v 의심=%v", res, doubt)
+				}
+			}
+		})
+	}
+}
+
+// A generation file that is damaged or out of range is not guessed at either; withdrawing it
+// is what lets the next start, which finds no file, count from the anchors.
+func TestADamagedGenerationFileFailsOneStartAndTheNextStartHealsIt(t *testing.T) {
+	for name, body := range map[string]string{
+		"text":         "soon\n",
+		"empty":        "",
+		"negative":     "-3\n",
+		"zero":         "0\n",
+		"out of range": "99999999999999999999\n",
+		"max int64":    "9223372036854775807\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := afterARun(t)
+			gen := filepath.Join(cfg.StateDir, "otel", "generation")
+			if err := os.WriteFile(gen, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if code := failedStart(t, cfg); code != exitFailed {
+				t.Fatalf("종료코드 %d, want %d", code, exitFailed)
+			}
+			if _, err := os.Stat(gen); !os.IsNotExist(err) {
+				t.Errorf("손상된 세대 파일이 남았다: %v", err)
+			}
+			_, exit, _, cancel := start(t, cfg)
+			defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+			if res, doubt := suspect(t, cfg, "s1"); res.Email != "a@example.com" || !doubt {
+				t.Errorf("다시 시작한 뒤 이전 세대의 앵커가 믿어진다: %+v 의심=%v", res, doubt)
+			}
+			b, err := os.ReadFile(gen)
+			if n, perr := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64); err != nil || perr != nil || n < 2 {
+				t.Errorf("다시 시작한 수신기의 세대 파일 = %q (%v %v), want 앵커의 번호 1 보다 큰 수", b, err, perr)
+			}
+		})
 	}
 }
