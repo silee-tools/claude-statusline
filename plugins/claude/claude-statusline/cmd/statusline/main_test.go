@@ -75,8 +75,11 @@ func accountFixture(t *testing.T, now time.Time) (stateDir, configDir string) {
 	if err := anchor.WriteGeneration(stateDir, testGen); err != nil {
 		t.Fatal(err)
 	}
-	lock, err := anchor.LockReceiver(stateDir) // a running receiver holds the lock
+	lock, err := anchor.LockReceiver(stateDir) // a ready receiver holds both locks
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Ready(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { lock.Close() })

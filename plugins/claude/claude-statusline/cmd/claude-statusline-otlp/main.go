@@ -51,6 +51,7 @@ type config struct {
 	BeatEvery  time.Duration
 	SweepEvery time.Duration // how often to remove state past retention; 0 means hourly
 	OnListen   func(net.Addr)
+	OnLocked   func() // tests: called once the start lock is held, before any state is touched
 }
 
 func main() {
@@ -90,10 +91,11 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 		say("state directory unavailable")
 		return exitFailed
 	}
-	// The lock tells the statusline a receiver runs, for as long as this process lives, and
-	// goes with it however it ends. A start that fails below, even one that cannot write
-	// anything, therefore leaves no receiver for a reader to trust. Another receiver holding
-	// it (on another port) keeps its state: nothing is touched.
+	// The start lock keeps a second receiver out; the live lock, taken last, tells the
+	// statusline this one is ready. Both go with the process however it ends, so a start that
+	// fails below, even one that cannot write anything, leaves no receiver for a reader to
+	// trust. Another receiver holding either (one on another port) keeps its state: nothing is
+	// touched.
 	lock, err := anchor.LockReceiver(cfg.StateDir)
 	if err != nil {
 		if errors.Is(err, anchor.ErrReceiverRunning) {
@@ -104,8 +106,12 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 		return exitFailed
 	}
 	defer lock.Close()
-	// From here the previous run's generation and heartbeat would only mislead: a reader that
-	// finds none doubts every anchor until this run has written its own.
+	if cfg.OnLocked != nil {
+		cfg.OnLocked()
+	}
+	// The previous run's generation, heartbeat and anchors stay out of a reader's sight until
+	// this run is ready by the live lock, so Withdraw only clears what a count must not start
+	// from: a damaged or unreadable generation file.
 	if err := anchor.Withdraw(cfg.StateDir); err != nil {
 		say("state unavailable")
 		return exitFailed
@@ -122,12 +128,29 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 		say("generation unavailable")
 		return exitFailed
 	}
-	// The heartbeat comes last: it says this run is ready.
+	// The heartbeat comes last of the state, and the live lock after it: the run is ready.
 	if err := anchor.TouchHeartbeat(cfg.StateDir, time.Now()); err != nil {
 		say("heartbeat unavailable")
 		return exitFailed
 	}
+	if err := lock.Ready(); err != nil {
+		say("lock unavailable")
+		return exitFailed
+	}
 	anchor.Sweep(cfg.StateDir, time.Now())
+
+	// guard says the locks are still on the files at their paths. If a lock file was removed or
+	// replaced, another receiver can lock the new one and write the same state, so this one
+	// writes nothing more and stops.
+	lockLost := make(chan struct{})
+	var lostOnce sync.Once
+	guard := func() bool {
+		if lock.Held() != nil {
+			lostOnce.Do(func() { close(lockLost) })
+			return false
+		}
+		return true
+	}
 
 	// Apply reads the stored anchor before replacing it, so concurrent requests take turns.
 	var mu sync.Mutex
@@ -137,6 +160,10 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 	// degraded and withholds its heartbeat until recovered writes it. The count in memory
 	// still moves, so an anchor stored from now on is of the later generation.
 	loss := func() {
+		if !guard() {
+			degraded.Store(true)
+			return
+		}
 		next, ok := anchor.NextLoss(gen)
 		if !ok { // no number is left to count with: stay degraded rather than stamp one the reader refuses
 			degraded.Store(true)
@@ -150,6 +177,9 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 	apply := func(ev anchor.Event) error {
 		mu.Lock()
 		defer mu.Unlock()
+		if !guard() {
+			return anchor.ErrLockLost
+		}
 		_, err := anchor.Apply(cfg.StateDir, ev, gen)
 		if err != nil {
 			degraded.Store(true)
@@ -171,6 +201,9 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 	recovered := func(now time.Time) bool {
 		mu.Lock()
 		defer mu.Unlock()
+		if !guard() {
+			return false
+		}
 		if !degraded.Load() {
 			return true
 		}
@@ -183,6 +216,9 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 	sweep := func(now time.Time) {
 		mu.Lock()
 		defer mu.Unlock()
+		if !guard() {
+			return
+		}
 		anchor.Sweep(cfg.StateDir, now)
 	}
 	srv := &http.Server{
@@ -230,6 +266,9 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 		code = exitReplaced
 	case <-failed:
 		say("stopping: server failed")
+		code = exitFailed
+	case <-lockLost:
+		say("stopping: lock file removed or replaced")
 		code = exitFailed
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), 2*time.Second)

@@ -58,11 +58,14 @@ the receiver exits 75 when its file is replaced, so a needless replacement is a
 restart. The compare, the copy and the version write run under a `mkdir` lock in that
 directory, and the version is read again inside it: hooks of different versions run
 concurrently, and without the lock a lower version could overwrite a higher one and
-leave `.version` naming a binary that is not there. The receiver holds a `flock` on
-`otel/receiver.lock` while it runs and the render path trusts an anchor only while that
-lock is held, probed in three system calls and no child process: the kernel drops the
-lock on any exit, so a stopped receiver is noticed without a write to the state
-directory, which a heartbeat file needs. The script names no service:
+leave `.version` naming a binary that is not there. The receiver holds two `flock`s while
+it runs, a start lock (`otel/receiver.lock`, taken before it touches any state) and a live
+lock (`otel/receiver.live`, taken last), and the render path trusts an anchor only while the
+live lock is held, probed in a few system calls (open, fstat, flock, close) and no child process (opened without
+blocking and without following a link, regular files only): the kernel drops the locks on
+any exit, so a stopped receiver is noticed without a write to the state directory, which a
+heartbeat file needs. The receiver checks before each state write that its locks are still on
+the files at their paths and exits when they are not. The script names no service:
 starting and restarting the receiver is the supervisor's job, which keeps the source
 publishable.
 
@@ -134,8 +137,8 @@ highest version published when publishers of several versions race.
 requests with `curl`, reads the account slot back through the shim, and stops the
 receiver by the pid it recorded.
 `statusline.test.sh` and `config-dir.test.sh` seed anchors without a receiver, so they
-build `tests/testdata/lockholder` (a program that takes the same lock through
-`anchor.LockReceiver`) and keep it running, as a live receiver would.
+build `tests/testdata/lockholder` (a program that takes the same locks through
+`anchor.LockReceiver` and `Ready`) and keep it running, as a live receiver would.
 `json.test.sh` and `settings.test.sh` cover the awk parser and rewriter the
 `SessionStart` hook still uses.
 

@@ -160,7 +160,7 @@ func scanProcs(configDir string) []procInfo {
 		if !e.Type().IsRegular() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		b, err := readRegular(filepath.Join(dir, e.Name()))
 		if err != nil {
 			continue
 		}
@@ -211,7 +211,7 @@ func refPath(stateDir, id string) string {
 }
 
 func readPidFile(stateDir string, p proc) pidFile {
-	b, err := os.ReadFile(pidPath(stateDir, p))
+	b, err := readRegular(pidPath(stateDir, p))
 	if err != nil {
 		return pidFile{}
 	}
@@ -245,7 +245,7 @@ type ref struct {
 }
 
 func readRef(stateDir, id string) (ref, bool) {
-	b, err := os.ReadFile(refPath(stateDir, id))
+	b, err := readRegular(refPath(stateDir, id))
 	if err != nil {
 		return ref{}, false
 	}
@@ -275,7 +275,7 @@ func prunedWrite(stateDir string, now time.Time, path, body string) {
 // readProc reads the one file Claude Code keeps for process pid in configDir. It lists
 // nothing and opens no *.key file.
 func readProc(configDir string, pid int) (procInfo, bool) {
-	b, err := os.ReadFile(filepath.Join(configDir, "sessions", strconv.Itoa(pid)+".json"))
+	b, err := readRegular(filepath.Join(configDir, "sessions", strconv.Itoa(pid)+".json"))
 	if err != nil {
 		return procInfo{}, false
 	}

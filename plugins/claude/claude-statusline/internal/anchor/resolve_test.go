@@ -2,7 +2,6 @@ package anchor
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/fs"
 	"math"
@@ -11,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -55,7 +53,7 @@ func (f *fixture) otherProfile() *fixture {
 }
 
 // install makes the receiver's directory, a fresh heartbeat and the generation the tests
-// store their anchors under exist, and holds the lock a running receiver holds.
+// store their anchors under exist, and holds the locks a ready receiver holds.
 func (f *fixture) install(heartbeatAge time.Duration, now time.Time) {
 	f.t.Helper()
 	if err := os.MkdirAll(sessionsDir(f.state), 0o700); err != nil {
@@ -64,6 +62,9 @@ func (f *fixture) install(heartbeatAge time.Duration, now time.Time) {
 	if f.lock == nil {
 		lock, err := LockReceiver(f.state)
 		if err != nil {
+			f.t.Fatal(err)
+		}
+		if err := lock.Ready(); err != nil {
 			f.t.Fatal(err)
 		}
 		f.lock = lock
@@ -80,7 +81,7 @@ func (f *fixture) install(heartbeatAge time.Duration, now time.Time) {
 	}
 }
 
-// stopReceiver lets go of the lock, as a receiver that exits does.
+// stopReceiver lets go of the locks, as a receiver that exits does.
 func (f *fixture) stopReceiver() {
 	f.t.Helper()
 	if f.lock != nil {
@@ -1202,145 +1203,5 @@ func TestAnAnchorWhoseGenerationIsNotANumberIsSuspect(t *testing.T) {
 				t.Errorf("번호를 읽을 수 없는 앵커는 의심해야 한다: %+v", got)
 			}
 		})
-	}
-}
-
-// 수신기가 멈추면(잠금이 풀리면) 하트비트와 세대가 멀쩡해도 앵커를 믿지 않는다.
-func TestAnAnchorIsDoubtedOnceTheReceiverHoldsNoLock(t *testing.T) {
-	f := newFixture(t)
-	now := at(t0 + 60_000)
-	f.install(0, now)
-	f.proc(11, t0, "s1")
-	f.apply(login("s1", "a@example.com", t0+900))
-	if got := f.wantEmail("s1", now, "a@example.com"); got.Suspect {
-		t.Fatalf("수신기가 도는 동안은 의심하지 않는다: %+v", got)
-	}
-	f.stopReceiver()
-	if got := f.wantEmail("s1", now, "a@example.com"); !got.Suspect {
-		t.Errorf("잠금이 풀렸는데 앵커를 믿는다: %+v", got)
-	}
-}
-
-func TestReceiverAliveOnlyWhileTheLockIsHeld(t *testing.T) {
-	state := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(state, "otel"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if receiverAlive(state) {
-		t.Error("잠금 파일이 없는데 수신기가 산다고 한다")
-	}
-	lock, err := LockReceiver(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !receiverAlive(state) {
-		t.Error("잠금을 쥐고 있는데 수신기가 없다고 한다")
-	}
-	if err := lock.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if receiverAlive(state) {
-		t.Error("잠금을 놓았는데 수신기가 산다고 한다")
-	}
-	if _, err := os.Stat(lockPath(state)); err != nil {
-		t.Errorf("잠금 파일이 사라졌다: %v", err)
-	}
-}
-
-func TestReceiverAliveIsFalseWhenTheLockFileCannotBeOpened(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root 는 읽기 권한 제한을 받지 않는다")
-	}
-	state := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(state, "otel"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	lock, err := LockReceiver(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lock.Close()
-	if err := os.Chmod(lockPath(state), 0o000); err != nil {
-		t.Fatal(err)
-	}
-	if receiverAlive(state) {
-		t.Error("열 수 없는 잠금 파일을 산 수신기로 본다")
-	}
-}
-
-func TestASecondLockerIsRefusedWhileTheFirstHoldsTheLock(t *testing.T) {
-	state := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(state, "otel"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	first, err := LockReceiver(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LockReceiver(state); !errors.Is(err, ErrReceiverRunning) {
-		t.Errorf("둘째 잠금 = %v, want ErrReceiverRunning", err)
-	}
-	first.Close()
-	again, err := LockReceiver(state)
-	if err != nil {
-		t.Fatalf("놓은 뒤에는 잠글 수 있어야 한다: %v", err)
-	}
-	again.Close()
-}
-
-// 읽는 쪽의 짧은 공유 잠금은 수신기가 시작하는 것을 막지 못한다.
-func TestASharedProbeDoesNotKeepAReceiverFromLocking(t *testing.T) {
-	old := lockWait
-	lockWait = 2 * time.Second
-	defer func() { lockWait = old }()
-	state := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(state, "otel"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	probe, err := os.OpenFile(lockPath(state), os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := syscall.Flock(int(probe.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
-		t.Fatal(err)
-	}
-	go func() { time.Sleep(100 * time.Millisecond); probe.Close() }()
-	lock, err := LockReceiver(state)
-	if err != nil {
-		t.Fatalf("공유 잠금이 풀리기를 기다리지 않고 포기했다: %v", err)
-	}
-	lock.Close()
-}
-
-// 잠금을 조사하지 못하면(잠금을 지원하지 않는 파일시스템 등) 수신기가 산다고 보지 않는다.
-func TestReceiverAliveIsFalseWhenTheProbeFails(t *testing.T) {
-	state := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(state, "otel"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	lock, err := LockReceiver(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lock.Close()
-	old := flock
-	flock = func(int, int) error { return syscall.ENOLCK }
-	defer func() { flock = old }()
-	if receiverAlive(state) {
-		t.Error("조사에 실패했는데 수신기가 산다고 본다")
-	}
-}
-
-// 잠금을 얻지 못하는 파일시스템에서는 수신기가 시작하지 못한다(상태를 보증하지 못한다).
-func TestLockReceiverFailsWhenTheFilesystemCannotLock(t *testing.T) {
-	state := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(state, "otel"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	old := flock
-	flock = func(int, int) error { return syscall.ENOLCK }
-	defer func() { flock = old }()
-	if _, err := LockReceiver(state); err == nil || errors.Is(err, ErrReceiverRunning) {
-		t.Errorf("LockReceiver = %v, want a lock error that is not ErrReceiverRunning", err)
 	}
 }

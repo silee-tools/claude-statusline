@@ -1103,8 +1103,24 @@ OUT=$(run "$SESS_B" 120); assert_not_contains "T35 현재 세대의 앵커는 ? 
 # 수신기가 끝나면 잠금이 풀려, 하트비트와 세대가 멀쩡해도 앵커를 믿지 않는다(정상 종료·교체 종료·충돌 모두 같다).
 stop_receiver
 OUT=$(run "$SESS_B" 120); assert_contains "T35 수신기가 끝나면 신선한 하트비트에도 이메일 뒤 ?" "b@example.com?" "$(first_line "$OUT")"
-rm -f "$OTEL_DIR/receiver.lock"
+rm -f "$OTEL_DIR/receiver.live"
 OUT=$(run "$SESS_B" 120); assert_contains "T35 잠금 파일이 없으면 이메일 뒤 ?" "b@example.com?" "$(first_line "$OUT")"
+# 잠금 파일 자리에 FIFO 가 있어도(쓰는 쪽이 없음) 렌더가 멈추지 않고 ? 로 끝난다. macOS 에는 timeout 이 없어 직접 기다린다.
+mkfifo "$OTEL_DIR/receiver.live"
+run "$SESS_B" 120 > "$TMPROOT/fifo-render.out" 2>/dev/null &
+_fp=$!
+_n=0
+while kill -0 "$_fp" 2>/dev/null && [ "$_n" -lt 30 ]; do _n=$((_n + 1)); sleep 0.1; done
+if kill -0 "$_fp" 2>/dev/null; then
+  exec 3<>"$OTEL_DIR/receiver.live"; exec 3>&-   # 멈춘 읽기를 풀어 준다
+  kill "$_fp" 2>/dev/null || true
+  bad "T35 잠금 파일이 FIFO 여도 렌더가 3초 안에 끝남" "렌더가 FIFO 에서 멈췄다"
+else
+  ok "T35 잠금 파일이 FIFO 여도 렌더가 3초 안에 끝남"
+fi
+wait "$_fp" 2>/dev/null || true
+assert_contains "T35 잠금 파일이 FIFO 면 이메일 뒤 ?" "b@example.com?" "$(first_line "$(cat "$TMPROOT/fifo-render.out")")"
+rm -f "$OTEL_DIR/receiver.live"
 beat
 OUT=$(run "$SESS_B" 120); assert_not_contains "T35 수신기가 다시 잠금을 쥐면 ? 없음" "b@example.com?" "$(first_line "$OUT")"
 

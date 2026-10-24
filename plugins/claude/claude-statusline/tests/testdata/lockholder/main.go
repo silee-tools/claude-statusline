@@ -1,6 +1,6 @@
-// Command lockholder holds the lock a running OTLP receiver holds, until it is killed. The
+// Command lockholder holds the locks a ready OTLP receiver holds, until it is killed. The
 // shell suites seed anchors without starting a receiver, and the statusline trusts an anchor
-// only while that lock is held.
+// only while the live lock is held.
 package main
 
 import (
@@ -22,6 +22,10 @@ func main() {
 		os.Exit(1)
 	}
 	defer lock.Close()
+	if err := lock.Ready(); err != nil {
+		fmt.Fprintln(os.Stderr, "lockholder:", err)
+		os.Exit(1)
+	}
 	fmt.Println("locked")
 	for {
 		time.Sleep(time.Hour)
