@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"unsafe"
+
+	"github.com/silee-tools/claude-statusline/internal/statefile"
 )
 
 // ancestorDepth is how far up the process chain the tty search goes. A wrapper can
@@ -109,15 +111,14 @@ func ttyPath(cacheDir string) (string, bool) {
 		return "", false
 	}
 
-	if cache != "" && os.MkdirAll(cacheDir, 0o755) == nil {
-		_ = os.WriteFile(cache,
-			[]byte("ppid="+strconv.Itoa(ppid)+"\npath="+found+"\n"), 0o600)
+	if cache != "" {
+		_ = statefile.Write(cache, []byte("ppid="+strconv.Itoa(ppid)+"\npath="+found+"\n"))
 	}
 	return found, true
 }
 
 func cachedPath(cache string, ppid int) (string, bool) {
-	b, err := os.ReadFile(cache)
+	b, err := statefile.Read(cache)
 	if err != nil {
 		return "", false
 	}

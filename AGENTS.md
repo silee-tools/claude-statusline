@@ -84,6 +84,16 @@ Two properties keep the port worth its while, so hold them when editing:
   lets a second boundary fall between two of them and move a pace budget by a
   cell.
 
+Every state, cache or config file the render reads goes through `statefile.Read` (the
+statusline's own state and cache: a link is refused) or `statefile.ReadFollow` (a file someone
+else writes or places, such as a user's config a dotfile manager links in: a link is followed).
+Both open without blocking and read only a regular file, so a FIFO cannot hold the render. Two
+places open files themselves: the receiver lock files in `internal/anchor/lock.go`, with the same
+non-blocking and regular-file checks, and `width.deviceCols`, which opens the tty device for its
+window size. A new read of a state, cache or config file uses `statefile.Read` or `ReadFollow`, and
+a new write to a path the render also reads uses `statefile.Write`, because `os.WriteFile` opens a
+FIFO in that place and waits for a reader.
+
 `statusInset` in `internal/render` is Claude Code's value: with `statusLine.padding`
 unset it indents the status line by 2 and leaves the last 2 columns empty. Measure
 it again when the Claude Code version changes: start `claude --settings
