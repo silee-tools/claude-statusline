@@ -138,6 +138,23 @@ func TestAFifoWhereTheAWSCheckShouldBeDoesNotHoldTheRenderAndIsReplaced(t *testi
 	}
 }
 
+// The record is written through a temporary file beside it; a FIFO left at the name that file
+// once had must not hold the write, and the record is still stored.
+func TestAFifoAtTheAWSCheckTempNameDoesNotHoldTheWrite(t *testing.T) {
+	const now = int64(1_800_000_000)
+	e, dir := newAWSEnv(t), staleAWS(t, now)
+	fifo := e.state + ".tmp"
+	replaceWithFifo(t, fifo)
+	var got string
+	returnsInTime(t, fifo, func() { got = e.render(dir, now) })
+	if got != "aws:?" || e.spawns != 1 {
+		t.Errorf("got %q spawns=%d, want aws:? 1", got, e.spawns)
+	}
+	if b, err := os.ReadFile(e.state); err != nil || string(b) != strconv.FormatInt(now, 10)+" ?\n" {
+		t.Errorf("확인 기록 = %q, %v", b, err)
+	}
+}
+
 func TestALinkWhereTheAWSCheckShouldBeIsNotBelieved(t *testing.T) {
 	const now = int64(1_800_000_000)
 	e, dir := newAWSEnv(t), staleAWS(t, now)

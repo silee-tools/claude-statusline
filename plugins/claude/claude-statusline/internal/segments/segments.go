@@ -328,11 +328,7 @@ func writeAWSCheck(file string, at int64, result string) {
 	if result == "" {
 		result = "?"
 	}
-	os.MkdirAll(filepath.Dir(file), 0o755)
-	tmp := file + ".tmp"
-	if os.WriteFile(tmp, []byte(strconv.FormatInt(at, 10)+" "+result+"\n"), 0o600) == nil {
-		os.Rename(tmp, file)
-	}
+	_ = statefile.Write(file, []byte(strconv.FormatInt(at, 10)+" "+result+"\n"))
 }
 
 // awsLoginTime reads iat from the JWT payload of the cache file's idToken.
