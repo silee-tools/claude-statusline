@@ -48,6 +48,34 @@ hook overwriting the line the pinned shim reads. 계정마다 설치 경로가 �
 The `SessionStart` hook detaches that build into the
 background because the hook's timeout is 5 seconds and a cold build lands on it.
 
+`cmd/claude-statusline-otlp` is the second binary: the receiver of Claude Code's
+OpenTelemetry log events that gives each session's account to the statusline, with
+the anchor rules in `internal/anchor`. `build-binary.sh` builds it beside the render
+binary and publishes it by copy and rename to
+`${XDG_DATA_HOME:-$HOME/.local/share}/claude-statusline/bin/claude-statusline-otlp`,
+only when the version recorded there is lower. An equal version is left alone because
+the receiver exits 75 when its file is replaced, so a needless replacement is a
+restart. The compare, the copy and the version write run under a `mkdir` lock in that
+directory, and the version is read again inside it: hooks of different versions run
+concurrently, and without the lock a lower version could overwrite a higher one and
+leave `.version` naming a binary that is not there. The receiver holds two `flock`s while
+it runs, a start lock (`otel/receiver.lock`, taken before it touches any state) and a live
+lock (`otel/receiver.live`, taken last), and the render path trusts an anchor only while the
+live lock is held, probed in a few system calls (open, fstat, flock, read, lstat, close) and no child
+process (opened without blocking and without following a link, regular files only): the kernel
+drops the locks on any exit, so a stopped receiver is noticed without a write to the state
+directory, which a heartbeat file needs. Each start has a random run id that the receiver writes
+into the live lock's file (with its address, through the held file: replacing it would cost the
+receiver its own lock), the generation file and every anchor, and the render path trusts only what
+carries the run of the receiver that holds the lock and the address the sessions send to
+(`127.0.0.1:14318`, or `CLAUDE_STATUSLINE_OTLP_ADDR`: Claude Code does not pass `OTEL_*` on to the
+status line). The receiver checks before each state write that its locks are still on the files at
+their paths and exits when they are not; a write held up past that check is the replaced
+receiver's run, which is not trusted. State files are read only as regular files, without
+blocking and without following a link (`statefile.Read`). The script names no service:
+starting and restarting the receiver is the supervisor's job, which keeps the source
+publishable.
+
 Two properties keep the port worth its while, so hold them when editing:
 
 - The shim starts no child process. Computing the path per render with `uname`,
@@ -97,17 +125,32 @@ Each such suite sets `completed=0` before registering the trap, sets
 non-zero status in the trap when the flag never reached one. A new suite that
 registers a cleanup trap without that flag silently opts out of the gate.
 
-A suite that runs `hook-handler.sh` sets `CLAUDE_CONFIG_DIR` to a temporary path
-along with `HOME`. A Claude Code session exports that variable and it wins over
-`HOME`, so a `SessionStart` run that isolates only `HOME` rewrites the real
-`settings.json`. `shim.test.sh` also defaults it to its temp root, so a call that
-forgets the override cannot reach the real file.
+A suite that touches state, data, cache or the publish path sets `HOME`,
+`CLAUDE_CONFIG_DIR`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` and
+`XDG_CONFIG_HOME` to temporary paths, and refuses to start when one lies outside its
+temp root. A Claude Code session exports `CLAUDE_CONFIG_DIR` and it wins over `HOME`,
+so a `SessionStart` run that isolates only `HOME` rewrites the real `settings.json`;
+a shell setup can export `XDG_DATA_HOME` and `XDG_STATE_HOME`, so isolating only
+`HOME` would let a build publish over the live receiver and a render write the real
+anchors. A call that forgets an override still lands in the temp root. The suites that render
+also unset `CLAUDE_STATUSLINE_OTLP_ADDR`: a shell that exports it for a receiver on another port
+would otherwise make the statusline distrust the receiver stand-in, which listens at the default
+address.
 
 `statusline.test.sh` builds the binary, points the shim at it, and asserts both
 layouts, gauges, colors, and indicators against fixture JSON. It fails outright
 when that build fails, because a skipped build would report zero checks as a
 pass. `shim.test.sh` asserts what the shim does with and without a binary and
-that `build-binary.sh` is idempotent and never blocks session start.
+that `build-binary.sh` is idempotent, never blocks session start, and leaves the
+highest version published when publishers of several versions race.
+`otlp.test.sh` starts the receiver on `127.0.0.1:0`, never a fixed port, posts
+requests with `curl`, reads the account slot back through the shim with
+`CLAUDE_STATUSLINE_OTLP_ADDR` naming that port, and stops the receiver by the pid it recorded.
+`statusline.test.sh` and `config-dir.test.sh` seed anchors without a receiver, so they
+build `tests/testdata/lockholder` (a program that writes the generation file for a run
+given as its argument and takes the same locks through `anchor.LockReceiver` and `Ready`,
+listening at the default address) and keep it running, as a live receiver would; the
+anchors they seed carry that run.
 `json.test.sh` and `settings.test.sh` cover the awk parser and rewriter the
 `SessionStart` hook still uses.
 

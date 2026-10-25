@@ -123,14 +123,18 @@ The `7d` pace budget advances continuously during local Monday-to-Friday
 calendar days and pauses on Saturday and Sunday. The reset countdown remains
 wall-clock based, and the `5h` pace budget continues to use elapsed time.
 
-The `5h` and `7d` windows are shared between sessions of the same account through
-`rate-limits.env` in the account cache described below. Whichever
-session observes a window leaves it there, so a session that has just opened
-shows both windows from its first render. The payload always wins over that
-file: it is the only value that describes the account right now, and a stored
-sample carries no observation time to be judged against. The file is drawn only
-for a window the payload leaves out, and a window whose reset time has passed is
-not drawn at all, because its usage no longer describes the current window.
+Each session keeps the `5h` and `7d` windows it last saw in its own file,
+`${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/rate-limits/<session_id>.env`.
+The payload always wins over that file: it is the only value that describes the
+account right now, and a stored sample carries no observation time to be judged
+against. The file is drawn only for a window the payload leaves out, and a window
+whose reset time has passed is not drawn at all, because its usage no longer
+describes the current window. A session never draws another session's window,
+since sessions of one config directory can run on different accounts, and a file
+written by another process or before another login is not drawn either: a
+conversation that a new process resumes shows no window until Claude Code sends one
+(see [Claude account indicator](#claude-account-indicator)). A write removes the files
+of sessions idle for two days and the oldest beyond 2,000.
 
 ## Reasoning effort
 
@@ -170,17 +174,21 @@ CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude plugin install claude-statusline@s
 CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude
 ```
 
-기본 계정은 `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/`의 기존 캐시를
-유지합니다. custom 계정은 그 아래 `accounts/<정규화한 config 경로의 SHA-256 전체>/`를
-사용합니다. `cc-account.env`와 `rate-limits.env`가 분리됩니다.
-기존 공유 캐시는 복사하거나 삭제하지 않습니다. Go 렌더러는 표준 라이브러리로
-같은 hash를 계산합니다.
-
-GitHub·AWS·Git·터미널 폭 캐시와 렌더 바이너리·포인터는 공용입니다.
+상태줄의 계정 칸은 설정 디렉터리가 아니라 세션별로 정해집니다([Claude account indicator](#claude-account-indicator)).
+한도 캐시도 세션별 파일이고, GitHub·AWS·Git·터미널 폭 캐시와 렌더 바이너리·포인터는 공용입니다.
 다른 계정 설치와 진행 중인 빌드를 보호하기 위해 바이너리는 자동 삭제하지 않습니다.
 따라서 사용하지 않는 판본의 바이너리가 남을 수 있습니다. 5.5.0 이하의 기존 빌드
 스크립트는 공용 바이너리를 삭제할 수 있으므로 여러 계정에서 사용할 때는 각 계정의
 플러그인을 5.5.1 이상으로 갱신해야 합니다.
+
+5.10.0부터 `cc-account.env`, 공용 `rate-limits.env`, `accounts/<해시>/`를 읽거나 쓰지 않습니다.
+자동으로 지우지 않으므로 필요하면 직접 지웁니다.
+
+```shell
+rm -f "${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/cc-account.env" \
+      "${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/rate-limits.env"
+rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/accounts"
+```
 
 ### First run
 
@@ -199,6 +207,17 @@ Go and starting a new session is all that is needed.
 The build uses the standard library only and runs with `GOPROXY=off`, so it
 needs no network.
 
+The same hook builds the OTLP receiver (`claude-statusline-otlp`, see
+[Claude account indicator](#claude-account-indicator)) the same way and publishes it
+to `${XDG_DATA_HOME:-$HOME/.local/share}/claude-statusline/bin/claude-statusline-otlp`,
+a path that does not move with the plugin version. It copies the build over that
+path through a rename and records the version in `claude-statusline-otlp.version`
+beside it. A build is published only when its version is the same as or higher than
+the recorded one (compared as numbers, 5.10.0 above 5.9.0), and a version already
+published is left alone, because the receiver restarts when its file changes. A
+failed build or publication leaves the render binary working and the session start
+untouched.
+
 ### Dependencies
 
 | Tool | Required? | Used for |
@@ -208,6 +227,7 @@ needs no network.
 | `awk` | required | parsing the hook JSON |
 | `git` | required | the branch indicator |
 | `ps` | optional | automatic terminal-width detection (falls back to the full layout) |
+| a supervisor for `claude-statusline-otlp` | optional | keeping the receiver running; without it the account slot stays empty (see [Claude account indicator](#claude-account-indicator)) |
 | `aws` (AWS CLI 2.32+) | optional | `aws login`'s session cache, read for the `aws:` session indicator: a cache whose `idToken` was refreshed within 15 minutes is `✓`; any other cache, including one without an `idToken` (newer AWS CLI), is settled by a background `aws sts get-caller-identity`, at most every 10 minutes (`✓` on success, `expired` on failure) |
 
 ## Configuration
@@ -267,14 +287,202 @@ numeric.
 
 ### Claude account indicator
 
-The logged-in Claude account email is read (read-only) from the
-`oauthAccount.emailAddress` field of `$HOME/.claude.json` for the default
-configuration, or `<config>/.claude.json` for a custom configuration,
-Claude Code's own account state. Only that one field is scanned, and the result
-is cached until the file changes, so the large config file is not parsed in full
-on every render. The segment is
-omitted when the file or the field is unavailable. Nothing is written to that
-file.
+The payload carries no account, and the account in `<config>/.claude.json` is the one
+the last session wrote, not the one each session uses: sessions of one config
+directory can run on different accounts, and a `/login` in one session changes the
+file for all of them. The slot is therefore filled from Claude Code's OpenTelemetry
+log events, kept per session by a small local receiver, `claude-statusline-otlp`.
+Neither `.claude.json` nor `oauthAccount` is read.
+
+| Slot | Meaning |
+|---|---|
+| `a@example.com` | confirmed: a `/login` inside this session named the account, and the process that runs the session is known |
+| `~a@example.com` | estimate: the account the settings file held when the session began; the file is shared by every session of the config directory and the session's credentials may belong to another account. A `/login` anchor shows as an estimate too while the running process cannot be found, because the anchor may then belong to an earlier process of the same conversation |
+| `a@example.com?`, `~a@example.com?` | may have changed unseen: no ready receiver holds the live lock (it stopped, is still starting, or the lock cannot be told), the receiver listens somewhere other than `127.0.0.1:14318` or `CLAUDE_STATUSLINE_OTLP_ADDR`, the receiver's heartbeat is older than 120 seconds (it hangs), the anchor was stored before the receiver's current generation or by another run than the one that holds the lock (it may have missed a `/login`), or a rate-limit window of the session has differed from its baseline for over a minute before the baseline window ended |
+| `?` | the receiver runs but nothing says which account this session uses |
+| *(empty)* | the receiver never ran on this machine (`otel/sessions` does not exist) |
+
+The compact layout shows no account and reads none of this.
+
+**What counts.** Per session id the receiver keeps one anchor, from these events only:
+a start-only event (`managed_settings_resolved`, `plugin_loaded`) sets it when the
+session has none, as an estimate; a successful `auth` event with `action=login`
+replaces it with the new account, confirmed; `action=logout` clears it. An event older
+than the stored anchor is dropped. Every other event is ignored, including the
+`user_prompt` that opens the session id `/clear` creates, because its email is whatever
+the settings file holds at that moment. Events carry no process id, and every email in
+them comes from the settings file, so only a `/login` made inside the session proves
+which account its credentials belong to.
+
+**`/clear`.** Claude Code keeps `<config>/sessions/<pid>.json` for each running
+process, and `/clear` changes only its `sessionId`. The statusline records the anchor
+under the process (`pids/`) and the new session id takes it over, again after a
+second `/clear`, and after a `/login` that arrived between two renders. The first
+render under the new id settles the carry once: if the old id's anchor is still the one
+the process carried, the process keeps it for good; if it has changed, whose event
+changed it cannot be told (another process may have resumed the old id), so the
+process shows `?` until it logs in.
+
+**`--resume` and `--continue`.** Their start events go out under a throwaway session
+id that nothing ties to the process, and an anchor under the session's own id that is
+older than the process start belongs to an earlier process. Anchors of other session
+ids are never borrowed on the strength of timing, because any process of any config
+directory could have written them: a resumed session shows `?` until it logs in.
+
+**Which process.** A `sessions/<pid>.json` names a process only while that process runs
+(`kill(pid, 0)`): a kill, a crash or a reboot leaves the file behind, and a resumed
+conversation must not take the account or the rate-limit windows of the process that
+died. The statusline's parent (Claude Code) is trusted first, when its own file names the
+session; then the process a session's ref names, if it still runs; then, among the
+running processes whose files name the session, the one that started last. A pid that an
+unrelated process has reused counts as running; the first and last rules narrow that
+without closing it.
+
+**Rate-limit windows.** The windows a session saw are kept per *boundary*: the process
+that runs it and the time of its last in-session login or logout. A conversation that a
+new process resumes, or that has logged in again, draws none of the windows the
+previous boundary saw. Where the process cannot be told, nothing is kept.
+
+**Limits to know.**
+- A start anchor is the account the settings file held when the session began. A
+  session that shows "Not logged in" carries it too, which is why it is only an estimate.
+- Restarting the receiver (a new plugin version replaces it, or the supervisor restarts
+  it after a failure) starts a new generation, so every session shows `?` behind its
+  email until a `/login` inside it is seen again. Events sent while the receiver was down
+  are lost, and a `/login` among them would otherwise go unseen. A generation is a counter,
+  not a time, so correcting the system clock cannot make a stored anchor look current.
+- The statusline looks at the live lock's path again after it has read the lock, and a path that
+  no longer leads to that file counts as no receiver. A change after that look, within the same
+  render, is not seen: that one render still shows the account as confirmed. A path that is still
+  changed at the next render gets `?` behind the account, and the replaced receiver exits 1 if it
+  finds the path changed at its next heartbeat tick or write. Only the path at the moment of each
+  look counts: a file moved away and put back before then is trusted again.
+- Two Claude Code processes that run the same session id at the same time share one anchor.
+- A session that quietly takes over another session's credentials at a token refresh
+  emits no event. The only trace is a rate-limit window changing before it ends, which
+  adds `?`; the account is never corrected from it. Both the five-hour and the seven-day
+  window are watched (`fingerprintWindows` in `cmd/statusline`); a window that has ended
+  starts a new baseline.
+- A session started before the variables below are set shows `?` until it restarts.
+- The account appears at the first render after its events reach the receiver
+  (the export interval below is 1 second). `statusLine.refreshInterval` (seconds) makes
+  Claude Code rerun the command periodically, so a new session does not wait for its
+  first response.
+
+**Wiring.** Claude Code must export its log events to the receiver. Set these in its
+environment (settings `env` block or the shell):
+
+```shell
+CLAUDE_CODE_ENABLE_TELEMETRY=1
+OTEL_LOGS_EXPORTER=otlp
+OTEL_METRICS_EXPORTER=none
+OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:14318/v1/logs
+OTEL_LOGS_EXPORT_INTERVAL=1000
+```
+
+Leave the content-logging variables (`OTEL_LOG_USER_PROMPTS` and similar) and
+`OTEL_EXPORTER_OTLP_COMPRESSION` unset: the receiver answers a gzip body with 415.
+
+The statusline expects the receiver at `127.0.0.1:14318`. For another port, start the receiver
+with that `-addr` and give the statusline `CLAUDE_STATUSLINE_OTLP_ADDR=127.0.0.1:<port>` in the
+same environment (not an `OTEL_*` name: Claude Code does not pass those on to it).
+
+**The receiver.** Run the published `claude-statusline-otlp` under a supervisor that
+restarts it after a non-zero exit. It listens on `127.0.0.1:14318` only (`-addr` must be
+a loopback IP literal), serves `POST /v1/logs` with `Content-Type: application/json` and
+a body of at most 1 MiB, and answers `200 {}`; when it could not store a record it
+answers `503`, which the exporter retries. It stores no event and reads only
+`session.id`, `user.email`, `event.name`, `action`, `success` and the event time of each
+record; stderr says what happened (start, stop, failure kinds), never a value. Exit
+codes: 0 after SIGINT or SIGTERM; 75 when the file at its own path was replaced (it
+checks every 30 seconds), so the supervisor starts the new build; 1 when the address is
+not loopback, the port cannot be bound, the state directory cannot be prepared or read,
+another receiver holds the lock, or a lock file is removed or replaced under it (see below).
+While it runs it holds two `flock`s. The
+start lock (`otel/receiver.lock`) keeps a second receiver out and is taken before the receiver
+touches any state; the live lock (`otel/receiver.live`) is taken last, once the generation and
+the heartbeat are written, and the statusline trusts an anchor only while it finds the live lock
+held. Until then, whatever the previous run left behind is not trusted, so there is no moment of
+a start in which an earlier run's anchor passes as current. The kernel drops the locks when the
+process ends however it ends (exit 0, 75, a crash, SIGKILL), so a stopped receiver is noticed at
+once and needs no write to the state directory to say so, which a failing start may not be able
+to make. Each start makes a random run id. It writes the generation file naming that run, then the
+heartbeat, and only then takes the live lock, which it gets only over state that is its own; it
+puts the run and the address it listens on into the live lock's file through the file it holds
+(replacing the file would cost it its own lock), and every anchor it stores carries the run
+(`run=`). A number cannot say whose count it is, because two receivers can arrive at the same one,
+so the statusline reads the run from the lock it found held and trusts an anchor only when the
+anchor's run and the generation file's run both are that run, the anchor's generation is not below
+the file's, and the receiver listens where the sessions send their events: `127.0.0.1:14318`, or
+the `host:port` of `CLAUDE_STATUSLINE_OTLP_ADDR`. Claude Code does not pass its `OTEL_*` settings on to
+the status line command (measured on 2.1.310, for both settings `env` and the shell), so the address
+cannot be read from them; a setting that is not an IP literal and a port matches no receiver. A
+missing lock file, a lock nobody holds, a lock file that is not a regular file (a FIFO
+or a link left in its place: the statusline opens it without blocking and without following a
+link), a lock file found replaced or removed when the probe looks at its path again and a lock
+that cannot be probed all count as no receiver, so the statusline puts `?` behind the account. The state directory has to
+be on a filesystem that supports `flock` (a local one); where the lock cannot be taken the receiver does not start. Before it stores an
+anchor or writes the generation or the heartbeat, and on every heartbeat tick, the receiver
+checks that its locks are still on the files at their paths; if a lock file was removed or
+replaced (which would let a second receiver lock a new file and write the same state) it
+writes nothing more and exits 1, and the supervisor's restart creates a fresh one. The check
+and the write are not one step: a receiver held up between them writes once more after another
+has taken over. That write carries the replaced receiver's run, so the statusline does not trust
+it, and the new receiver's next beat puts the generation file back if the write changed it. A
+start also replaces a lock file that is a FIFO, a link or an empty directory. The
+receiver touches the heartbeat every 30 seconds, except while it cannot store an anchor, which
+is what shows a receiver that hangs (it still holds the locks): the heartbeat older than 120
+seconds puts `?` too. A failed write moves the receiver to the next generation (`otel/generation`, a counter) and
+withholds the heartbeat until a probe write succeeds. Every anchor carries the generation
+it was stored under (`gen=`), and the statusline puts `?` behind an anchor of an earlier
+generation than the file names. The generation the recovery writes is the one of the last
+loss, so an anchor stored by the exporter's retry in between is not doubted. A request
+refused as oversized (413), unreadable (400) or compressed (415 for its `Content-Encoding`)
+is a batch dropped whole, a `/login` with it, so each moves to the next generation too,
+whoever sent it: a process that can post to the receiver could also write the anchors, so a
+false alarm costs an extra `?`. A request of another media type (415, for example
+protobuf) is not counted: Claude Code is set to JSON, so it is another exporter's, and one
+that kept sending would hold every account in doubt. A generation that cannot be written
+counts as a loss that is not recorded yet, so the heartbeat stays withheld until it is.
+A start takes the start lock after it binds the port and before it touches any state: a
+receiver that finds either lock held (one on another port, or one whose start lock file was
+removed) exits 1 and leaves the running one's files alone. A receiver on another port that holds
+the locks is not trusted either, since the statusline expects the address above: every account
+shows `?` while the receiver for the right port exits 1 at each restart, and `cat otel/receiver.live`
+says which receiver holds the lock. To run one by hand on another port, point `XDG_STATE_HOME` at a
+temporary directory. It then removes the generation file
+(a damaged or unreadable one must not be counted from) and the heartbeat, writes its own, and
+takes the live lock last. Every start moves to the next generation, past the highest number
+in the stored anchors, so what an earlier run stored is doubted whatever the clock reads and
+whether or not a generation file survived (a damaged one is replaced the same way). A start
+answers only when it has seen all of that state: a directory or file that is missing counts as
+empty, an entry that is not a regular file (a directory, a link) is skipped as the reader skips it, but one that cannot be listed
+or read makes the start give up with exit 1, which the supervisor retries every 10 seconds
+(about 4 ms of CPU a time, no log). The statusline shows `?` throughout, and the receiver
+starts once the cause is gone. One number bounds everything: the generation file, the number
+in an anchor and what the receiver writes stay within `MaxGeneration` (2^62), a start whose
+state is inside the last 2^40 of it gives up, and the receiver stops counting losses at the
+bound. An anchor or generation file that someone planted at that end of the range therefore
+keeps the start from succeeding until it is removed. A `gen=` that is not a number in range counts as generation
+0, so the anchor is doubted and does not raise the count; the receiver never records a
+generation that is not positive. At start and
+then hourly it removes what is past retention. Where stderr goes, and how long it is
+kept, is the supervisor's setting.
+
+**Files.** State files are kept 30 days with at most 2,000 files in each of `otel/sessions`, `pids/` and `fingerprints/`. The receiver prunes all three at start, hourly and after each write, and a reader ignores an anchor older than 30 days even when nothing pruned it (the cache and data rows below say their own). Both programs write a state file by renaming a temporary file over it, so the statusline reads one only as a regular file, opened without blocking and without following a link: a FIFO, a link or a directory in the place of an anchor, the generation file, a pid file, a rate-limit cache or a fingerprint baseline is no state, and cannot hold the render.
+
+| Path | Written by | Holds | Kept |
+|---|---|---|---|
+| `${XDG_STATE_HOME:-$HOME/.local/state}/claude-statusline/otel/sessions/<session.id>.env` | receiver | email, kind, event time, time the receiver stored it, generation and run it was stored under (0600) | 30 days, 2,000 files |
+| `.../otel/receiver.lock`, `.../otel/receiver.live` | receiver | the start lock (empty) and the live lock, `flock`s it holds while it runs; the live lock's file holds `run=` and `addr=` | two files |
+| `.../otel/heartbeat` | receiver | its mtime | one file |
+| `.../otel/generation` | receiver | its current generation number (one more than before at each start and each loss), then `run=` | one file |
+| `.../pids/<pid>-<startedAt>.env`, `.../pids/session-<id>.ref` | statusline | the anchor a process carries, which pid file a session uses | 30 days, 2,000 files |
+| `.../fingerprints/<session_id>.env` | statusline | the baseline of the watched rate-limit window | 30 days, 2,000 files |
+| `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/rate-limits/<session_id>.env` | statusline | the windows the session last saw, and the boundary they were seen under | 2 days after the last write, 2,000 files |
+| `${XDG_DATA_HOME:-$HOME/.local/share}/claude-statusline/bin/claude-statusline-otlp{,.version}` | `build-binary.sh` | the published receiver | replaced by the same or a higher version, never deleted |
+| `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/bin/claude-statusline-otlp-<version>-<os>-<arch>` | `build-binary.sh` | the built receiver | never deleted, like the render binary |
 
 ### Customizing
 
@@ -301,9 +509,15 @@ The render path is Go with no external modules; the remaining scripts are POSIX
 `sh`. `statusline.test.sh` builds the binary, points the shim at it, and asserts
 both layouts, gauges, colors, and indicators against fixture JSON.
 `shim.test.sh` asserts what the shim shows with and without a binary and that the
-build is idempotent. The Go tests cover display width and cutting,
-terminal-width decisions, path and branch shortening, the account decision
-table, and the gauge thresholds.
+build and the receiver's publication are idempotent. `otlp.test.sh` starts the receiver
+on a temporary loopback port, posts log requests with `curl`, and reads the account
+slot back through the shim. The Go tests cover display width and cutting,
+terminal-width decisions, path and branch shortening, the anchor rules, the receiver's
+handler, and the gauge thresholds.
+
+A suite that touches state, data or cache points `HOME`, `CLAUDE_CONFIG_DIR` and every
+`XDG_*` variable at a temporary directory, so it never reaches the receiver's published
+path or the state directories of the machine it runs on.
 
 ## License
 

@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -221,67 +220,35 @@ func readFields(line string, n int) []string {
 	return out
 }
 
-var emailRe = regexp.MustCompile(`"emailAddress"[ \t]*:[ \t]*"([^"]*)"`)
-var oauthRe = regexp.MustCompile(`"oauthAccount"[ \t]*:[ \t]*\{`)
-
-// ClaudeAccount renders the logged-in Claude Code account email. The payload carries
-// no account information, so it comes from oauthAccount.emailAddress in
-// <configDir>/.claude.json.
+// Account renders the Claude account slot of the full layout from what internal/anchor
+// resolved. Nothing here reads a Claude settings file.
 //
-// That file is Claude Code's own runtime state and this tool never writes to it. It
-// also runs to hundreds of kilobytes and its projects keys are file paths, so it is
-// scanned line by line for the first emailAddress after the oauthAccount opener
-// rather than parsed whole. The result is cached and rescanned only once the file is
-// newer than the cache, which is when the email could have changed.
-func ClaudeAccount(configDir, cacheDir string) string {
-	cf := filepath.Join(configDir, ".claude.json")
-	cfInfo, err := os.Stat(cf)
-	if err != nil || !cfInfo.Mode().IsRegular() {
+//   - installed is false when the OTLP receiver never ran on this machine: the slot is
+//     empty, because a permanent "?" would tell the reader nothing;
+//   - an unknown account is a dim "?": no anchor says which account the session uses;
+//   - a confirmed account, one an in-session /login named, is its email;
+//   - an estimated account, the one the settings file held when the session began, is
+//     its email behind a dim "~", because nothing shows the session's credentials are
+//     that account's;
+//   - either is followed by "?" when suspect, that is when the receiver looks stopped, the
+//     anchor is of an earlier receiver generation, or the session's rate-limit window
+//     changed under it.
+func Account(installed bool, email string, estimate, suspect bool) string {
+	if !installed {
 		return ""
 	}
-	cache := filepath.Join(cacheDir, "cc-account.env")
-
-	email, cached := "", false
-	if cacheInfo, err := os.Stat(cache); err == nil && !cfInfo.ModTime().After(cacheInfo.ModTime()) {
-		if b, err := os.ReadFile(cache); err == nil {
-			for _, line := range strings.Split(string(b), "\n") {
-				if k, v, found := strings.Cut(line, "="); found && k == "email" {
-					email = v
-				}
-			}
-			cached = true
-		}
-	}
-	if !cached {
-		email = stripControl(scanEmail(cf))
-		if os.MkdirAll(cacheDir, 0o755) == nil {
-			_ = os.WriteFile(cache, []byte("email="+email+"\n"), 0o600)
-		}
-	}
+	email = stripControl(email)
 	if email == "" {
-		return ""
+		return theme.Dim + "?" + theme.Reset
 	}
-	return theme.Coral173 + email + theme.Reset
-}
-
-func scanEmail(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ""
+	out := theme.Coral173 + email + theme.Reset
+	if estimate {
+		out = theme.Dim + "~" + theme.Reset + out
 	}
-	inBlock := false
-	for _, line := range strings.Split(string(b), "\n") {
-		if oauthRe.MatchString(line) {
-			inBlock = true
-		}
-		if !inBlock {
-			continue
-		}
-		if m := emailRe.FindStringSubmatch(line); m != nil {
-			return m[1]
-		}
+	if suspect {
+		out += theme.Dim + "?" + theme.Reset
 	}
-	return ""
+	return out
 }
 
 // awsAccessTTL is how long the access credentials in the login cache stay valid; `aws`
