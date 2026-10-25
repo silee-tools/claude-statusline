@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/silee-tools/claude-statusline/internal/statefile"
 	"github.com/silee-tools/claude-statusline/internal/theme"
 )
 
@@ -64,7 +65,7 @@ func GitHubAccount(cacheDir, configDir, repoRoot, origin string, now int64) stri
 			return ""
 		}
 	}
-	b, err := os.ReadFile(filepath.Join(cacheDir, key))
+	b, err := statefile.ReadFollow(filepath.Join(cacheDir, key))
 	if err != nil {
 		return ""
 	}
@@ -142,7 +143,7 @@ func originKind(configDir, origin string) string {
 	case host == "github.com" || strings.HasPrefix(host, "github.com-"):
 		return kindGitHub
 	}
-	b, err := os.ReadFile(filepath.Join(configDir, "claude-statusline", "forgejo-hosts"))
+	b, err := statefile.ReadFollow(filepath.Join(configDir, "claude-statusline", "forgejo-hosts"))
 	if err != nil {
 		return ""
 	}
@@ -176,7 +177,7 @@ func remoteHost(url string) string {
 // line, with # starting a comment.
 func lookupAccount(configDir, login string) (label, color string) {
 	label = login
-	b, err := os.ReadFile(filepath.Join(configDir, "claude-statusline", "gh-accounts"))
+	b, err := statefile.ReadFollow(filepath.Join(configDir, "claude-statusline", "gh-accounts"))
 	if err != nil {
 		return label, ""
 	}
@@ -308,7 +309,7 @@ func AWS(loginCacheDir, stateFile string, now int64, spawn func(stateFile string
 }
 
 func readAWSCheck(file string) (int64, string) {
-	b, err := os.ReadFile(file)
+	b, err := statefile.Read(file)
 	if err != nil {
 		return 0, ""
 	}
@@ -336,7 +337,7 @@ func writeAWSCheck(file string, at int64, result string) {
 
 // awsLoginTime reads iat from the JWT payload of the cache file's idToken.
 func awsLoginTime(path string) (int64, bool) {
-	b, err := os.ReadFile(path)
+	b, err := statefile.ReadFollow(path)
 	if err != nil {
 		return 0, false
 	}

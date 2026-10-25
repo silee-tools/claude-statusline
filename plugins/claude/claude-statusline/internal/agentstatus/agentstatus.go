@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+
+	"github.com/silee-tools/claude-statusline/internal/statefile"
 )
 
 // Metadata identifies the Claude session observed by the statusline.
@@ -153,7 +155,7 @@ func snapshotPath(root, sessionID string) string {
 }
 
 func load(path, sessionID string) snapshot {
-	b, err := os.ReadFile(path)
+	b, err := statefile.Read(path)
 	if err != nil {
 		return snapshot{}
 	}

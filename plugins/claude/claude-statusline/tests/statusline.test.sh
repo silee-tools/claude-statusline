@@ -1213,6 +1213,90 @@ rm -f "$TMPROOT/sessions/$P_DEAD.json" "$TMPROOT/sessions/$P_NEW.json"
 seed_proc rl-sess-a "$P_A"
 rm -rf "$RATE_DIR"
 
+# --- T65: 읽는 파일 자리에 FIFO 가 있어도 렌더가 멈추지 않는다 ---
+#    상태·캐시·설정 파일 자리에 쓰는 쪽이 없는 FIFO 가 놓이면 막히는 읽기는 렌더를 붙든다. 자리마다 FIFO 를 두고 렌더가
+#    3초 안에 끝나는지, 줄이 나오는지, 쓰는 자리라면 FIFO 가 일반 파일로 바뀌는지 본다. 읽는 곳별 단언과 링크 결정은
+#    Go 시험(internal/*/fifo_test.go)이 맡는다. aws-check 자리는 낡은 로그인 캐시가 확인 프로세스를 띄워 T59 의
+#    호출 0회를 깨므로 여기서 다루지 않는다.
+FIFO_OUT="$TMPROOT/fifo-site.out"
+# fifo_site <시험 이름> <FIFO 경로> <렌더 함수> <페이로드> <폭>: 그 자리에 FIFO 를 두고 렌더해 3초 안에 끝나는지 본다.
+fifo_site() {
+  mkdir -p "$(dirname "$2")"; rm -f "$2"; mkfifo "$2"
+  "$3" "$4" "$5" > "$FIFO_OUT" 2>/dev/null &
+  _fp=$!
+  _n=0
+  while kill -0 "$_fp" 2>/dev/null && [ "$_n" -lt 30 ]; do _n=$((_n + 1)); sleep 0.1; done
+  if kill -0 "$_fp" 2>/dev/null; then
+    exec 3<>"$2"; exec 3>&-   # 멈춘 읽기를 풀어 준다
+    kill "$_fp" 2>/dev/null || true
+    bad "$1 렌더가 3초 안에 끝남" "렌더가 FIFO 에서 멈췄다"
+  else
+    ok "$1 렌더가 3초 안에 끝남"
+  fi
+  wait "$_fp" 2>/dev/null || true
+}
+fifo_out() { cat "$FIFO_OUT"; }
+is_regular() { [ -f "$1" ] && [ ! -p "$1" ] && echo yes || echo no; }
+FS_PAYLOAD=$(json_without)
+FS_SID=fifo-site-s1
+FS_SUM=$(printf '%s' "$FS_SID" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+FS_SNAP="$STATE_HOME/claude-statusline/agent-status/sessions/claude/$FS_SUM.json"
+fifo_site "T65 세션 스냅숏 자리가 FIFO 여도" "$FS_SNAP" run "$(with_session "$FS_SID" "$FS_PAYLOAD")" 120
+assert_contains "T65 스냅숏 자리가 FIFO 여도 줄이 나옴" "v2.1.11" "$(first_line "$(fifo_out)")"
+assert_equals   "T65 스냅숏 자리의 FIFO 는 일반 파일로 바뀜" "yes" "$(is_regular "$FS_SNAP")"
+rm -f "$FS_SNAP"
+
+if [ "$HAVE_GIT" -eq 1 ]; then
+  FS_BRANCH_CACHE="$TMPROOT/cache/claude-statusline/git-branch.env"
+  rm -f "$FS_BRANCH_CACHE"
+  fifo_site "T65 브랜치 캐시 자리가 FIFO 여도" "$FS_BRANCH_CACHE" run "$(printf '%s' "$FS_PAYLOAD" | sed "s#\"current_dir\":\"/tmp\"#\"current_dir\":\"$GITREPO\"#")" 80
+  assert_contains "T65 브랜치 캐시 자리가 FIFO 여도 브랜치가 나옴" "wip" "$(fifo_out)"
+  assert_equals   "T65 브랜치 캐시 자리의 FIFO 는 일반 파일로 바뀜" "yes" "$(is_regular "$FS_BRANCH_CACHE")"
+  rm -f "$FS_BRANCH_CACHE"
+fi
+
+# 사용자·프롬프트가 두는 파일은 원래 자리를 FIFO 로 바꿔 두었다가 되돌린다.
+FS_GH_PAYLOAD=$(json_gh)
+mv "$GH_CACHE_FILE" "$GH_CACHE_FILE.keep"
+fifo_site "T65 gh 캐시 자리가 FIFO 여도" "$GH_CACHE_FILE" run "$FS_GH_PAYLOAD" 120
+assert_not_contains "T65 gh 캐시 자리가 FIFO 면 gh 칸이 비어 있음" "gh@" "$(fifo_out)"
+rm -f "$GH_CACHE_FILE"; mv "$GH_CACHE_FILE.keep" "$GH_CACHE_FILE"
+
+FS_MAP="$TMPROOT/claude-statusline/gh-accounts"
+mv "$FS_MAP" "$FS_MAP.keep"
+fifo_site "T65 gh-accounts 자리가 FIFO 여도" "$FS_MAP" run "$FS_GH_PAYLOAD" 120
+assert_contains "T65 gh-accounts 자리가 FIFO 면 계정명 그대로" "gh@octocat" "$(fifo_out)"
+rm -f "$FS_MAP"; mv "$FS_MAP.keep" "$FS_MAP"
+
+mkdir -p "$TMPROOT/fj-repo/.git"
+set_origin "$TMPROOT/fj-repo" https://forgejo.example.test/o/r.git
+FS_HOSTS="$TMPROOT/claude-statusline/forgejo-hosts"
+fifo_site "T65 forgejo-hosts 자리가 FIFO 여도" "$FS_HOSTS" run "$(printf '%s' "$FS_PAYLOAD" | sed "s#\"current_dir\":\"/tmp\"#\"current_dir\":\"$TMPROOT/fj-repo\"#")" 120
+assert_not_contains "T65 forgejo-hosts 자리가 FIFO 면 forgejo 칸이 없음" "forgejo" "$(fifo_out)"
+rm -f "$FS_HOSTS"
+
+mv "$GH_REPO/.git/config" "$GH_REPO/.git/config.keep"
+fifo_site "T65 .git/config 자리가 FIFO 여도" "$GH_REPO/.git/config" run "$FS_GH_PAYLOAD" 120
+assert_not_contains "T65 .git/config 자리가 FIFO 면 origin 을 모르니 gh 칸이 비어 있음" "gh@" "$(fifo_out)"
+rm -f "$GH_REPO/.git/config"; mv "$GH_REPO/.git/config.keep" "$GH_REPO/.git/config"
+
+# aws 로그인 캐시: 신선한 확인 기록이 있으면 낡은 캐시 판정이 확인 프로세스를 띄우지 않는다.
+FS_AWS_DIR="$TMPROOT/aws-fifo-cache"
+FS_AWS_CHECK="$TMPROOT/cache/claude-statusline/aws-check"
+printf '%s ok\n' "$(date +%s)" > "$FS_AWS_CHECK"
+FS_AWS_KEEP=$AWS_LOGIN_CACHE_FIXTURE
+AWS_LOGIN_CACHE_FIXTURE=$FS_AWS_DIR
+fifo_site "T65 aws 로그인 캐시 자리가 FIFO 여도" "$FS_AWS_DIR/session.json" run "$FS_PAYLOAD" 120
+AWS_LOGIN_CACHE_FIXTURE=$FS_AWS_KEEP
+assert_contains "T65 aws 로그인 캐시 자리가 FIFO 면 확인 기록을 따름" "aws:✓" "$(fifo_out)"
+rm -f "$FS_AWS_CHECK"
+
+# tty 경로 캐시: 폭을 주입하지 않아 tty 를 찾는 렌더이고, 쓰는 자리라 FIFO 가 있어도 끝나야 한다.
+FS_TTY_CACHE="$TMPROOT/cache/claude-statusline/tty-path.env"
+fifo_site "T65 tty 경로 캐시 자리가 FIFO 여도" "$FS_TTY_CACHE" run_auto "$FS_PAYLOAD" ""
+assert_contains "T65 tty 경로 캐시 자리가 FIFO 여도 줄이 나옴" "v2.1.11" "$(first_line "$(fifo_out)")"
+rm -f "$FS_TTY_CACHE"
+
 # --- T36: aws login 캐시 디렉터리 규칙 — 캐시가 없으면 세그먼트가 통째로 빠지고,
 #     AWS_LOGIN_CACHE_DIR 오버라이드가 실제로 반영된다. 전체 레이아웃(81)은 모든 상태를
 #     보이고, 압축(80)은 aws:✓ 만 숨긴다 ---

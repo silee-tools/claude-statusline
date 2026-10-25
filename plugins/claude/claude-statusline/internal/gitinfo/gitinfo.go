@@ -3,12 +3,13 @@
 package gitinfo
 
 import (
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/silee-tools/claude-statusline/internal/statefile"
 )
 
 const cacheName = "git-branch.env"
@@ -84,10 +85,8 @@ func Branch(cwd, cacheDir string) string {
 		os.Remove(cache)
 		return branch
 	}
-	if os.MkdirAll(cacheDir, 0o755) == nil {
-		_ = os.WriteFile(cache, []byte("cwd="+cwd+"\nhead="+headAbs+
-			"\ntoken="+token+"\nbranch="+branch+"\n"), 0o600)
-	}
+	_ = statefile.Write(cache, []byte("cwd="+cwd+"\nhead="+headAbs+
+		"\ntoken="+token+"\nbranch="+branch+"\n"))
 	return branch
 }
 
@@ -135,7 +134,7 @@ func Overridden() bool {
 }
 
 func cachedBranch(cache, cwd string) (string, bool) {
-	b, err := os.ReadFile(cache)
+	b, err := statefile.Read(cache)
 	if err != nil {
 		return "", false
 	}
@@ -166,18 +165,14 @@ func cachedBranch(cache, cwd string) (string, bool) {
 	return branch, true
 }
 
-// firstLine reports the first line of a regular file. ok is false when the path is
-// absent or is not a regular file, which is how a missing HEAD is told from an empty
-// one.
+// firstLine reports the first line of a regular file, which git's own HEAD may be a link
+// to. ok is false when the path is absent or does not end on a regular file, which is how
+// a missing HEAD is told from an empty one.
 func firstLine(path string) (string, bool) {
 	if path == "" {
 		return "", false
 	}
-	fi, err := os.Stat(path)
-	if err != nil || !fi.Mode().IsRegular() {
-		return "", false
-	}
-	b, err := os.ReadFile(path)
+	b, err := statefile.ReadFollow(path)
 	if err != nil {
 		return "", false
 	}
@@ -238,23 +233,11 @@ func Origin(root string) string {
 	return ""
 }
 
-// maxGitFileBytes bounds what Origin reads: a git config or pointer file is a few
-// lines, and a larger one is not worth the memory.
-const maxGitFileBytes = 1 << 20
-
-// readRegular reads path only if it is a regular file, and at most maxGitFileBytes of
-// it. The render runs in whatever directory the session is in, so a .git that is a
-// FIFO would block it and one that links to /dev/zero would never end.
+// readRegular reads the git file at path if it ends on a regular file; git follows links
+// there, so this does. The render runs in whatever directory the session is in, so a .git
+// that is a FIFO must not block it and one that links to /dev/zero must not run on for ever.
 func readRegular(path string) ([]byte, bool) {
-	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() {
-		return nil, false
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, false
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxGitFileBytes))
+	b, err := statefile.ReadFollow(path)
 	return b, err == nil
 }
 
