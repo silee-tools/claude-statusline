@@ -606,9 +606,52 @@ func TestARemovedOldIDAnchorDoesNotUndoTheCarry(t *testing.T) {
 	f.wantEmail("s2", now, "a@example.com")
 }
 
-// R5 — a resumed conversation sends its start events under a throwaway session id that
-// nothing ties to the process, and the anchors of other ids are never borrowed on timing
-// alone: any process of any config directory could have written them.
+// A re-stamp changes when and under which generation and run the receiver stored the old
+// id's anchor, not whose anchor it is, so the carry survives it.
+
+func TestARestampOfTheOldIDBetweenClearAndTheFirstRenderKeepsTheCarry(t *testing.T) {
+	edit := func(mod func(*Anchor)) func(f *fixture) {
+		return func(f *fixture) {
+			a, _ := Read(f.state, "s1")
+			mod(&a)
+			writeFile(f.t, filepath.Join(sessionsDir(f.state), "s1.env"), string(encode(a)))
+		}
+	}
+	for _, c := range []struct {
+		name    string
+		restamp func(f *fixture)
+	}{
+		{"seen", edit(func(a *Anchor) { a.Seen += 1000 })},
+		{"generation", edit(func(a *Anchor) { a.Gen++ })},
+		{"run", edit(func(a *Anchor) { a.Run = "laterrun" })},
+		{"an event of the account after a restart", func(f *fixture) {
+			f.gen++
+			if err := WriteGeneration(f.state, f.gen, f.run); err != nil {
+				f.t.Fatal(err)
+			}
+			f.apply(ev("user_prompt", "s1", "a@example.com", t0+9000))
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			now := time.Now()
+			f.install(0, now)
+			f.proc(11, t0, "s1")
+			f.apply(login("s1", "a@example.com", t0+5000))
+			f.wantEmail("s1", now, "a@example.com")
+			f.proc(11, t0, "s2") // /clear, not rendered yet
+			c.restamp(f)
+			got := f.wantEmail("s2", now, "a@example.com")
+			if got.AnchorTS != t0+5000 || got.Level != Confirmed {
+				t.Errorf("재도장된 옛 id 의 앵커로 승계가 끊겼다: %+v", got)
+			}
+		})
+	}
+}
+
+// R5 — claude --continue sends its start events under a throwaway session id that nothing
+// ties to the process, and the anchors of other ids are never borrowed on timing alone: any
+// process of any config directory could have written them.
 
 func TestResumedSessionNeverBorrowsTheStartAnchorOfAnotherID(t *testing.T) {
 	f := newFixture(t)
@@ -705,6 +748,69 @@ func TestInSessionResumeOfAnOlderConversationKeepsTheProcessAccount(t *testing.T
 	f.wantEmail("current", now, "c@example.com")
 	f.proc(31, t0, "older") // /resume of the older conversation inside the same process
 	f.wantEmail("older", now.Add(time.Minute), "c@example.com")
+}
+
+// claude --resume <id> sends its start events under the id it resumes, so the new process's
+// start anchor replaces what the process before it left under that id.
+
+func TestAResumedSessionShowsTheNewProcessAccount(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		prior func(f *fixture)
+	}{
+		{"an earlier start anchor", func(f *fixture) { f.previousLife("real", t0-86_400_000, "old@example.com") }},
+		{"an earlier login anchor", func(f *fixture) { f.crashedLife("real", t0-86_400_000, "old@example.com") }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			now := at(t0 + 10_000)
+			f.install(0, now)
+			c.prior(f)
+			f.proc(31, t0, "real") // claude --resume real
+			f.wantEmail("real", now, "")
+			f.apply(startup("real", "new@example.com", t0+20))
+			got := f.wantEmail("real", now, "new@example.com")
+			if got.Suspect || got.Level != Estimate {
+				t.Errorf("Resolve = %+v, want a trusted estimate", got)
+			}
+		})
+	}
+}
+
+// After a restart of the receiver only an event naming the anchor's own account lifts the
+// doubt; another account's event leaves the anchor and the doubt as they were.
+func TestAnEventOfTheAnchorsAccountEndsTheDoubtOfAnEarlierGeneration(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		first Event
+		level Confidence
+	}{
+		{"start", ev("managed_settings_resolved", "s1", "a@example.com", t0+900), Estimate},
+		{"login", login("s1", "a@example.com", t0+900), Confirmed},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			now := at(t0 + 60_000)
+			f.install(0, now)
+			f.proc(11, t0, "s1")
+			f.apply(c.first)
+			f.gen++
+			if err := WriteGeneration(f.state, f.gen, f.run); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.wantEmail("s1", now, "a@example.com"); !got.Suspect {
+				t.Fatalf("재시작 뒤 이전 세대의 앵커: %+v, want 의심", got)
+			}
+			f.apply(ev("user_prompt", "s1", "b@example.com", t0+20_000))
+			if got := f.wantEmail("s1", now, "a@example.com"); !got.Suspect {
+				t.Errorf("다른 계정의 이벤트가 의심을 풀었다: %+v", got)
+			}
+			f.apply(ev("user_prompt", "s1", "a@example.com", t0+21_000))
+			if got := f.wantEmail("s1", now, "a@example.com"); got.Suspect || got.Level != c.level {
+				t.Errorf("같은 계정의 이벤트 뒤: %+v, want 의심 없음 and level %v", got, c.level)
+			}
+		})
+	}
 }
 
 // R14 — the rate-limit windows a session kept belong to one account only within one

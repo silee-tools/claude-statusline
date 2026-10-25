@@ -305,29 +305,42 @@ Neither `.claude.json` nor `oauthAccount` is read.
 The compact layout shows no account and reads none of this.
 
 **What counts.** Per session id the receiver keeps one anchor, from these events only:
-a start-only event (`managed_settings_resolved`, `plugin_loaded`) sets it when the
-session has none, as an estimate; a successful `auth` event with `action=login`
-replaces it with the new account, confirmed; `action=logout` clears it. An event older
-than the stored anchor is dropped. Every other event is ignored, including the
-`user_prompt` that opens the session id `/clear` creates, because its email is whatever
-the settings file holds at that moment. Events carry no process id, and every email in
-them comes from the settings file, so only a `/login` made inside the session proves
-which account its credentials belong to.
+a start event (`plugin_loaded`, or `managed_settings_resolved` unless its
+`managed_settings.trigger` is `change` or `refused`) sets it when the session has none, as
+an estimate; a `managed_settings_resolved` with `trigger=startup`, which a process sends as
+it starts, also replaces an older anchor, because that process is the one the session runs
+in now; a successful `auth` event with `action=login` replaces the anchor with the new
+account, confirmed; `action=logout` clears it. An event older than the stored anchor is
+dropped. The email of any other event is never taken as the session's account, because it
+is whatever the settings file holds at that moment (the `user_prompt` that opens the session
+id `/clear` creates is one); it is only compared with the stored anchor. An anchor of an
+earlier generation is stamped with the current generation again by the next event of its
+session whose email is the anchor's, and keeps its account, kind (an estimate stays an
+estimate) and time; an event with another email changes nothing, so the `?` stays. Events
+carry no process id, and every email in them comes from the settings file, so only a
+`/login` made inside the session proves which account its credentials belong to.
 
 **`/clear`.** Claude Code keeps `<config>/sessions/<pid>.json` for each running
 process, and `/clear` changes only its `sessionId`. The statusline records the anchor
 under the process (`pids/`) and the new session id takes it over, again after a
 second `/clear`, and after a `/login` that arrived between two renders. The first
 render under the new id settles the carry once: if the old id's anchor is still the one
-the process carried, the process keeps it for good; if it has changed, whose event
-changed it cannot be told (another process may have resumed the old id), so the
-process shows `?` until it logs in.
+the process carried (same account, kind and time), the process keeps it for good; if it
+has changed, whose event changed it cannot be told (another process may have resumed the
+old id), so the process shows `?` until it logs in.
 
-**`--resume` and `--continue`.** Their start events go out under a throwaway session
-id that nothing ties to the process, and an anchor under the session's own id that is
-older than the process start belongs to an earlier process. Anchors of other session
+**`--resume` and `--continue`.** `claude --resume <id>` sends its start events under the
+resumed id, so the new process's startup event replaces what an earlier process left
+under it: the session shows the account the settings file held when the new process
+started, as an estimate, whatever the earlier anchor was. `claude --continue` sends them
+under a throwaway session id that nothing ties to the process, and anchors of other session
 ids are never borrowed on the strength of timing, because any process of any config
-directory could have written them: a resumed session shows `?` until it logs in.
+directory could have written them: that session shows `?` until it logs in. A conversation
+resumed inside a running process (`/resume`) sends no start event under the resumed id; it
+takes the anchor of the process when an earlier render of that process recorded one, as
+`/clear` does, and shows `?` otherwise. A `claude --resume <id>` that fails because the
+conversation does not exist still sends its start events under that id, with the account
+the settings file of the config directory it ran in holds.
 
 **Which process.** A `sessions/<pid>.json` names a process only while that process runs
 (`kill(pid, 0)`): a kill, a crash or a reboot leaves the file behind, and a resumed
@@ -348,9 +361,16 @@ previous boundary saw. Where the process cannot be told, nothing is kept.
   session that shows "Not logged in" carries it too, which is why it is only an estimate.
 - Restarting the receiver (a new plugin version replaces it, or the supervisor restarts
   it after a failure) starts a new generation, so every session shows `?` behind its
-  email until a `/login` inside it is seen again. Events sent while the receiver was down
-  are lost, and a `/login` among them would otherwise go unseen. A generation is a counter,
-  not a time, so correcting the system clock cannot make a stored anchor look current.
+  email until the session sends an event whose email is the anchor's, which stamps the
+  anchor with the new generation; if the settings file names another account, the `?` stays
+  until a `/login` or a `--resume` replaces the anchor. Events sent while the receiver was
+  down are lost, and a `/login` among them would otherwise go unseen. A generation is a
+  counter, not a time, so correcting the system clock cannot make a stored anchor look
+  current. A session that shows its account from the copy `/clear` made keeps the generation
+  of that copy, so after a restart it shows `?` until it logs in.
+- A failed `claude --resume <id>` run in another config directory (see above) replaces the
+  anchor of an open session with that id by the email in that directory's settings file:
+  the latest startup event wins.
 - The statusline looks at the live lock's path again after it has read the lock, and a path that
   no longer leads to that file counts as no receiver. A change after that look, within the same
   render, is not seen: that one render still shows the account as confirmed. A path that is still
@@ -364,6 +384,10 @@ previous boundary saw. Where the process cannot be told, nothing is kept.
   window are watched (`fingerprintWindows` in `cmd/statusline`); a window that has ended
   starts a new baseline.
 - A session started before the variables below are set shows `?` until it restarts.
+- Only start events make an anchor, so a session whose start events never reached the
+  receiver (it started before the receiver ran, or `--continue`) shows `?` until it logs in or
+  is opened with `--resume`. A session with telemetry off sends nothing, a `/login` included,
+  and keeps `?`.
 - The account appears at the first render after its events reach the receiver
   (the export interval below is 1 second). `statusLine.refreshInterval` (seconds) makes
   Claude Code rerun the command periodically, so a new session does not wait for its
@@ -393,8 +417,8 @@ restarts it after a non-zero exit. It listens on `127.0.0.1:14318` only (`-addr`
 a loopback IP literal), serves `POST /v1/logs` with `Content-Type: application/json` and
 a body of at most 1 MiB, and answers `200 {}`; when it could not store a record it
 answers `503`, which the exporter retries. It stores no event and reads only
-`session.id`, `user.email`, `event.name`, `action`, `success` and the event time of each
-record; stderr says what happened (start, stop, failure kinds), never a value. Exit
+`session.id`, `user.email`, `event.name`, `action`, `success`, `managed_settings.trigger` and
+the event time of each record; stderr says what happened (start, stop, failure kinds), never a value. Exit
 codes: 0 after SIGINT or SIGTERM; 75 when the file at its own path was replaced (it
 checks every 30 seconds), so the supervisor starts the new build; 1 when the address is
 not loopback, the port cannot be bound, the state directory cannot be prepared or read,

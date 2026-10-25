@@ -52,9 +52,9 @@ type anyValue struct {
 }
 
 // newHandler serves POST /v1/logs of the OTLP/HTTP JSON protocol. It keeps the session
-// id, the email, the event name, the auth action and outcome, and the event time of each
-// record and drops every other attribute undecoded: prompts, tool arguments and the
-// account ids are never read.
+// id, the email, the event name, the auth action and outcome, the managed-settings trigger
+// and the event time of each record and drops every other attribute undecoded: prompts,
+// tool arguments and the account ids are never read.
 //
 // A record that could not be stored makes the whole request answer 503, which the
 // exporter retries; re-applying the records that did land changes nothing, because an
@@ -120,7 +120,7 @@ func toEvent(rec logRecord, received time.Time) anchor.Event {
 	for _, a := range rec.Attributes {
 		var v anyValue
 		switch a.Key {
-		case "session.id", "user.email", "event.name", "action", "event.timestamp", "success":
+		case "session.id", "user.email", "event.name", "action", "event.timestamp", "success", "managed_settings.trigger":
 		default:
 			continue
 		}
@@ -138,6 +138,8 @@ func toEvent(rec logRecord, received time.Time) anchor.Event {
 			}
 		case "action":
 			ev.Action = deref(v.StringValue)
+		case "managed_settings.trigger":
+			ev.Trigger = deref(v.StringValue)
 		case "event.timestamp":
 			timestamp = deref(v.StringValue)
 		case "success":

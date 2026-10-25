@@ -98,9 +98,9 @@ func Resolve(in Input) Result {
 			r.Level = Confirmed
 		}
 		// An anchor of an earlier generation may have missed a /login since, and only a
-		// later event replaces it. The number is the count of one run: the anchor and the
-		// generation file must both be the run that holds the live lock, or the count is
-		// not the one the anchor went by.
+		// later event replaces it, or stamps it again when it names the anchor's account.
+		// The number is the count of one run: the anchor and the generation file must both
+		// be the run that holds the live lock, or the count is not the one the anchor went by.
 		if gen, run, ok := readGeneration(in.StateDir); !ok || a.Gen < gen || run != live.Run || a.Run != live.Run {
 			r.Suspect = true
 		}
@@ -331,16 +331,19 @@ func locate(in Input) (p proc, r ref, hasRef, ok bool) {
 //
 // "Its own" means the anchor of this process. A resumed session reuses the id of the
 // conversation it resumes, whose earlier process may have left an anchor under that id;
-// an anchor older than this process's start belongs to that earlier process.
+// an anchor older than this process's start belongs to that earlier process, until the
+// new process's own startup event replaces it.
 //
-// A process that resumes a conversation sends its start events under a throwaway session
-// id that nothing ties to the process, so a resumed session has no anchor until it
-// logs in. The anchors of other session ids are never borrowed on the strength of timing:
-// any process of any config directory could have written them.
+// claude --resume <id> sends its start events under the resumed id. claude --continue
+// sends them under a throwaway session id that nothing ties to the process, so that
+// session has no anchor until it logs in. The anchors of other session ids are never
+// borrowed on the strength of timing: any process of any config directory could have
+// written them.
 //
 // /clear leaves the anchor under the old id, where another process that resumes that id
 // can replace it. The first render under the new id therefore settles the carry once: if
-// the old id's anchor is still the one the process carried, the process keeps it for
+// the old id's anchor is still the one the process carried (same account, kind and event
+// time; a re-stamp by the receiver does not make it another), the process keeps it for
 // good, and if it has changed, whose event changed it cannot be told, so the process has
 // no anchor until it logs in.
 //
@@ -374,7 +377,7 @@ func sessionAnchor(in Input) (a Anchor, ok, known bool) {
 	a = pf.Anchor
 	if pf.Session != id {
 		pf.Session = id
-		if cur, found := readFresh(in.StateDir, pf.Src, in.Now); pf.Src != "" && found && cur != a {
+		if cur, found := readFresh(in.StateDir, pf.Src, in.Now); pf.Src != "" && found && !cur.sameAnchor(a) {
 			pf.Has, pf.Anchor = false, Anchor{}
 			writePidFile(in.StateDir, in.Now, p, pf)
 			return Anchor{}, false, true

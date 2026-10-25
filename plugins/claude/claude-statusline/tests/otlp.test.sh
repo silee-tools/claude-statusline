@@ -186,6 +186,24 @@ start_receiver "$TMPROOT/bin/receiver-live" "$TMPROOT/recv2.err" || { echo "FATA
 # --- 재시작: 멈춰 있던 동안의 /login 이 유실됐을 수 있어, 이전 세대의 앵커는 하트비트가 신선해도 ? 가 붙는다 ---
 assert_contains "재시작한 수신기가 돌아도 이전 세대 앵커는 의심" " ~b@example.com? ⧉ s2" "$(first_line s2)"
 PORT=$(sed -n 's/.*listening on 127\.0\.0\.1:\([0-9]*\)$/\1/p' "$TMPROOT/recv2.err" | head -1)
+assert_contains "새 수신기 주소를 알려도 s2 의 이전 세대 앵커는 의심" " ~b@example.com? ⧉ s2" "$(first_line s2)"
+assert_contains "새 수신기 주소를 알려도 s3 의 이전 세대 앵커는 의심" " ~a@example.com? ⧉ s3" "$(first_line s3)"
+
+# --- 재시작 뒤 같은 세션의 다음 이벤트: 앵커와 같은 계정이면 다시 찍히고, 다른 계정이면 의심이 남는다 ---
+post "$(record user_prompt s2 x@example.com)" >/dev/null
+assert_contains "앵커와 다른 이메일의 이벤트는 s2 의 의심을 풀지 않는다" " ~b@example.com? ⧉ s2" "$(first_line s2)"
+post "$(record user_prompt s2 b@example.com)" >/dev/null
+assert_contains "앵커와 같은 이메일의 이벤트는 s2 를 현재 세대로 다시 찍는다(추정은 추정으로)" " ~b@example.com ⧉ s2" "$(first_line s2)"
+
+# --- 새 프로세스의 시작 이벤트(trigger=startup)는 더 오래된 앵커를 대체한다 ---
+# 호출마다 서브셸이라 now_nano 의 TICK 이 이어지지 않는다. 더 늦은 시각이 필요하면 호출 전에 올린다.
+TICK=10
+post "$(record managed_settings_resolved s3 f@example.com ",$(attr managed_settings.trigger startup)")" >/dev/null
+assert_contains "trigger=startup 시작 이벤트는 s3 의 이전 앵커를 새 계정으로 대체" " ~f@example.com ⧉ s3" "$(first_line s3)"
+TICK=20
+post "$(record managed_settings_resolved s3 g@example.com ",$(attr managed_settings.trigger change)")" >/dev/null
+assert_contains "더 늦은 trigger=change 이벤트는 s3 의 앵커를 바꾸지 않는다" " ~f@example.com ⧉ s3" "$(first_line s3)"
+
 post "$(record auth s2 e@example.com "$(auth_extra login true)")" >/dev/null
 assert_contains "새 세대가 받은 /login 은 다시 신뢰한다" " e@example.com ⧉ s2" "$(first_line s2)"
 cp "$RECV" "$TMPROOT/bin/receiver-live.next"

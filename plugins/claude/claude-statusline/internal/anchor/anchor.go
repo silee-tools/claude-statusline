@@ -5,13 +5,21 @@
 // settings file's current account, not the session's authenticated one. Only two kinds
 // of record say anything reliable about a session, so only they become an anchor:
 //
-//   - a start-only event (managed_settings_resolved, plugin_loaded) is emitted once, as
-//     the session begins, and carries the account the settings file held then;
+//   - a start event (plugin_loaded, or managed_settings_resolved unless its trigger is
+//     change or refused) is emitted as a process begins and carries the account the
+//     settings file held then; trigger=startup marks the process's own start;
 //   - a successful auth event (/login) carries the account just logged in, and a
 //     logout carries none.
 //
+// A start event makes an anchor only for a session that has none, except that a startup
+// event newer than the stored anchor replaces it: the process that sent it is the one the
+// session runs in now, whatever the earlier anchor's process, generation or account was.
 // The first event of a session id created by /clear is a user_prompt, whose email is
 // whatever the file holds at that moment, so it never starts an anchor.
+//
+// The email of any other event is not a new account, only a comparison with the stored
+// anchor: when it names the anchor's account, an anchor of an earlier generation or run is
+// stamped again with the current ones (see revive).
 //
 // Neither kind proves which credentials the session holds. A login anchor was written by
 // an event the session itself produced after authenticating, so its account is
@@ -82,6 +90,7 @@ type Event struct {
 	Email     string
 	Action    string
 	Success   string // "true" or "false"
+	Trigger   string // managed_settings.trigger
 	TS        int64  // unix milliseconds
 }
 
@@ -181,28 +190,26 @@ func validEmail(s string) bool {
 // gen and run, and reports whether it wrote one. Callers serialize Apply: it reads the stored
 // anchor before replacing it.
 //
-// A start-only event counts only when the session has no anchor yet, and an event
-// older than the stored one is dropped, so events arriving out of order leave the
-// anchor of the latest event.
+// A start event creates an anchor, and a startup event newer than the stored one replaces it;
+// a start event that does neither leaves it. A login or logout replaces the anchor unless it
+// is older, so events arriving out of order leave the anchor of the latest event. An event
+// that changes no anchor goes to revive.
 func Apply(stateDir string, ev Event, gen int64, run string) (bool, error) {
 	if !validID(ev.SessionID) {
 		return false, nil
 	}
 	next := Anchor{TS: ev.TS, Seen: clock().UnixMilli(), Gen: gen, Run: run}
-	switch strings.TrimPrefix(ev.Name, "claude_code.") {
-	case "managed_settings_resolved", "plugin_loaded":
+	name := strings.TrimPrefix(ev.Name, "claude_code.")
+	startup := name == "managed_settings_resolved" && ev.Trigger == "startup"
+	switch {
+	case name == "plugin_loaded", name == "managed_settings_resolved" && ev.Trigger != "change" && ev.Trigger != "refused":
 		next.Kind = KindStart
-	case "auth":
-		switch {
-		case ev.Action == "login" && ev.Success == "true":
-			next.Kind = KindLogin
-		case ev.Action == "logout" && ev.Success != "false":
-			next.Kind = KindLogout
-		default:
-			return false, nil
-		}
+	case name == "auth" && ev.Action == "login" && ev.Success == "true":
+		next.Kind = KindLogin
+	case name == "auth" && ev.Action == "logout" && ev.Success != "false":
+		next.Kind = KindLogout
 	default:
-		return false, nil
+		return revive(stateDir, ev, gen, run)
 	}
 	if next.Kind != KindLogout {
 		if !validEmail(ev.Email) {
@@ -210,11 +217,42 @@ func Apply(stateDir string, ev Event, gen int64, run string) (bool, error) {
 		}
 		next.Email = ev.Email
 	}
-	if cur, has := readFresh(stateDir, ev.SessionID, clock()); has && (next.Kind == KindStart || next.TS < cur.TS) {
+	if cur, has := readFresh(stateDir, ev.SessionID, clock()); has {
+		switch {
+		case next.Kind == KindStart && !(startup && next.TS > cur.TS):
+			return revive(stateDir, ev, gen, run)
+		case next.Kind != KindStart && next.TS < cur.TS:
+			return false, nil
+		}
+	}
+	return store(stateDir, ev.SessionID, next)
+}
+
+// revive stamps the anchor of ev's session with the receiver's generation and run when ev
+// names the account the anchor holds and the anchor is of an earlier generation or another
+// run. The settings file still naming that account is the best evidence there is that no
+// /login the receiver missed moved it, though not a proof; an event naming another account
+// leaves the anchor and its doubt as they were. Only Seen, Gen and Run change: the account,
+// kind and event time stay the anchor's own, so a re-stamp neither raises an estimate to
+// confirmed nor moves the time that orders a late /login.
+func revive(stateDir string, ev Event, gen int64, run string) (bool, error) {
+	if !validEmail(ev.Email) {
 		return false, nil
 	}
+	cur, has := readFresh(stateDir, ev.SessionID, clock())
+	if !has || cur.Kind == KindLogout || cur.Email != ev.Email || (cur.Gen >= gen && cur.Run == run) {
+		return false, nil
+	}
+	cur.Seen, cur.Gen, cur.Run = clock().UnixMilli(), gen, run
+	// A re-stamp that cannot be written loses nothing: the anchor stays doubted as it was, and an
+	// error would make the receiver count a loss and doubt every anchor.
+	changed, _ := store(stateDir, ev.SessionID, cur)
+	return changed, nil
+}
+
+func store(stateDir, id string, a Anchor) (bool, error) {
 	dir := sessionsDir(stateDir)
-	if err := statefile.Write(filepath.Join(dir, ev.SessionID+".env"), encode(next)); err != nil {
+	if err := statefile.Write(filepath.Join(dir, id+".env"), encode(a)); err != nil {
 		return false, err
 	}
 	statefile.Prune(dir, clock(), retention, maxFiles)
@@ -285,6 +323,12 @@ func (a Anchor) stored() int64 {
 		return a.Seen
 	}
 	return a.TS
+}
+
+// sameAnchor reports whether b is the anchor a names. A re-stamp changes when and under
+// which generation and run the receiver stored the anchor, not whose it is.
+func (a Anchor) sameAnchor(b Anchor) bool {
+	return a.Email == b.Email && a.Kind == b.Kind && a.TS == b.TS
 }
 
 // expired reports whether the anchor is older than the retention, so a file the writer has
