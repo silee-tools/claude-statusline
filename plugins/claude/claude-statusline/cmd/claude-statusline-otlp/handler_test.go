@@ -151,12 +151,13 @@ func TestHandlerRejectsOversizedMalformedAndEncodedBodies(t *testing.T) {
 func TestHandlerKeepsOnlyTheAllowedKeys(t *testing.T) {
 	rec := &recorder{}
 	h := newHandler(rec.apply, fixedNow, func(string) {})
-	body := request(record("user_prompt", 1_700_000_000_123*ms,
-		str("session.id", "s1"), str("user.email", "a@example.com"),
+	body := request(record("managed_settings_resolved", 1_700_000_000_123*ms,
+		str("session.id", "s1"), str("user.email", "a@example.com"), str("managed_settings.trigger", "startup"),
+		str("managed_settings.source", "SENTINEL_SOURCE"),
 		str("prompt", "SENTINEL_PROMPT"), str("prompt_text", "SENTINEL_TEXT"), str("tool_input", "SENTINEL_TOOL"),
 		str("user.account_uuid", "SENTINEL_UUID"), integer("event.sequence", 3)))
 	serveOnce(h, "POST", "/v1/logs", "application/json", body)
-	want := anchor.Event{Name: "user_prompt", SessionID: "s1", Email: "a@example.com", TS: 1_700_000_000_123}
+	want := anchor.Event{Name: "managed_settings_resolved", SessionID: "s1", Email: "a@example.com", Trigger: "startup", TS: 1_700_000_000_123}
 	if len(rec.events) != 1 || rec.events[0] != want {
 		t.Fatalf("이벤트 = %+v, want [%+v]", rec.events, want)
 	}

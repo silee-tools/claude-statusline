@@ -587,6 +587,52 @@ func TestAnAnchorStoredBeforeARestartIsDoubtedWhateverTheClockSays(t *testing.T)
 	}
 }
 
+func postEvent(t *testing.T, addr, name, id, email string, tsMs int64, extra ...attr) {
+	t.Helper()
+	attrs := append([]attr{str("session.id", id), str("user.email", email)}, extra...)
+	if code := postRaw(t, addr, string(request(record(name, tsMs*ms, attrs...)))); code != 200 {
+		t.Fatalf("%s: 상태 %d, want 200", name, code)
+	}
+}
+
+// After a restart a session's own next event, naming the account its anchor holds, is the
+// evidence that no /login was missed; an event naming another account is not.
+func TestARestartedReceiverRestampsASessionsAnchorOnItsNextEvent(t *testing.T) {
+	cfg := baseConfig(t)
+	addr, exit, _, cancel := start(t, cfg)
+	startup := str("managed_settings.trigger", "startup")
+	postEvent(t, addr, "managed_settings_resolved", "s1", "a@example.com", 1_700_000_000_000, startup)
+	postEvent(t, addr, "managed_settings_resolved", "s2", "b@example.com", 1_700_000_000_000, startup)
+	if res, doubt := suspect(t, cfg, "s1"); res.Email != "a@example.com" || doubt {
+		t.Fatalf("재시작 전 s1: %+v 의심=%v", res, doubt)
+	}
+	cancel()
+	waitExit(t, exit, 3*time.Second)
+
+	addr, exit, _, cancel = start(t, cfg)
+	defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+	for _, id := range []string{"s1", "s2"} {
+		if _, doubt := suspect(t, cfg, id); !doubt {
+			t.Fatalf("재시작 뒤 %s 의 이전 세대 앵커는 의심해야 한다", id)
+		}
+	}
+	postEvent(t, addr, "user_prompt", "s1", "x@example.com", 1_700_000_010_000)
+	postEvent(t, addr, "user_prompt", "s2", "a@example.com", 1_700_000_010_000) // another session's account
+	for _, id := range []string{"s1", "s2"} {
+		if _, doubt := suspect(t, cfg, id); !doubt {
+			t.Errorf("%s: 앵커와 다른 계정의 이벤트가 의심을 풀었다", id)
+		}
+	}
+	postEvent(t, addr, "user_prompt", "s1", "a@example.com", 1_700_000_020_000)
+	res, doubt := suspect(t, cfg, "s1")
+	if res.Email != "a@example.com" || res.Level != anchor.Estimate || doubt {
+		t.Errorf("앵커와 같은 계정의 이벤트 뒤 s1: %+v 의심=%v, want 추정 a@example.com 의심 없음", res, doubt)
+	}
+	if res, doubt := suspect(t, cfg, "s2"); res.Email != "b@example.com" || !doubt {
+		t.Errorf("s2 는 그대로여야 한다: %+v 의심=%v", res, doubt)
+	}
+}
+
 // A loss the receiver could not record leaves the generation file behind its own count;
 // an anchor stored meanwhile carries that count, and a restart must still pass it.
 func TestARestartAfterAnUnrecordedLossStillDoubtsTheAnchorStoredMeanwhile(t *testing.T) {
