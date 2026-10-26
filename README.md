@@ -323,11 +323,12 @@ carry no process id, and every email in them comes from the settings file, so on
 **`/clear`.** Claude Code keeps `<config>/sessions/<pid>.json` for each running
 process, and `/clear` changes only its `sessionId`. The statusline records the anchor
 under the process (`pids/`) and the new session id takes it over, again after a
-second `/clear`, and after a `/login` that arrived between two renders. The first
-render under the new id settles the carry once: if the old id's anchor is still the one
-the process carried (same account, kind and time), the process keeps it for good; if it
-has changed, whose event changed it cannot be told (another process may have resumed the
-old id), so the process shows `?` until it logs in.
+second `/clear`, and after a `/login` that arrived between two renders. A render that
+finds no anchor yet records only its session id there, a seed file, and rewrites it only
+when the id changes. The first render under the new id settles the carry once: if the old
+id's anchor is still the one the process carried (same account, kind and time), the
+process keeps it for good; if it has changed, whose event changed it cannot be told
+(another process may have resumed the old id), so the process shows `?` until it logs in.
 
 **`--resume` and `--continue`.** `claude --resume <id>` sends its start events under the
 resumed id, so the new process's startup event replaces what an earlier process left
@@ -337,8 +338,10 @@ under a throwaway session id that nothing ties to the process, and anchors of ot
 ids are never borrowed on the strength of timing, because any process of any config
 directory could have written them: that session shows `?` until it logs in. A conversation
 resumed inside a running process (`/resume`) sends no start event under the resumed id; it
-takes the anchor of the process when an earlier render of that process recorded one, as
-`/clear` does, and shows `?` otherwise. A `claude --resume <id>` that fails because the
+takes the anchor the process carries, as `/clear` does. A process that has found no anchor
+yet (its first render usually comes before its start event reaches the receiver) carries
+that of the session id it rendered last once that anchor exists and began after the process
+did; otherwise the session shows `?`. A `claude --resume <id>` that fails because the
 conversation does not exist still sends its start events under that id, with the account
 the settings file of the config directory it ran in holds.
 
@@ -366,8 +369,8 @@ previous boundary saw. Where the process cannot be told, nothing is kept.
   until a `/login` or a `--resume` replaces the anchor. Events sent while the receiver was
   down are lost, and a `/login` among them would otherwise go unseen. A generation is a
   counter, not a time, so correcting the system clock cannot make a stored anchor look
-  current. A session that shows its account from the copy `/clear` made keeps the generation
-  of that copy, so after a restart it shows `?` until it logs in.
+  current. A session that shows its account from the copy `/clear` or `/resume` made keeps
+  the generation of that copy, so after a restart it shows `?` until it logs in.
 - A failed `claude --resume <id>` run in another config directory (see above) replaces the
   anchor of an open session with that id by the email in that directory's settings file:
   the latest startup event wins.
@@ -378,6 +381,11 @@ previous boundary saw. Where the process cannot be told, nothing is kept.
   finds the path changed at its next heartbeat tick or write. Only the path at the moment of each
   look counts: a file moved away and put back before then is trusted again.
 - Two Claude Code processes that run the same session id at the same time share one anchor.
+- A conversation resumed with `/resume` shows `?` when the process had not rendered under
+  its start id before the `/resume`, or when that id's start anchor had not reached the
+  receiver by the first render under the resumed id. If another process of the same config
+  directory resumed the start id and anchored it after this process began, the first
+  process takes that anchor.
 - A session that quietly takes over another session's credentials at a token refresh
   emits no event. The only trace is a rate-limit window changing before it ends, which
   adds `?`; the account is never corrected from it. Both the five-hour and the seven-day
@@ -502,7 +510,7 @@ kept, is the supervisor's setting.
 | `.../otel/receiver.lock`, `.../otel/receiver.live` | receiver | the start lock (empty) and the live lock, `flock`s it holds while it runs; the live lock's file holds `run=` and `addr=` | two files |
 | `.../otel/heartbeat` | receiver | its mtime | one file |
 | `.../otel/generation` | receiver | its current generation number (one more than before at each start and each loss), then `run=` | one file |
-| `.../pids/<pid>-<startedAt>.env`, `.../pids/session-<id>.ref` | statusline | the anchor a process carries, which pid file a session uses | 30 days, 2,000 files |
+| `.../pids/<pid>-<startedAt>.env`, `.../pids/session-<id>.ref` | statusline | the anchor a process carries (until it has one, only the session id it last rendered), which pid file a session uses | 30 days, 2,000 files |
 | `.../fingerprints/<session_id>.env` | statusline | the baseline of the watched rate-limit window | 30 days, 2,000 files |
 | `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/rate-limits/<session_id>.env` | statusline | the windows the session last saw, and the boundary they were seen under | 2 days after the last write, 2,000 files |
 | `${XDG_DATA_HOME:-$HOME/.local/share}/claude-statusline/bin/claude-statusline-otlp{,.version}` | `build-binary.sh` | the published receiver | replaced by the same or a higher version, never deleted |

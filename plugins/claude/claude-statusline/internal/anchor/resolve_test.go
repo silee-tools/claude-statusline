@@ -750,6 +750,194 @@ func TestInSessionResumeOfAnOlderConversationKeepsTheProcessAccount(t *testing.T
 	f.wantEmail("older", now.Add(time.Minute), "c@example.com")
 }
 
+// A conversation resumed inside a running process (/resume) sends no start event under its
+// id. The statusline's first render comes before the start event reaches the receiver, so it
+// leaves the id it saw in the pid file, and a later id takes over the anchor that id has by
+// then, provided the anchor began after the process did.
+
+// wantSeed checks that the process's pid file names the session it last rendered and carries
+// no anchor.
+func (f *fixture) wantSeed(p proc, session string) {
+	f.t.Helper()
+	if got := readPidFile(f.state, p); got.Session != session || got.Src != "" || got.Has {
+		f.t.Fatalf("pid file of %s = %+v, want only session %q", p.key(), got, session)
+	}
+}
+
+func modTime(t *testing.T, path string) time.Time {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.ModTime()
+}
+
+func TestAnInSessionResumeBeforeTheStartAnchorArrivedCarriesTheProcessAnchor(t *testing.T) {
+	p := proc{11, t0}
+	for _, c := range []struct {
+		name      string
+		first     Event
+		restarted bool // the receiver started a new generation after the anchor was stored
+		level     Confidence
+	}{
+		{"a start anchor", startup("s1", "a@example.com", t0+20), false, Estimate},
+		{"a start anchor of an earlier generation", startup("s1", "a@example.com", t0+20), true, Estimate},
+		{"a login anchor", login("s1", "a@example.com", t0+5000), false, Confirmed},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			now := at(t0 + 60_000)
+			f.install(0, now)
+			f.proc(11, t0, "s1")
+			f.wantEmail("s1", now, "") // rendered before the start event reached the receiver
+			f.wantSeed(p, "s1")
+			f.apply(c.first)
+			if c.restarted {
+				f.gen++
+				if err := WriteGeneration(f.state, f.gen, f.run); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.proc(11, t0, "s2") // /resume of another conversation
+			check := func(id string) {
+				t.Helper()
+				got := f.wantEmail(id, now, "a@example.com")
+				if got.AnchorTS != c.first.TS || got.Level != c.level || got.Suspect != c.restarted {
+					t.Errorf("%s: Resolve = %+v, want the anchor of %d at level %v, suspect %v", id, got, c.first.TS, c.level, c.restarted)
+				}
+			}
+			check("s2")
+			pf := readPidFile(f.state, p)
+			if pf.Session != "s2" || pf.Src != "" || !pf.Has || pf.Anchor.TS != c.first.TS {
+				t.Errorf("pid file = %+v, want the anchor of s1 settled under s2", pf)
+			}
+			if r, ok := readRef(f.state, "s2"); !ok || r.proc != p || r.ts != c.first.TS {
+				t.Errorf("ref of s2 = %+v (%v), want the process and the anchor time", r, ok)
+			}
+			pidBefore, _ := os.ReadFile(pidPath(f.state, p))
+			refBefore, _ := os.ReadFile(refPath(f.state, "s2"))
+			check("s2")
+			pidAfter, _ := os.ReadFile(pidPath(f.state, p))
+			refAfter, _ := os.ReadFile(refPath(f.state, "s2"))
+			if string(pidBefore) != string(pidAfter) || string(refBefore) != string(refAfter) {
+				t.Errorf("a second render of s2 changed the pid file or the ref")
+			}
+			f.proc(11, t0, "s3") // /clear
+			check("s3")
+		})
+	}
+}
+
+func TestAnInSessionResumeDoesNotCarryAnAnchorOlderThanTheProcess(t *testing.T) {
+	p := proc{31, t0}
+	for _, c := range []struct {
+		name string
+		ts   int64
+		want string
+	}{
+		{"one millisecond before the start slack", t0 - startSlack - 1, ""},
+		{"at the start slack", t0 - startSlack, "a@example.com"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			now := at(t0 + 10_000)
+			f.install(0, now)
+			f.proc(31, t0, "s1")
+			f.wantEmail("s1", now, "")
+			f.apply(startup("s1", "a@example.com", c.ts))
+			f.proc(31, t0, "s2")
+			f.wantEmail("s2", now, c.want)
+			if c.want == "" {
+				f.wantSeed(p, "s2")
+			}
+		})
+	}
+	t.Run("left by an earlier life of the conversation", func(t *testing.T) {
+		f := newFixture(t)
+		now := at(t0 + 10_000)
+		f.install(0, now)
+		f.previousLife("s1", t0-86_400_000, "old@example.com")
+		f.proc(31, t0, "s1") // claude --resume s1
+		f.wantEmail("s1", now, "")
+		f.proc(31, t0, "s2")
+		f.wantEmail("s2", now, "")
+		f.wantSeed(p, "s2")
+	})
+}
+
+func TestAnInSessionResumeDoesNotBorrowTheAnchorOfAnIDThisProcessNeverRendered(t *testing.T) {
+	f := newFixture(t)
+	now := at(t0 + 10_000)
+	f.install(0, now)
+	f.proc(11, t0, "s2") // the first render is already under s2
+	f.proc(12, t0+10, "s9")
+	f.startAnchor("s9", "b@example.com", t0+20) // another session, started at the same time
+	f.wantEmail("s2", now, "")
+	f.wantSeed(proc{11, t0}, "s2")
+	f.wantEmail("s2", now.Add(time.Hour), "")
+	f.wantEmail("s9", now, "b@example.com")
+}
+
+func TestAnInSessionResumeDoesNotCarryTheAnchorOfAnotherProcessOfTheConfigDirectory(t *testing.T) {
+	f := newFixture(t)
+	now := at(t0 + 10_000)
+	f.install(0, now)
+	f.proc(11, t0, "s1")
+	f.wantEmail("s1", now, "")
+	f.proc(12, t0+500, "s7") // another process of the same config directory
+	f.startAnchor("s7", "b@example.com", t0+520)
+	f.proc(11, t0, "s2")
+	f.wantEmail("s2", now, "")
+	f.wantSeed(proc{11, t0}, "s2")
+	f.wantEmail("s7", now, "b@example.com")
+}
+
+func TestAPidFileIsSeededOnlyWhenTheSessionChangesWhileItsAnchorNeverComes(t *testing.T) {
+	f := newFixture(t)
+	now := time.Now()
+	f.install(0, now)
+	p := proc{11, t0}
+	path := pidPath(f.state, p)
+	past := now.Add(-time.Hour)
+	f.proc(11, t0, "s1")
+	f.wantEmail("s1", now, "")
+	f.wantSeed(p, "s1")
+	if err := os.Chtimes(path, past, past); err != nil {
+		t.Fatal(err)
+	}
+	want := modTime(t, path)
+	for i := range 3 {
+		f.wantEmail("s1", now.Add(time.Duration(i)*time.Minute), "")
+	}
+	if got := modTime(t, path); !got.Equal(want) {
+		t.Errorf("a render under the seeded id wrote the pid file again: mtime %v, want %v", got, want)
+	}
+	if ents, _ := os.ReadDir(filepath.Join(f.state, "pids")); len(ents) != 1 {
+		t.Errorf("pids/ holds %d files, want only the pid file", len(ents))
+	}
+	f.proc(11, t0, "s2") // /clear: a new id is a new seed
+	f.wantEmail("s2", now, "")
+	f.wantSeed(p, "s2")
+	if got := modTime(t, path); got.Equal(want) {
+		t.Error("the render under a new id did not seed it")
+	}
+}
+
+func TestNoPidFileIsSeededWhereNoReceiverRan(t *testing.T) {
+	f := newFixture(t) // no otel/sessions
+	f.proc(11, t0, "s1")
+	for _, id := range []string{"s1", "s2"} {
+		f.proc(11, t0, id)
+		if got := f.resolve(id, at(t0+10_000)); got.Installed {
+			t.Fatalf("Resolve = %+v, want not installed", got)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(f.state, "pids")); !os.IsNotExist(err) {
+		t.Errorf("pids/ exists where no receiver ran: %v", err)
+	}
+}
+
 // claude --resume <id> sends its start events under the id it resumes, so the new process's
 // start anchor replaces what the process before it left under that id.
 
