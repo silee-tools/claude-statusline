@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"mime"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,10 +21,26 @@ const maxBody = 1 << 20
 // content.
 const (
 	logBadRequest         = "bad-request"
+	logReadFailed         = "read-failed"
 	logTooLarge           = "body-too-large"
 	logUnreadableEncoding = "unreadable-encoding"
 	logApplyFailed        = "apply-failed"
 )
+
+// The causes within a kind, as otel/losses names them.
+const (
+	causeEOF           = "eof"
+	causeUnexpectedEOF = "unexpected-eof"
+	causeTimeout       = "timeout"
+	causeSyntax        = "syntax"
+	causeTooLarge      = "too-large"
+	causeEncoding      = "encoding"
+	causeApply         = "apply"
+	causeOther         = "other"
+)
+
+// retryAfterSeconds is the retry hint of every 503.
+const retryAfterSeconds = "5"
 
 type applier func(anchor.Event) error
 
@@ -59,8 +77,14 @@ type anyValue struct {
 // A record that could not be stored makes the whole request answer 503, which the
 // exporter retries; re-applying the records that did land changes nothing, because an
 // anchor is replaced only by a later event. Answering 200 would tell Claude Code its
-// /login was received when it was not.
-func newHandler(apply applier, now func() time.Time, logf func(kind string)) http.Handler {
+// /login was received when it was not. A body the connection could not deliver to its end
+// (the sender stalled past the read timeout or lost its connection) answers 503 the same way:
+// nothing is wrong with the request, so the exporter should send it again. A body that arrived
+// whole and is not a request stays a 400.
+//
+// logf is told each failure with its kind, its cause and the Content-Length (-1 when unknown),
+// never request content.
+func newHandler(apply applier, now func() time.Time, logf func(kind, cause string, bytes int64)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path != "/v1/logs":
@@ -76,20 +100,26 @@ func newHandler(apply applier, now func() time.Time, logf func(kind string)) htt
 			return
 		}
 		if enc := r.Header.Get("Content-Encoding"); enc != "" && enc != "identity" {
-			logf(logUnreadableEncoding)
+			logf(logUnreadableEncoding, causeEncoding, r.ContentLength)
 			http.Error(w, "unsupported content encoding", http.StatusUnsupportedMediaType)
 			return
 		}
 		var req logsRequest
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&req); err != nil {
+		probe := &readProbe{ReadCloser: r.Body}
+		if err := json.NewDecoder(http.MaxBytesReader(w, probe, maxBody)).Decode(&req); err != nil {
 			var tooBig *http.MaxBytesError
-			if errors.As(err, &tooBig) {
-				logf(logTooLarge)
+			switch {
+			case errors.As(err, &tooBig):
+				logf(logTooLarge, causeTooLarge, r.ContentLength)
 				http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
-				return
+			case probe.err != nil:
+				logf(logReadFailed, readCause(probe.err), r.ContentLength)
+				w.Header().Set("Retry-After", retryAfterSeconds)
+				http.Error(w, "body unreadable", http.StatusServiceUnavailable)
+			default:
+				logf(logBadRequest, decodeCause(err), r.ContentLength)
+				http.Error(w, "bad request", http.StatusBadRequest)
 			}
-			logf(logBadRequest)
-			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
 		received := now()
@@ -98,20 +128,64 @@ func newHandler(apply applier, now func() time.Time, logf func(kind string)) htt
 			for _, sl := range rl.ScopeLogs {
 				for _, rec := range sl.LogRecords {
 					if err := apply(toEvent(rec, received)); err != nil {
-						logf(logApplyFailed)
+						logf(logApplyFailed, causeApply, r.ContentLength)
 						failed = true
 					}
 				}
 			}
 		}
 		if failed {
-			w.Header().Set("Retry-After", "5")
+			w.Header().Set("Retry-After", retryAfterSeconds)
 			http.Error(w, "state unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte("{}"))
 	})
+}
+
+// readProbe remembers the first error other than the end of the body that reading the
+// connection gave, which tells a body the connection failed to deliver from one that arrived
+// and is wrong.
+type readProbe struct {
+	io.ReadCloser
+	err error
+}
+
+func (p *readProbe) Read(b []byte) (int, error) {
+	n, err := p.ReadCloser.Read(b)
+	if err != nil && err != io.EOF && p.err == nil {
+		p.err = err
+	}
+	return n, err
+}
+
+// readCause names why the connection did not deliver the body: the read deadline passed, or the
+// connection ended before the Content-Length did.
+func readCause(err error) string {
+	var ne net.Error
+	switch {
+	case errors.As(err, &ne) && ne.Timeout():
+		return causeTimeout
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		return causeUnexpectedEOF
+	}
+	return causeOther
+}
+
+// decodeCause names what was wrong with a body that arrived whole.
+func decodeCause(err error) string {
+	var syntax *json.SyntaxError
+	var typed *json.UnmarshalTypeError
+	switch {
+	case errors.Is(err, io.EOF):
+		return causeEOF
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		return causeUnexpectedEOF
+	case errors.As(err, &syntax), errors.As(err, &typed):
+		return causeSyntax
+	}
+	return causeOther
 }
 
 func toEvent(rec logRecord, received time.Time) anchor.Event {

@@ -171,6 +171,13 @@ touch "$HEARTBEAT"
 assert_contains "하트비트가 신선하면 ? 가 없다" " ~b@example.com ⧉ s2" "$(first_line s2)"
 kill -CONT "$RECV_PID"
 
+# --- 유실로 센 요청은 이유만 otel/losses 에 남고 요청 내용은 남지 않는다 ---
+assert_equals "깨진 본문은 400" "400" "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' --data-binary '{"user.email":"leak@example.com", broken' "http://127.0.0.1:$PORT/v1/logs")"
+LOSSES=$(cat "$STATE/otel/losses" 2>/dev/null || true)
+assert_contains "깨진 본문의 유실 이유가 기록됨" " kind=bad-request cause=syntax " "$LOSSES"
+assert_not_contains "유실 기록에 요청의 이메일이 없다" "leak@example.com" "$LOSSES"
+assert_equals "유실 기록은 0600" "600" "$(stat -f '%Lp' "$STATE/otel/losses" 2>/dev/null || stat -c '%a' "$STATE/otel/losses")"
+
 # --- 수신기가 끝나면 잠금이 풀려, 하트비트가 신선해도 곧바로 이메일 뒤에 ? ---
 kill "$RECV_PID"
 set +e; wait "$RECV_PID"; RC=$?; set -e
@@ -182,6 +189,7 @@ assert_contains "멈춘 직후 하트비트가 신선해도 이메일 뒤에 ?" 
 # --- 실행 파일이 교체되면 종료코드 75 로 스스로 끝난다 ---
 cp "$RECV" "$TMPROOT/bin/receiver-live"
 start_receiver "$TMPROOT/bin/receiver-live" "$TMPROOT/recv2.err" || { echo "FATAL: 두 번째 수신기가 뜨지 않았다" >&2; exit 1; }
+assert_equals "재시작은 이전 실행의 유실 기록을 비운다" "no" "$([ -f "$STATE/otel/losses" ] && echo yes || echo no)"
 
 # --- 재시작: 멈춰 있던 동안의 /login 이 유실됐을 수 있어, 이전 세대의 앵커는 하트비트가 신선해도 ? 가 붙는다 ---
 assert_contains "재시작한 수신기가 돌아도 이전 세대 앵커는 의심" " ~b@example.com? ⧉ s2" "$(first_line s2)"

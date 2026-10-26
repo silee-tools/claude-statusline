@@ -8,8 +8,9 @@
 // Anything it could not store makes it answer 503 so the exporter retries, moves to the next
 // generation (otel/generation, a counter) so the anchors it holds are doubted, and stops
 // touching the heartbeat until a write succeeds again. Every start moves to the next
-// generation too, because a /login that arrived while it was down is lost. Once an hour it
-// removes what is past retention.
+// generation too, because a /login that arrived while it was down is lost. A request it
+// refused or could not read to the end moves it on as well, and otel/losses keeps why for the
+// last 20. Once an hour it removes what is past retention.
 //
 // Exit codes: 0 after SIGINT or SIGTERM; 75 when the executable at its own path was
 // replaced, so a supervisor that restarts on failure brings up the new build; 1 when the
@@ -43,6 +44,14 @@ const (
 	exitReplaced = 75
 )
 
+// Read limits of the server. The receiver is loopback-only and a body is at most 1 MiB, so a
+// slow sender costs little, while a receiver that was starved for longer than the limit would
+// cut off a sender that did nothing wrong.
+const (
+	serverReadHeaderTimeout = 30 * time.Second
+	serverReadTimeout       = 60 * time.Second
+)
+
 type config struct {
 	Addr       string
 	StateDir   string
@@ -56,6 +65,9 @@ type config struct {
 	// still in place and before the write: the gap tests hold open to replace the lock files
 	// in it.
 	AfterGuard func(op string)
+	// ReadTimeout replaces serverReadTimeout when it is above 0: tests stall a body for less
+	// than a minute.
+	ReadTimeout time.Duration
 }
 
 func main() {
@@ -125,6 +137,7 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 		say("state unavailable")
 		return exitFailed
 	}
+	anchor.RemoveLosses(cfg.StateDir)
 	// Events sent while no receiver ran are gone, so every anchor stored before this
 	// start is doubted until a later event replaces it: this run's generation is past every
 	// number the state holds, which no setting of the clock changes.
@@ -175,11 +188,13 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 	// Apply reads the stored anchor before replacing it, so concurrent requests take turns.
 	var mu sync.Mutex
 	var degraded atomic.Bool
-	// loss records that events may have been lost: the receiver moves to the next generation.
+	var losses lossRecord // guarded by mu
+	// loss records that events may have been lost: the receiver moves to the next generation
+	// and notes why in otel/losses, a diagnosis whose write failing changes nothing else.
 	// When the number cannot be written the loss is unrecorded, so the receiver counts as
 	// degraded and withholds its heartbeat until recovered writes it. The count in memory
 	// still moves, so an anchor stored from now on is of the later generation.
-	loss := func() {
+	loss := func(kind, cause string, bytes int64) {
 		if !guard("loss") {
 			degraded.Store(true)
 			return
@@ -193,6 +208,7 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 		if anchor.WriteGeneration(cfg.StateDir, gen, run) != nil {
 			degraded.Store(true)
 		}
+		_ = anchor.WriteLosses(cfg.StateDir, losses.add(time.Now(), gen, kind, cause, bytes))
 	}
 	apply := func(ev anchor.Event) error {
 		mu.Lock()
@@ -203,15 +219,15 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 		_, err := anchor.Apply(cfg.StateDir, ev, gen, run)
 		if err != nil {
 			degraded.Store(true)
-			loss()
+			loss(logApplyFailed, causeApply, -1) // the record is all this closure sees of the request
 		}
 		return err
 	}
 	// lost is a loss of events that were dropped without being stored.
-	lost := func() {
+	lost := func(kind, cause string, bytes int64) {
 		mu.Lock()
 		defer mu.Unlock()
-		loss()
+		loss(kind, cause, bytes)
 	}
 	// recovered says state can be written again, and writes the generation the receiver has
 	// counted to. That is the generation of the last loss, not a new one: an anchor stored
@@ -243,20 +259,25 @@ func serve(ctx context.Context, cfg config, stderr io.Writer) int {
 		}
 		anchor.Sweep(cfg.StateDir, now)
 	}
+	readTimeout := serverReadTimeout
+	if cfg.ReadTimeout > 0 {
+		readTimeout = cfg.ReadTimeout
+	}
 	srv := &http.Server{
-		Handler: newHandler(apply, time.Now, func(kind string) {
+		Handler: newHandler(apply, time.Now, func(kind, cause string, bytes int64) {
 			say("request failed: " + kind)
-			// A request refused as oversized, unreadable or compressed is a batch dropped whole,
-			// a /login with it, whatever the sender. A process that can post here could also
-			// write the anchors, so the cost of a false alarm is an extra "?". A request of
-			// another media type is not counted: Claude Code is pinned to JSON, so it is some
-			// other exporter's, and one that kept sending would hold every account in doubt.
-			if kind == logTooLarge || kind == logBadRequest || kind == logUnreadableEncoding {
-				lost()
+			// A request refused as oversized, unreadable or compressed, or whose body never
+			// arrived, is a batch dropped whole, a /login with it, whatever the sender. A process
+			// that can post here could also write the anchors, so the cost of a false alarm is an
+			// extra "?". A request of another media type is not counted: Claude Code is pinned to
+			// JSON, so it is some other exporter's, and one that kept sending would hold every
+			// account in doubt.
+			if kind == logTooLarge || kind == logBadRequest || kind == logUnreadableEncoding || kind == logReadFailed {
+				lost(kind, cause, bytes)
 			}
 		}),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		ReadTimeout:       readTimeout,
 	}
 	failed := make(chan error, 1)
 	go func() { failed <- srv.Serve(ln) }()

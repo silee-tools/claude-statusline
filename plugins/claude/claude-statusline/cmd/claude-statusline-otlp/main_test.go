@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -517,6 +518,41 @@ func postWith(t *testing.T, addr, body string, header map[string]string) int {
 	}
 	resp.Body.Close()
 	return resp.StatusCode
+}
+
+// openPost starts a POST whose Content-Length is claim and writes only the first part of the
+// body, which is how a sender that stalls or loses its connection mid-body looks to the receiver.
+func openPost(t *testing.T, addr string, claim int, first string) *net.TCPConn {
+	t.Helper()
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	fmt.Fprintf(c, "POST /v1/logs HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", addr, claim, first)
+	return c.(*net.TCPConn)
+}
+
+// answer reads the response the receiver gives a connection that openPost started.
+func answer(t *testing.T, c net.Conn) *http.Response {
+	t.Helper()
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+	if err != nil {
+		t.Fatalf("수신기가 답하지 않았다: %v", err)
+	}
+	resp.Body.Close()
+	return resp
+}
+
+// generation is the number in the receiver's generation file.
+func generation(t *testing.T, cfg config) int64 {
+	t.Helper()
+	n, err := strconv.ParseInt(firstLine(readState(t, cfg, "generation")), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 // An exporter with compression on sends a body this receiver does not read, so a /login in
@@ -1133,5 +1169,100 @@ func TestAReaderFindsNoReceiverWhileAStartStillHoldsOnlyTheStartLock(t *testing.
 	}
 	if res.Email != "a@example.com" || !doubt {
 		t.Errorf("시작 중에 이전 실행의 앵커가 의심 없이 보인다: %+v 의심=%v", res, doubt)
+	}
+}
+
+// A body the receiver could not read to its end says nothing about the request: the sender stalled
+// or lost its connection mid-body, or the receiver itself was held up past its limit. The exporter
+// is asked to send it again, and the loss stays counted in case it never comes back.
+func TestARequestWhoseBodyCannotBeReadAnswers503(t *testing.T) {
+	for name, c := range map[string]struct {
+		timeout time.Duration
+		hangUp  bool
+	}{
+		"the sender stalls past the read timeout":  {300 * time.Millisecond, false},
+		"the connection ends before the body does": {0, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := baseConfig(t)
+			cfg.ReadTimeout = c.timeout
+			addr, exit, _, cancel := start(t, cfg)
+			defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+			before := generation(t, cfg)
+			conn := openPost(t, addr, 500, `{"resourceLogs":[`)
+			if c.hangUp {
+				conn.CloseWrite()
+			}
+			resp := answer(t, conn)
+			if resp.StatusCode != http.StatusServiceUnavailable {
+				t.Errorf("상태 %d, want 503", resp.StatusCode)
+			}
+			if got := resp.Header.Get("Retry-After"); got != "5" {
+				t.Errorf("Retry-After = %q, want 5", got)
+			}
+			if got := generation(t, cfg); got != before+1 {
+				t.Errorf("세대 %d, want 유실 1건을 센 %d", got, before+1)
+			}
+		})
+	}
+}
+
+// A body that arrived whole and is still not a JSON request would come again unchanged, so it
+// stays a 400, even when the decoder met the end of the input in the middle of a value.
+func TestAJSONErrorInACompleteBodyStillAnswers400(t *testing.T) {
+	for name, c := range map[string]struct{ body, cause string }{
+		"JSON that ends in the middle": {`{"resourceLogs":[{"scopeLogs":[`, "unexpected-eof"},
+		"no body":                      {"", "eof"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := baseConfig(t)
+			addr, exit, _, cancel := start(t, cfg)
+			defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+			before := generation(t, cfg)
+			resp, err := http.Post("http://"+addr+"/v1/logs", "application/json", strings.NewReader(c.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("상태 %d, want 400", resp.StatusCode)
+			}
+			if got := resp.Header.Get("Retry-After"); got != "" {
+				t.Errorf("다시 보내도 같은 요청인데 Retry-After = %q", got)
+			}
+			if got := generation(t, cfg); got != before+1 {
+				t.Errorf("세대 %d, want 유실 1건을 센 %d", got, before+1)
+			}
+			if lines := readLossRecord(t, cfg); len(lines) != 1 || lines[0]["kind"] != "bad-request" || lines[0]["cause"] != c.cause {
+				t.Errorf("유실 기록 %v, want bad-request/%s", lines, c.cause)
+			}
+		})
+	}
+}
+
+// A receiver held up for a while must not cut off a sender that did nothing wrong: the limits are
+// long, a pause inside them goes through, and one past them is answered so the sender comes again.
+func TestTheServerTimeoutsOutlastAStalledReceiver(t *testing.T) {
+	if serverReadHeaderTimeout != 30*time.Second || serverReadTimeout != 60*time.Second {
+		t.Errorf("서버 읽기 제한 = %v / %v, want 30s / 60s", serverReadHeaderTimeout, serverReadTimeout)
+	}
+	cfg := baseConfig(t)
+	cfg.ReadTimeout = time.Second
+	addr, exit, _, cancel := start(t, cfg)
+	defer func() { cancel(); waitExit(t, exit, 3*time.Second) }()
+	before := generation(t, cfg)
+	body := string(request(record("managed_settings_resolved", 1_700_000_000_000*ms, str("session.id", "s1"), str("user.email", "a@example.com"))))
+
+	slow := openPost(t, addr, len(body), body[:10])
+	time.Sleep(300 * time.Millisecond) // a pause inside the limit
+	slow.Write([]byte(body[10:]))
+	if resp := answer(t, slow); resp.StatusCode != 200 {
+		t.Errorf("제한 안에서 멈췄다 이어진 본문 상태 %d, want 200", resp.StatusCode)
+	}
+	if got := generation(t, cfg); got != before {
+		t.Errorf("제한 안의 일시 정지가 유실로 세어졌다: 세대 %d → %d", before, got)
+	}
+	if resp := answer(t, openPost(t, addr, len(body), body[:10])); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("제한을 넘겨 멈춘 본문 상태 %d, want 503", resp.StatusCode)
 	}
 }
