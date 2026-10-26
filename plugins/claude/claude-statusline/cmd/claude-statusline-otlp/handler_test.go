@@ -78,7 +78,7 @@ var fixedNow = func() time.Time { return time.UnixMilli(1_900_000_000_000) }
 
 func TestHandlerAcceptsOnlyPostJSONToTheLogsPath(t *testing.T) {
 	rec := &recorder{}
-	h := newHandler(rec.apply, fixedNow, func(string) {})
+	h := newHandler(rec.apply, fixedNow, func(string, string, int64) {})
 	body := request(record("managed_settings_resolved", 1_700_000_000_000*ms, str("session.id", "s1"), str("user.email", "a@example.com")))
 	cases := []struct {
 		name, method, path, ctype string
@@ -108,7 +108,7 @@ func TestHandlerAcceptsOnlyPostJSONToTheLogsPath(t *testing.T) {
 }
 
 func TestHandlerAnswersOKWithAnEmptyJSONObject(t *testing.T) {
-	h := newHandler((&recorder{}).apply, fixedNow, func(string) {})
+	h := newHandler((&recorder{}).apply, fixedNow, func(string, string, int64) {})
 	got := serveOnce(h, "POST", "/v1/logs", "application/json", request())
 	if got.Code != 200 || strings.TrimSpace(got.Body.String()) != "{}" {
 		t.Errorf("응답 = %d %q", got.Code, got.Body.String())
@@ -121,7 +121,7 @@ func TestHandlerAnswersOKWithAnEmptyJSONObject(t *testing.T) {
 func TestHandlerRejectsOversizedMalformedAndEncodedBodies(t *testing.T) {
 	rec := &recorder{}
 	var logged []string
-	h := newHandler(rec.apply, fixedNow, func(kind string) { logged = append(logged, kind) })
+	h := newHandler(rec.apply, fixedNow, func(kind, _ string, _ int64) { logged = append(logged, kind) })
 
 	big := request(record("user_prompt", 0, str("session.id", "s1"), str("prompt", strings.Repeat("x", 1<<20+1))))
 	if got := serveOnce(h, "POST", "/v1/logs", "application/json", big); got.Code != http.StatusRequestEntityTooLarge {
@@ -150,7 +150,7 @@ func TestHandlerRejectsOversizedMalformedAndEncodedBodies(t *testing.T) {
 
 func TestHandlerKeepsOnlyTheAllowedKeys(t *testing.T) {
 	rec := &recorder{}
-	h := newHandler(rec.apply, fixedNow, func(string) {})
+	h := newHandler(rec.apply, fixedNow, func(string, string, int64) {})
 	body := request(record("managed_settings_resolved", 1_700_000_000_123*ms,
 		str("session.id", "s1"), str("user.email", "a@example.com"), str("managed_settings.trigger", "startup"),
 		str("managed_settings.source", "SENTINEL_SOURCE"),
@@ -165,7 +165,7 @@ func TestHandlerKeepsOnlyTheAllowedKeys(t *testing.T) {
 
 func TestHandlerNormalisesSuccessAndTimestamp(t *testing.T) {
 	rec := &recorder{}
-	h := newHandler(rec.apply, fixedNow, func(string) {})
+	h := newHandler(rec.apply, fixedNow, func(string, string, int64) {})
 	body := request(
 		record("auth", 1_700_000_001_000*ms, str("session.id", "s1"), str("user.email", "b@example.com"), str("action", "login"), str("success", "true")),
 		record("auth", 0, str("session.id", "s2"), str("action", "login"), boolean("success", true),
@@ -190,7 +190,7 @@ func TestHandlerNormalisesSuccessAndTimestamp(t *testing.T) {
 
 func TestHandlerFallsBackToTheBodyForTheEventName(t *testing.T) {
 	rec := &recorder{}
-	h := newHandler(rec.apply, fixedNow, func(string) {})
+	h := newHandler(rec.apply, fixedNow, func(string, string, int64) {})
 	r := record("plugin_loaded", 1_700_000_000_000*ms, str("session.id", "s1"))
 	r["attributes"] = []attr{str("session.id", "s1")} // no event.name attribute
 	serveOnce(h, "POST", "/v1/logs", "application/json", request(r))
@@ -221,7 +221,7 @@ func realHandler(dir string) http.Handler {
 		defer mu.Unlock()
 		_, err := anchor.Apply(dir, e, 1, "handlerrun")
 		return err
-	}, fixedNow, func(string) {})
+	}, fixedNow, func(string, string, int64) {})
 }
 
 func post(h http.Handler, records ...map[string]any) {
@@ -295,7 +295,7 @@ func TestHandlerAnswers503SoTheExporterRetriesWhenARecordCannotBeStored(t *testi
 		}
 		return nil
 	}
-	h := newHandler(apply, fixedNow, func(kind string) { logged = append(logged, kind) })
+	h := newHandler(apply, fixedNow, func(kind, _ string, _ int64) { logged = append(logged, kind) })
 	body := request(
 		record("auth", 1_700_000_000_000*ms, str("session.id", "s1"), str("user.email", "a@example.com"), str("action", "login"), boolean("success", true)),
 		record("managed_settings_resolved", 1_700_000_001_000*ms, str("session.id", "s2"), str("user.email", "b@example.com")),

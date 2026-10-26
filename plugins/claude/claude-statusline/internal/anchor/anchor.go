@@ -33,6 +33,8 @@
 //	                                 run= (which start of the receiver stored it)
 //	otel/heartbeat                   touched by the receiver; its mtime says it is alive
 //	otel/generation                  the receiver's current generation number, then run=
+//	otel/losses                      why the receiver counted its last 20 losses; diagnosis
+//	                                 only, the statusline never reads it
 //	otel/receiver.lock               the start lock (exclusivity); no content
 //	otel/receiver.live               the live lock, held while the receiver is ready; its
 //	                                 content says which start (run=) and where it listens (addr=)
@@ -441,6 +443,17 @@ func Withdraw(stateDir string) error {
 	}
 	return first
 }
+
+func lossesPath(stateDir string) string { return filepath.Join(stateDir, "otel", "losses") }
+
+// WriteLosses replaces the receiver's record of why it counted its recent losses.
+func WriteLosses(stateDir string, body []byte) error {
+	return statefile.Write(lossesPath(stateDir), body)
+}
+
+// RemoveLosses removes the previous run's loss record. A record that cannot be removed is a
+// diagnosis left behind, not a reason to stop.
+func RemoveLosses(stateDir string) { os.Remove(lossesPath(stateDir)) }
 
 // Writable reports whether an anchor could be stored now: it writes and removes a probe
 // file where the anchors live.

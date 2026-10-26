@@ -423,10 +423,13 @@ same environment (not an `OTEL_*` name: Claude Code does not pass those on to it
 **The receiver.** Run the published `claude-statusline-otlp` under a supervisor that
 restarts it after a non-zero exit. It listens on `127.0.0.1:14318` only (`-addr` must be
 a loopback IP literal), serves `POST /v1/logs` with `Content-Type: application/json` and
-a body of at most 1 MiB, and answers `200 {}`; when it could not store a record it
-answers `503`, which the exporter retries. It stores no event and reads only
-`session.id`, `user.email`, `event.name`, `action`, `success`, `managed_settings.trigger` and
-the event time of each record; stderr says what happened (start, stop, failure kinds), never a value. Exit
+a body of at most 1 MiB, and answers `200 {}`; when it could not store a record, or the
+body did not arrive (the connection ended before the `Content-Length` did, or the 60-second
+read limit for the whole request passed first), it answers `503` with `Retry-After: 5`,
+which the exporter retries. The limit for reading the headers is 30 seconds. It stores no
+event and reads only `session.id`, `user.email`, `event.name`, `action`, `success`,
+`managed_settings.trigger` and the event time of each record; stderr says what happened
+(start, stop, failure kinds), never a value. Exit
 codes: 0 after SIGINT or SIGTERM; 75 when the file at its own path was replaced (it
 checks every 30 seconds), so the supervisor starts the new build; 1 when the address is
 not loopback, the port cannot be bound, the state directory cannot be prepared or read,
@@ -470,13 +473,16 @@ withholds the heartbeat until a probe write succeeds. Every anchor carries the g
 it was stored under (`gen=`), and the statusline puts `?` behind an anchor of an earlier
 generation than the file names. The generation the recovery writes is the one of the last
 loss, so an anchor stored by the exporter's retry in between is not doubted. A request
-refused as oversized (413), unreadable (400) or compressed (415 for its `Content-Encoding`)
-is a batch dropped whole, a `/login` with it, so each moves to the next generation too,
-whoever sent it: a process that can post to the receiver could also write the anchors, so a
-false alarm costs an extra `?`. A request of another media type (415, for example
-protobuf) is not counted: Claude Code is set to JSON, so it is another exporter's, and one
+refused as oversized (413), unreadable (400) or compressed (415 for its `Content-Encoding`),
+or whose body did not arrive (503), is a batch dropped whole, a `/login` with it, so each
+moves to the next generation too, whoever sent it: a process that can post to the receiver
+could also write the anchors, so a false alarm costs an extra `?`. A request of another
+media type (415, for example protobuf) is not counted: Claude Code is set to JSON, so it is another exporter's, and one
 that kept sending would hold every account in doubt. A generation that cannot be written
 counts as a loss that is not recorded yet, so the heartbeat stays withheld until it is.
+Why the generation rose is in `otel/losses` (see Files): one line for each of the last 20
+losses, with the kind of failure and its cause, never what the request carried. A start
+moves the generation without a line there.
 A start takes the start lock after it binds the port and before it touches any state: a
 receiver that finds either lock held (one on another port, or one whose start lock file was
 removed) exits 1 and leaves the running one's files alone. A receiver on another port that holds
@@ -510,6 +516,7 @@ kept, is the supervisor's setting.
 | `.../otel/receiver.lock`, `.../otel/receiver.live` | receiver | the start lock (empty) and the live lock, `flock`s it holds while it runs; the live lock's file holds `run=` and `addr=` | two files |
 | `.../otel/heartbeat` | receiver | its mtime | one file |
 | `.../otel/generation` | receiver | its current generation number (one more than before at each start and each loss), then `run=` | one file |
+| `.../otel/losses` | receiver | one line for each of the last 20 losses: time (`ts`, unix ms), the generation it reached, `kind`, `cause` and the `Content-Length` (-1 when unknown), never request content (0600); the statusline does not read it | one file of about 2 KB; the receiver replaces the whole file at each loss and removes it at start; no rotation |
 | `.../pids/<pid>-<startedAt>.env`, `.../pids/session-<id>.ref` | statusline | the anchor a process carries (until it has one, only the session id it last rendered), which pid file a session uses | 30 days, 2,000 files |
 | `.../fingerprints/<session_id>.env` | statusline | the baseline of the watched rate-limit window | 30 days, 2,000 files |
 | `${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/rate-limits/<session_id>.env` | statusline | the windows the session last saw, and the boundary they were seen under | 2 days after the last write, 2,000 files |
