@@ -36,7 +36,7 @@
 //	otel/receiver.lock               the start lock (exclusivity); no content
 //	otel/receiver.live               the live lock, held while the receiver is ready; its
 //	                                 content says which start (run=) and where it listens (addr=)
-//	pids/<pid>-<startedAt>.env       the anchor a process carries across /clear
+//	pids/<pid>-<startedAt>.env       the anchor a process carries across /clear and /resume
 //	pids/session-<session.id>.ref    which pid file a session belongs to
 //
 // Every file is kept 30 days after it was stored or last written, and each directory at

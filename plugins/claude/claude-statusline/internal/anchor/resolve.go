@@ -197,9 +197,10 @@ func findProc(procs []procInfo, id string) (proc, bool) {
 }
 
 // What the statusline keeps about a process, in pids/<pid>-<startedAt>.env: the session
-// id that last rendered and the anchor the process carries. Src is the session the anchor
-// came from while the first render under a new id has not yet checked it: once that
-// render has, the anchor is the process's and nothing later under the old id reaches it.
+// id that last rendered and, once there is one, the anchor the process carries. Src is the
+// session the anchor came from while the first render under a new id has not yet checked
+// it: once that render has, the anchor is the process's and nothing later under the old id
+// reaches it.
 type pidFile struct {
 	Session string
 	Src     string
@@ -326,8 +327,8 @@ func locate(in Input) (p proc, r ref, hasRef, ok bool) {
 	return p, ref{}, false, ok
 }
 
-// sessionAnchor finds the anchor of the session: its own, or, after /clear gave the
-// process a new session id, the one the process carried.
+// sessionAnchor finds the anchor of the session: its own, or, after /clear or /resume gave
+// the process a new session id, the one the process carried.
 //
 // "Its own" means the anchor of this process. A resumed session reuses the id of the
 // conversation it resumes, whose earlier process may have left an anchor under that id;
@@ -346,6 +347,13 @@ func locate(in Input) (p proc, r ref, hasRef, ok bool) {
 // time; a re-stamp by the receiver does not make it another), the process keeps it for
 // good, and if it has changed, whose event changed it cannot be told, so the process has
 // no anchor until it logs in.
+//
+// A /resume inside the process sends no start event under the resumed id, and the first
+// render under the process's own id comes before its start anchor does. The pid file
+// therefore keeps the id of the last render even without an anchor, written only when that
+// id changes, and the first render under another id takes the anchor of the id the file
+// names if it began after the process did (the test a direct anchor passes), settled as
+// after /clear. An id the process never rendered lends nothing.
 //
 // known says the running process was found; without it the session's own anchor is all
 // there is, and nothing shows that it was made by this process.
@@ -372,6 +380,15 @@ func sessionAnchor(in Input) (a Anchor, ok, known bool) {
 	}
 	pf := readPidFile(in.StateDir, p)
 	if !pf.Has || pf.Anchor.expired(in.Now) {
+		if pf.Session == id {
+			return Anchor{}, false, true
+		}
+		if x, found := readFresh(in.StateDir, pf.Session, in.Now); found && x.TS >= p.started-startSlack {
+			writePidFile(in.StateDir, in.Now, p, pidFile{Session: id, Anchor: x, Has: true})
+			writeRef(in.StateDir, in.Now, id, p, x.TS)
+			return x, true, true
+		}
+		writePidFile(in.StateDir, in.Now, p, pidFile{Session: id})
 		return Anchor{}, false, true
 	}
 	a = pf.Anchor
