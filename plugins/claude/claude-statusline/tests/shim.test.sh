@@ -10,7 +10,6 @@ ok()  { pass=$((pass + 1)); printf 'PASS %s\n' "$1"; }
 bad() { fail=$((fail + 1)); printf 'FAIL %s\n     got: %s\n' "$1" "$2"; }
 assert_equals()   { if [ "$3" = "$2" ]; then ok "$1"; else bad "$1 (expected [$2])" "$3"; fi; }
 assert_contains() { case "$3" in *"$2"*) ok "$1";; *) bad "$1 (expected to contain [$2])" "$3";; esac; }
-assert_not_contains() { case "$3" in *"$2"*) bad "$1 (expected not to contain [$2])" "$3";; *) ok "$1";; esac; }
 
 TMPROOT=$(mktemp -d)
 # bash 3.2 는 EXIT 트랩 진입에서 $? 를 0 으로 만든다. completed 플래그가 없으면 set -eu 중단이
@@ -437,6 +436,10 @@ if command -v go >/dev/null 2>&1; then
   # --- T9: 빌드한 바이너리를 shim 이 실제로 실행해 렌더한다 ---
   OUT=$(printf '%s' "$JSON" | iso "$BC" env CLAUDE_STATUSLINE_WIDTH=81 sh "$SRC/scripts/statusline.sh")
   assert_contains "T9 shim 이 실제 바이너리로 렌더" "v9.9.9" "$OUT"
+  printf '%s' '{"session_id":"placeholder-session","workspace":{"current_dir":"/tmp"},"version":"9.9.9"}' \
+    | iso "$BC" sh "$SRC/scripts/statusline.sh" >/dev/null
+  assert_equals "T9 렌더는 세션 스냅샷을 남기지 않음" "no" \
+    "$([ -e "$TMPROOT/state/claude-statusline/agent-status" ] && echo yes || echo no)"
 
 else
   printf 'SKIP T6~T9 (go 미설치)\n'
@@ -460,9 +463,11 @@ assert_equals "T10 go 부재면 포인터를 만들지 않음" "no" \
 assert_equals "T10 go 부재면 수신기도 게시하지 않음" "no" \
   "$([ -e "$NOGO/data/claude-statusline/bin/claude-statusline-otlp" ] && echo yes || echo no)"
 
-# --- T11: SessionStart 가 handler 에 등록돼 있다 ---
+# --- T11: handler 에 등록된 event 는 SessionStart 하나다 ---
 HOOKS=$(awk -f "$SRC/scripts/json.awk" "$SRC/hooks/hooks.json")
 TAB=$(printf '\t')
+assert_equals "T11 등록된 event 는 SessionStart 뿐" "SessionStart" \
+  "$(printf '%s\n' "$HOOKS" | sed -n 's/^\.\.hooks\.\([A-Za-z]*\)\..*/\1/p' | sort -u | tr '\n' ' ' | sed 's/ $//')"
 assert_contains "T11 SessionStart hook 등록" \
   "..hooks.SessionStart.hooks.command${TAB}sh \"\${CLAUDE_PLUGIN_ROOT}/scripts/hook-handler.sh\"" "$HOOKS"
 
