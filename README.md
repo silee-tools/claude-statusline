@@ -38,7 +38,7 @@ Rows with no data are omitted in either layout.
 
 ## Screenshots
 
-Terminal captures of `scripts/statusline.sh` run with a sample status line payload
+Terminal captures of `plugins/claude/claude-statusline/scripts/statusline.sh` run with a sample status line payload
 in a throwaway home directory. The account, gh, and aws indicators are absent
 because nothing there supplies them.
 
@@ -286,7 +286,7 @@ some-work-login=work,27
 
 The login and its status are read from
 `${XDG_CACHE_HOME:-$HOME/.cache}/gh-prompt/<repository root>` (written by your
-shell prompt), where the file name is the physical repository root with each `/`
+shell prompt; this plugin does not ship one), where the file name is the physical repository root with each `/`
 replaced by `%`; outside a repository it is `non-git`, which the prompt fills with
 the active account of `gh auth status`. The cache is read only for
 those two cases, so a record left for a Forgejo or other repository is never shown.
