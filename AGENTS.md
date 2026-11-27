@@ -39,7 +39,7 @@ version into
 and writes that absolute path to `binary-path-<key>` beside it, which is the one
 line the shim reads. The key is the plugin root's directory name — the version in
 an installed copy, `claude-statusline` when the scripts run from this repository —
-and the shim derives it from its own `$0` while the two hook scripts derive it from
+and the shim derives it from its own `$0` while the build script derives it from
 `CLAUDE_PLUGIN_ROOT`. Splitting the pointer is what keeps two installed versions
 apart: the shim is pinned in `settings.json` to one version's path while every
 installed version runs its own `SessionStart`, so a single pointer had each version's

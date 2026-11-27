@@ -1237,14 +1237,6 @@ fifo_site() {
 fifo_out() { cat "$FIFO_OUT"; }
 is_regular() { [ -f "$1" ] && [ ! -p "$1" ] && echo yes || echo no; }
 FS_PAYLOAD=$(json_without)
-FS_SID=fifo-site-s1
-FS_SUM=$(printf '%s' "$FS_SID" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
-FS_SNAP="$STATE_HOME/claude-statusline/agent-status/sessions/claude/$FS_SUM.json"
-fifo_site "T65 세션 스냅숏 자리가 FIFO 여도" "$FS_SNAP" run "$(with_session "$FS_SID" "$FS_PAYLOAD")" 120
-assert_contains "T65 스냅숏 자리가 FIFO 여도 줄이 나옴" "v2.1.11" "$(first_line "$(fifo_out)")"
-assert_equals   "T65 스냅숏 자리의 FIFO 는 일반 파일로 바뀜" "yes" "$(is_regular "$FS_SNAP")"
-rm -f "$FS_SNAP"
-
 if [ "$HAVE_GIT" -eq 1 ]; then
   FS_BRANCH_CACHE="$TMPROOT/cache/claude-statusline/git-branch.env"
   rm -f "$FS_BRANCH_CACHE"

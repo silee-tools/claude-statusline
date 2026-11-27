@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/silee-tools/claude-statusline/internal/agentstatus"
 	"github.com/silee-tools/claude-statusline/internal/anchor"
 	"github.com/silee-tools/claude-statusline/internal/gitinfo"
 	"github.com/silee-tools/claude-statusline/internal/input"
@@ -34,12 +33,6 @@ func main() {
 	// between the bar and the percentage beside it.
 	now := time.Now()
 	home, _ := os.UserHomeDir()
-	stateDir := agentStateDir(home)
-	if len(os.Args) == 2 && os.Args[1] == "hook" {
-		_ = agentstatus.RecordHook(stateDir, os.Stdin, now.Unix())
-		return
-	}
-
 	status, err := input.Parse(os.Stdin)
 	if err != nil {
 		fmt.Print(theme.Green + now.Format("15:04") + theme.Reset + " " +
@@ -66,25 +59,6 @@ func main() {
 		Addr: os.Getenv("CLAUDE_STATUSLINE_OTLP_ADDR"),
 	}
 	limits := windows(cacheDir, session, status)
-	var usage []agentstatus.Window
-	if limits.Five.Complete() {
-		usage = append(usage, agentstatus.Window{
-			ID: "five-hour", Label: "5 hour", UsedPercent: limits.Five.Pct,
-			ResetsAt: limits.Five.ResetsAt, WindowMinutes: 300,
-		})
-	}
-	if limits.Week.Complete() {
-		usage = append(usage, agentstatus.Window{
-			ID: "seven-day", Label: "7 day", UsedPercent: limits.Week.Pct,
-			ResetsAt: limits.Week.ResetsAt, WindowMinutes: 10080,
-		})
-	}
-	_ = agentstatus.RecordRender(stateDir, agentstatus.Metadata{
-		SessionID: status.SessionID,
-		Workspace: status.CWD,
-		Model:     status.ModelDisplay,
-	}, usage, now.Unix())
-
 	view := render.View{
 		Clock:   now.Format("15:04"),
 		Model:   theme.FormatModel(status.ModelDisplay),
@@ -171,13 +145,6 @@ func xdg(name, fallback string) string {
 // claudeStateDir is where the receiver's anchors and this program's per-session state live.
 func claudeStateDir(home string) string {
 	return filepath.Join(xdg("XDG_STATE_HOME", filepath.Join(home, ".local", "state")), "claude-statusline")
-}
-
-func agentStateDir(home string) string {
-	if root := os.Getenv("AGENT_STATUS_STATE_DIR"); root != "" {
-		return root
-	}
-	return filepath.Join(claudeStateDir(home), "agent-status")
 }
 
 // fingerprintWindows are the rate-limit windows whose change inside the window casts

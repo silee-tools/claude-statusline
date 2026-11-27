@@ -11,8 +11,8 @@ set -eu
 # 바이너리를 빌드하는 SessionStart 훅은 설치된 버전마다 따로 돈다. 포인터가 하나뿐이면 각
 # 버전의 훅이 그 한 줄을 서로 덮어써, 고정된 shim 이 다른 버전의 바이너리를 실행한다.
 # 키는 플러그인 루트 디렉터리 이름이다 — 설치본이면 버전, 저장소에서 직접 쓰면
-# claude-statusline 이 된다. build-binary.sh 와 hook-handler.sh 는 같은 키를
-# CLAUDE_PLUGIN_ROOT 에서 얻으므로 세 곳이 같은 디렉터리를 가리킨다.
+# claude-statusline 이 된다. build-binary.sh 는 같은 키를 CLAUDE_PLUGIN_ROOT 에서
+# 얻으므로 두 곳이 같은 디렉터리를 가리킨다.
 ROOT=${0%/scripts/*}
 PTR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/binary-path-${ROOT##*/}"
 BIN=""

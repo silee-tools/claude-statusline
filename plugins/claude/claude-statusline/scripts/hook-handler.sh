@@ -13,19 +13,6 @@ command -v awk >/dev/null 2>&1 || exit 0
 event=$(printf '%s' "$input" | awk -f "$JSON_CMD" \
   | awk -F"$TAB" '$1=="..hook_event_name"{print $2; exit}')
 
-record_activity() {
-  # 포인터 키의 정본은 statusline.sh 의 주석이다. 여기서도 같은 디렉터리 이름을 쓴다.
-  ptr="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/binary-path-${PLUGIN_ROOT##*/}"
-  binary=""
-  if [ -f "$ptr" ]; then
-    IFS= read -r binary < "$ptr" || binary=""
-  fi
-  if [ -n "$binary" ] && [ -x "$binary" ]; then
-    printf '%s' "$input" | "$binary" hook >/dev/null 2>&1 || :
-  fi
-}
-
-record_activity
 [ "$event" != "SessionStart" ] && exit 0
 
 run_background() {

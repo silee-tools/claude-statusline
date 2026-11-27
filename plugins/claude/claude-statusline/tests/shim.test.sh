@@ -104,14 +104,14 @@ assert_contains "T12 자기 키의 포인터로 렌더" "rendered-by-binary" "$O
 rm -f "$CACHE/claude-statusline/binary-path-5.9.9" "$CACHE/claude-statusline/binary-path"
 
 # 설정이 필요 없는 이벤트는 경로 helper를 실행하지 않는다.
-HOOK_ROOT="$TMPROOT/activity-only"
+HOOK_ROOT="$TMPROOT/other-event"
 mkdir -p "$HOOK_ROOT/scripts"
 cp "$SRC/scripts/hook-handler.sh" "$SRC/scripts/json.awk" "$HOOK_ROOT/scripts/"
 printf 'exit 99\n' > "$HOOK_ROOT/scripts/config-paths.sh"
 if printf '{"hook_event_name":"UserPromptSubmit"}' | iso "$CACHE" env CLAUDE_PLUGIN_ROOT="$HOOK_ROOT" sh "$HOOK_ROOT/scripts/hook-handler.sh"; then
-  ok "T15 activity 이벤트는 설정 helper를 실행하지 않음"
+  ok "T15 SessionStart 가 아닌 이벤트는 설정 helper를 실행하지 않음"
 else
-  bad "T15 activity 이벤트는 설정 helper를 실행하지 않음" "$?"
+  bad "T15 SessionStart 가 아닌 이벤트는 설정 helper를 실행하지 않음" "$?"
 fi
 
 # --- 이하 build-binary.sh ---
@@ -438,41 +438,6 @@ if command -v go >/dev/null 2>&1; then
   OUT=$(printf '%s' "$JSON" | iso "$BC" env CLAUDE_STATUSLINE_WIDTH=81 sh "$SRC/scripts/statusline.sh")
   assert_contains "T9 shim 이 실제 바이너리로 렌더" "v9.9.9" "$OUT"
 
-  # --- T9a: hook handler가 준비된 같은 바이너리로 activity를 기록한다 ---
-  STATE="$TMPROOT/agent-status"
-  SECRET="SENTINEL_PROMPT_AND_TOOL_ARGUMENT"
-  HOOK_JSON="{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"placeholder-session\",\"cwd\":\"/tmp/example-project\",\"prompt\":\"$SECRET\",\"response\":\"$SECRET\",\"tool_input\":{\"value\":\"$SECRET\"}}"
-  OUT=$(printf '%s' "$HOOK_JSON" | iso "$BC" env CLAUDE_PLUGIN_ROOT="$SRC" \
-    AGENT_STATUS_STATE_DIR="$STATE" sh "$SRC/scripts/hook-handler.sh"); RC=$?
-  assert_equals "T9a hook handler 종료코드 0" "0" "$RC"
-  assert_equals "T9a hook handler는 화면 출력을 만들지 않음" "" "$OUT"
-  set -- "$STATE/sessions/claude/"*.json
-  SNAPSHOT="$1"
-  assert_equals "T9a session snapshot 생성" "yes" "$([ -f "$SNAPSHOT" ] && echo yes || echo no)"
-  SNAPSHOT_BODY=$(cat "$SNAPSHOT")
-  assert_contains "T9a UserPromptSubmit은 working" '"activity":"working"' "$SNAPSHOT_BODY"
-  assert_not_contains "T9a prompt 원문은 기록하지 않음" "$SECRET" "$SNAPSHOT_BODY"
-
-# --- T9b: render는 activity를 보존하며 resolved usage를 같은 snapshot에 기록한다 ---
-  RENDER_JSON='{"session_id":"placeholder-session","workspace":{"current_dir":"/tmp/render-project"},"model":{"display_name":"example-model"},"context_window":{"current_usage":{"input_tokens":1},"context_window_size":200000},"version":"2.1.11","rate_limits":{"five_hour":{"used_percentage":24,"resets_at":1890000000},"seven_day":{"used_percentage":41,"resets_at":1890600000}}}'
-  RENDER_JSON="${RENDER_JSON%?},\"prompt\":\"$SECRET\",\"response\":\"$SECRET\",\"tool_arguments\":{\"value\":\"$SECRET\"}}"
-  OUT=$(printf '%s' "$RENDER_JSON" | iso "$BC" env AGENT_STATUS_STATE_DIR="$STATE" \
-    CLAUDE_STATUSLINE_WIDTH=81 sh "$SRC/scripts/statusline.sh"); RC=$?
-  assert_equals "T9b render 종료코드 0" "0" "$RC"
-  assert_contains "T9b 기존 statusline 출력 유지" "v2.1.11" "$OUT"
-  SNAPSHOT_BODY=$(cat "$SNAPSHOT")
-  assert_contains "T9b render가 activity 보존" '"activity":"working"' "$SNAPSHOT_BODY"
-  assert_contains "T9b five-hour usage 기록" '"id":"five-hour","label":"5 hour","usedPercent":24' "$SNAPSHOT_BODY"
-  assert_contains "T9b seven-day usage 기록" '"id":"seven-day","label":"7 day","usedPercent":41' "$SNAPSHOT_BODY"
-  assert_not_contains "T9b render 원문은 기록하지 않음" "$SECRET" "$SNAPSHOT_BODY"
-
-  # --- T9c: 상태 저장 실패가 render를 실패시키거나 출력을 바꾸지 않는다 ---
-  BAD_STATE="$TMPROOT/not-a-directory"
-  : > "$BAD_STATE"
-  OUT=$(printf '%s' "$RENDER_JSON" | iso "$BC" env AGENT_STATUS_STATE_DIR="$BAD_STATE" \
-    CLAUDE_STATUSLINE_WIDTH=81 sh "$SRC/scripts/statusline.sh"); RC=$?
-  assert_equals "T9c 상태 저장 실패에도 render 종료코드 0" "0" "$RC"
-  assert_contains "T9c 상태 저장 실패에도 화면 출력 유지" "v2.1.11" "$OUT"
 else
   printf 'SKIP T6~T9 (go 미설치)\n'
 fi
@@ -495,13 +460,11 @@ assert_equals "T10 go 부재면 포인터를 만들지 않음" "no" \
 assert_equals "T10 go 부재면 수신기도 게시하지 않음" "no" \
   "$([ -e "$NOGO/data/claude-statusline/bin/claude-statusline-otlp" ] && echo yes || echo no)"
 
-# --- T11: 지원하는 모든 Claude event가 같은 handler에 등록돼 있다 ---
+# --- T11: SessionStart 가 handler 에 등록돼 있다 ---
 HOOKS=$(awk -f "$SRC/scripts/json.awk" "$SRC/hooks/hooks.json")
 TAB=$(printf '\t')
-for event in SessionStart UserPromptSubmit PermissionRequest Notification Stop SessionEnd; do
-  assert_contains "T11 $event hook 등록" \
-    "..hooks.$event.hooks.command${TAB}sh \"\${CLAUDE_PLUGIN_ROOT}/scripts/hook-handler.sh\"" "$HOOKS"
-done
+assert_contains "T11 SessionStart hook 등록" \
+  "..hooks.SessionStart.hooks.command${TAB}sh \"\${CLAUDE_PLUGIN_ROOT}/scripts/hook-handler.sh\"" "$HOOKS"
 
 # --- T13: 공백이 있는 설치 경로도 statusLine.command 로 원자적으로 설정한다 ---
 SETUP_ROOT="$TMPROOT/plugin \" root\\slash"
