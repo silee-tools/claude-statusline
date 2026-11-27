@@ -1,7 +1,8 @@
 # claude-statusline
 
 > This is a standalone edition, separate from the `podo statusline` command in Podo.
-> It is a stable, feature-frozen release: no new features are added.
+> Version 1.0.0 is the stable release and it is feature-frozen: no new features are added.
+> The 0.y.z versions in the history are the development releases that led to it.
 
 This repository publishes the `claude-statusline` Claude Code plugin through the
 marketplace `silee-tools`.
