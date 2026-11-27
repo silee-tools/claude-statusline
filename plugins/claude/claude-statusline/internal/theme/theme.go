@@ -8,7 +8,6 @@ import (
 
 // ANSI sequences, byte for byte the ones scripts/statusline.sh declared.
 const (
-	Esc      = "\033"
 	Dim      = "\033[2m"
 	Green    = "\033[32m"
 	Yellow   = "\033[33m"

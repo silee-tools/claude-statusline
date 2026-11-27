@@ -43,7 +43,7 @@ iso() {
   _cache="$1"; shift
   env HOME="$TMPROOT" XDG_CACHE_HOME="$_cache" XDG_DATA_HOME="$TMPROOT/data" \
       XDG_STATE_HOME="$TMPROOT/state" XDG_CONFIG_HOME="$TMPROOT" CLAUDE_CONFIG_DIR="$TMPROOT" \
-      AWS_LOGIN_CACHE_DIR="$TMPROOT/no-aws-cache" "$@"
+      "$@"
 }
 run_shim() { printf '%s' "$JSON" | iso "$CACHE" sh "$SRC/scripts/statusline.sh"; }
 

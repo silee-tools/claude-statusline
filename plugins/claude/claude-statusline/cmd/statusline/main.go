@@ -42,13 +42,7 @@ func main() {
 	}
 
 	cacheDir := filepath.Join(xdg("XDG_CACHE_HOME", filepath.Join(home, ".cache")), "claude-statusline")
-	ghCacheDir := filepath.Join(xdg("XDG_CACHE_HOME", filepath.Join(home, ".cache")), "gh-prompt")
-	xdgConfigDir := xdg("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	configDir := resolveConfigDir(home)
-	loginCacheDir := os.Getenv("AWS_LOGIN_CACHE_DIR")
-	if loginCacheDir == "" {
-		loginCacheDir = filepath.Join(home, ".aws", "login", "cache")
-	}
 
 	session := anchor.Input{
 		StateDir: claudeStateDir(home), ConfigDir: configDir, SessionID: status.SessionID,
@@ -72,45 +66,16 @@ func main() {
 	if b := gitinfo.Branch(status.CWD, cacheDir); b != "" {
 		view.Branch = shorten.Branch(b)
 	}
-	// Without a working directory, or where GIT_DIR places the repository, the location
-	// is unknown, so neither the repository's account nor the outside-a-repository one
-	// applies.
-	var gh string
-	if status.CWD != "" && !gitinfo.Overridden() {
-		repoRoot, _ := gitinfo.Root(status.CWD)
-		gh = segments.GitHubAccount(ghCacheDir, xdgConfigDir, repoRoot, gitinfo.Origin(repoRoot), now.Unix())
-	}
-	aws, awsHealthy := segments.AWS(loginCacheDir, filepath.Join(cacheDir, "aws-check"), now.Unix(), segments.SpawnAWSCheck)
-
 	cols, ok := width.Terminal(cacheDir)
 	view.Width = cols
 	if ok && cols <= compactAtOrBelow {
-		view.Status = compactStatus(gh, aws, awsHealthy)
 		fmt.Print(render.Compact(view, now.Unix()))
 		return
 	}
 	// The path and the account are read only for the full layout.
 	view.Path = shorten.Path(status.CWD, home)
 	view.Account = accountSlot(session, status)
-	for _, s := range []string{gh, aws} {
-		if s != "" {
-			view.Meta = append(view.Meta, s)
-		}
-	}
 	fmt.Print(render.Full(view, now.Unix()))
-}
-
-// compactStatus picks the first-row indicators of the compact layout: gh always, aws
-// only when it is not healthy. Unknown states count as not healthy.
-func compactStatus(gh, aws string, awsHealthy bool) []string {
-	var out []string
-	if gh != "" {
-		out = append(out, gh)
-	}
-	if aws != "" && !awsHealthy {
-		out = append(out, aws)
-	}
-	return out
 }
 
 // windows is what the gauges draw: the payload's windows, with the ones it lacks supplied

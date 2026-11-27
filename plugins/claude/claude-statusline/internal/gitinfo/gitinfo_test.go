@@ -5,9 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
-	"time"
 )
 
 // newRepo 는 알려진 브랜치를 가진 저장소를 임시 디렉터리에 만든다.
@@ -279,115 +277,5 @@ func gitIn(t *testing.T, dir string, args ...string) {
 	cmd.Env = append(cmd.Env, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Skipf("git %v: %v (%s)", args, err, out)
-	}
-}
-
-// 렌더는 세션이 있는 디렉터리에서 돈다. .git 이 FIFO 이거나 /dev/zero 를 가리켜도 Origin 은
-// 멈추거나 메모리를 쓰지 않고 빈 문자열을 돌려줘야 한다.
-func TestOriginIgnoresNonRegularGitEntries(t *testing.T) {
-	fifo, zero, fifoConfig := t.TempDir(), t.TempDir(), t.TempDir()
-	if err := syscall.Mkfifo(filepath.Join(fifo, ".git"), 0o600); err != nil {
-		t.Skipf("FIFO 를 만들 수 없다: %v", err)
-	}
-	if err := os.Symlink("/dev/zero", filepath.Join(zero, ".git")); err != nil {
-		t.Skipf("심볼릭 링크를 만들 수 없다: %v", err)
-	}
-	if err := os.Mkdir(filepath.Join(fifoConfig, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := syscall.Mkfifo(filepath.Join(fifoConfig, ".git", "config"), 0o600); err != nil {
-		t.Skipf("FIFO 를 만들 수 없다: %v", err)
-	}
-	for name, root := range map[string]string{".git 이 FIFO": fifo, ".git 이 /dev/zero 링크": zero, ".git/config 가 FIFO": fifoConfig} {
-		done := make(chan string, 1)
-		go func() { done <- Origin(root) }()
-		select {
-		case got := <-done:
-			if got != "" {
-				t.Errorf("%s: Origin = %q, want 빈 문자열", name, got)
-			}
-		case <-time.After(3 * time.Second):
-			t.Fatalf("%s: Origin 이 멈췄다", name)
-		}
-	}
-}
-
-func TestOriginReadsTheOriginRemoteGitRecorded(t *testing.T) {
-	dir := newRepo(t, "main")
-	if got := Origin(dir); got != "" {
-		t.Errorf("remote 가 없으면 빈 문자열: %q", got)
-	}
-	gitIn(t, dir, "remote", "add", "upstream", "git@github.com:up/stream.git")
-	if got := Origin(dir); got != "" {
-		t.Errorf("origin 이 없고 다른 remote 만 있으면 빈 문자열: %q", got)
-	}
-	gitIn(t, dir, "remote", "add", "origin", "ssh://git@forge-alias:2222/o/r.git")
-	if got := Origin(dir); got != "ssh://git@forge-alias:2222/o/r.git" {
-		t.Errorf("Origin = %q", got)
-	}
-}
-
-func TestOriginWorksInALinkedWorktree(t *testing.T) {
-	// 연결된 worktree 의 설정은 .git 파일이 가리키는 gitdir 이 아니라 commondir 쪽에 있다.
-	dir := newRepo(t, "main")
-	gitIn(t, dir, "remote", "add", "origin", "git@github.com:o/r.git")
-	wt := filepath.Join(t.TempDir(), "feat")
-	gitIn(t, dir, "worktree", "add", "-q", wt, "-b", "feat")
-	if fi, err := os.Stat(filepath.Join(wt, ".git")); err != nil || fi.IsDir() {
-		t.Skip("worktree 의 .git 이 파일이 아니다")
-	}
-	if got := Origin(wt); got != "git@github.com:o/r.git" {
-		t.Errorf("worktree 에서 Origin = %q", got)
-	}
-}
-
-func TestOriginParsesTheConfigTheWayGitDoes(t *testing.T) {
-	cases := []struct{ name, config, want string }{
-		{"공백과 대소문자", "[Remote \"origin\"]\n\tURL =   git@github.com:o/r.git  \n", "git@github.com:o/r.git"},
-		{"등호 주변 공백 없음", "[remote \"origin\"]\nurl=https://x.example/o/r.git\n", "https://x.example/o/r.git"},
-		{"다른 섹션 뒤", "[core]\n\tbare = false\n[remote \"upstream\"]\n\turl = u\n[remote \"origin\"]\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n\turl = o\n", "o"},
-		{"url 이 둘이면 첫 값", "[remote \"origin\"]\n\turl = first\n\turl = second\n", "first"},
-		{"pushurl 은 url 이 아니다", "[remote \"origin\"]\n\tpushurl = p\n\turl = u\n", "u"},
-		{"다른 섹션의 url", "[remote \"upstream\"]\n\turl = u\n[submodule \"origin\"]\n\turl = s\n", ""},
-		{"서브섹션 이름은 대소문자를 구분", "[remote \"Origin\"]\n\turl = u\n", ""},
-		{"origin 구간 밖의 url", "[remote \"origin\"]\n\tfetch = f\n[branch \"main\"]\n\turl = nope\n", ""},
-	}
-	for _, c := range cases {
-		dir := t.TempDir()
-		if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, ".git", "config"), []byte(c.config), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if got := Origin(dir); got != c.want {
-			t.Errorf("%s: Origin = %q, want %q", c.name, got, c.want)
-		}
-	}
-}
-
-func TestOriginFollowsAGitFilePointerWithoutCommondir(t *testing.T) {
-	// 서브모듈의 .git 파일은 자기 설정을 가진 gitdir 을 가리키고 commondir 이 없다.
-	root, gitDir := t.TempDir(), filepath.Join(t.TempDir(), "modules", "sub")
-	if err := os.MkdirAll(gitDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte("[remote \"origin\"]\n\turl = u\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: "+gitDir+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if got := Origin(root); got != "u" {
-		t.Errorf("Origin = %q, want u", got)
-	}
-}
-
-func TestOriginOutsideARepositoryIsEmpty(t *testing.T) {
-	if got := Origin(t.TempDir()); got != "" {
-		t.Errorf("Origin = %q", got)
-	}
-	if got := Origin(""); got != "" {
-		t.Errorf("Origin(\"\") = %q", got)
 	}
 }

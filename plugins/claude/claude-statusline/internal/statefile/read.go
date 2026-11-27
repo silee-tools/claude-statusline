@@ -21,7 +21,7 @@ const maxRead = 1 << 20
 func Read(path string) ([]byte, error) { return read(path, syscall.O_NOFOLLOW) }
 
 // ReadFollow is Read for a file that another program or the user writes or places, such as
-// a config a dotfile manager links in: it follows links. What the path ends on must still
+// git's HEAD: it follows links. What the path ends on must still
 // be a regular file, opened without blocking, so a link to a FIFO is ErrNotRegular too.
 func ReadFollow(path string) ([]byte, error) { return read(path, 0) }
 

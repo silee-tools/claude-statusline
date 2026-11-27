@@ -2,16 +2,15 @@
 # statusline.sh 렌더링 회귀 테스트
 # 격리된 임시 PLUGIN_ROOT 에서 실제 소스 statusline.sh 를 실행하고,
 # stdin JSON(rate_limits·effort 포함/미포함) fixture 로
-# 80열 이하 압축 2행과 81열 이상 전체 레이아웃(최대 6행) 출력을 함께 검증한다.
+# 80열 이하 압축 2행과 81열 이상 전체 레이아웃(최대 5행) 출력을 함께 검증한다.
 #
 # 압축 레이아웃(위→아래, 값 없는 행은 생략):
-#   행1  브랜치 gh@계정 [aws 이상·불명]
+#   행1  브랜치
 #   행2  ctx <소진율>% <모델> <effort 글리프> 5h <소진율>%[▲] ↺리셋 7d <소진율>%[▲] ↺리셋
 #
-# 전체 레이아웃: 첫 줄은 버전, 시각, 계정, 세션, 경로, 브랜치, gh, aws 순서로 공백 한 칸씩 이어 붙이고 그
-# 아래에 ctx, 5h, 7d 를 둔다. 줄이 칸 수 − 4 칸(Claude Code 가 상태줄에 쓰는 폭)을 넘으면 경로 앞에서
-# 끊어 경로·브랜치·gh·aws 를 둘째 줄로 내리고(5행), 그 줄도 넘으면 경로·브랜치와 gh·aws 를 각자 줄에
-# 두는 6행이다. 폭 판정 불가는 항상 한 줄로 이어 붙인다.
+# 전체 레이아웃: 첫 줄은 버전, 시각, 계정, 세션, 경로, 브랜치 순서로 공백 한 칸씩 이어 붙이고 그 아래에
+# ctx, 5h, 7d 를 둔다. 줄이 칸 수 − 4 칸(Claude Code 가 상태줄에 쓰는 폭)을 넘으면 경로 앞에서 끊어
+# 경로·브랜치를 둘째 줄로 내린다(5행). 폭 판정 불가는 항상 한 줄로 이어 붙인다.
 set -eu
 
 SRC=$(cd "$(dirname "$0")/.." && pwd)
@@ -48,19 +47,6 @@ mkdir -p "$HOME" "$TMPROOT/scripts" "$TMPROOT/cache/claude-statusline"
 ln -sf "$SRC/scripts/statusline.sh" "$TMPROOT/scripts/statusline.sh"
 SL="$TMPROOT/scripts/statusline.sh"
 
-# 스위트는 실제 aws 를 부르지 않는다. 낡은 로그인 캐시는 백그라운드 aws sts 확인(SpawnAWSCheck)을 띄우고,
-# 실제 aws 는 개발자의 ~/.aws 자격 증명으로 STS 를 호출하며 로그인 캐시를 다시 쓸 수 있다. 그래서 호출을
-# 기록만 하는 가짜 aws 를 PATH 앞에 두고 aws 설정 파일도 빈 파일로 바꾸며, 스위트 끝에서 호출이 0회임을 단언한다.
-AWS_CALLS="$TMPROOT/aws-calls"
-mkdir -p "$TMPROOT/awsbin"
-printf '#!/bin/sh\nprintf "call %%s\\n" "$*" >> "%s"\n' "$AWS_CALLS" > "$TMPROOT/awsbin/aws"
-chmod +x "$TMPROOT/awsbin/aws"
-: > "$TMPROOT/aws-config"
-: > "$AWS_CALLS"
-PATH="$TMPROOT/awsbin:$PATH"
-AWS_CONFIG_FILE="$TMPROOT/aws-config"
-export PATH AWS_CONFIG_FILE
-
 # 렌더 본체는 Go 바이너리다. statusline.sh 는 XDG_CACHE_HOME 아래 포인터가 가리키는 그
 # 바이너리로 exec 하는 shim 이므로, 스위트가 먼저 한 번 빌드해 포인터를 심는다.
 # 빌드 실패를 건너뛰면 shim 이 저하 표시를 내고 이후 단언이 통째로 실패하거나, 더 나쁘게는
@@ -83,22 +69,6 @@ fi
 # 부르므로 그 루트 이름이 키다 — shim 이 자기 $0 에서 얻는 값과 같은 규칙으로 만든다.
 SL_ROOT=${SL%/scripts/*}
 printf '%s\n' "$BINARY" > "$TMPROOT/cache/claude-statusline/binary-path-${SL_ROOT##*/}"
-
-# gh 계정 fixture: 저장소별 계정 캐시 + 계정→라벨 매핑 설정 파일. 실제 계정명 대신 테스트용
-# handle(octocat)로 결정론화한다. format_gh 는 소스에 계정명을 박지 않고 이 매핑을 읽는다.
-# 캐시 파일 이름은 저장소 루트의 물리 경로에서 / 를 % 로 바꾼 것이다. 저장소 판정은 .git 항목
-# 존재만 보므로 빈 .git 디렉터리로 충분하다.
-GH_CACHE_DIR="$TMPROOT/cache/gh-prompt"
-GH_REPO="$TMPROOT/gh-repo"
-mkdir -p "$GH_CACHE_DIR" "$GH_REPO/.git"
-# 저장소 분류는 .git/config 의 origin 만 본다. 빈 .git 디렉터리에 origin 설정만 써 둔다.
-set_origin() { printf '[remote "origin"]\n\turl = %s\n' "$2" > "$1/.git/config"; }
-set_origin "$GH_REPO" git@github.com:o/r.git
-gh_cache_file() { printf '%s/%s' "$GH_CACHE_DIR" "$(cd "$1" && pwd -P | sed 's#/#%#g')"; }
-GH_CACHE_FILE=$(gh_cache_file "$GH_REPO")
-printf 'octocat' > "$GH_CACHE_FILE"
-mkdir -p "$TMPROOT/claude-statusline"
-printf 'octocat=personal,214\ntestwork=work,27\nbadcolor=weird,zz\n' > "$TMPROOT/claude-statusline/gh-accounts"
 
 # Claude Code 계정 fixture: 계정은 OTLP 수신기가 남긴 앵커(<상태>/claude-statusline/otel/sessions/<session.id>.env)
 # 에서만 읽는다. 설정 폴더의 .claude.json 을 읽지 않는 것이 계약이므로, 다른 이메일을 담은 미끼로 둔다.
@@ -140,18 +110,6 @@ stop_receiver() { [ -z "$HOLD_PID" ] || { kill "$HOLD_PID" 2>/dev/null || true; 
 beat()       { mkdir -p "$OTEL_DIR"; touch "$OTEL_DIR/heartbeat"; hold_receiver; }
 stale_beat() { mkdir -p "$OTEL_DIR"; touch -t 200001010000 "$OTEL_DIR/heartbeat"; hold_receiver; }
 
-# AWS 세션 fixture: AWS 세그먼트가 개발자의 실제 ~/.aws/login/cache 를 읽지 않도록 전용
-# 디렉터리에 방금 로그인한 캐시 파일 하나를 둔다. 세그먼트는 idToken 의 iat 에 12h 를 더한
-# 시각을 만료로 읽는다. 방금 로그인했으므로 aws:✓ 로 렌더되어 노랑·빨강이 아니고, T17 의 절대
-# 소진율 색 판정과 격리된다.
-b64url() { printf '%s' "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }
-aws_id_token() { printf '%s.%s.sig' "$(b64url '{"alg":"none"}')" "$(b64url "{\"iat\":$1}")"; }
-aws_cache() { printf '{"idToken":"%s"}' "$(aws_id_token "$2")" > "$1"; }
-AWS_LOGIN_CACHE_FIXTURE="$TMPROOT/aws-login-cache-fixture"
-mkdir -p "$AWS_LOGIN_CACHE_FIXTURE"
-export AWS_LOGIN_CACHE_DIR="$AWS_LOGIN_CACHE_FIXTURE"   # 어느 렌더 헬퍼도 개발자의 실제 로그인 캐시를 읽지 않는다
-aws_cache "$AWS_LOGIN_CACHE_FIXTURE/session.json" "$(date +%s)"
-
 # 세션 ID fixture: 알려진 UUID. 축약 없이 전체가 그대로 렌더되는지 검증한다.
 KNOWN_SESSION="11111111-2222-3333-4444-555555555555"
 
@@ -166,7 +124,6 @@ if command -v git >/dev/null 2>&1; then
   if ( cd "$GITREPO" \
        && git init -q \
        && git symbolic-ref HEAD refs/heads/wip \
-       && git remote add origin git@github.com:o/r.git \
        && git -c commit.gpgsign=false -c user.email=t@example.com -c user.name=t \
               commit -q --allow-empty -m init ); then
     HAVE_GIT=1
@@ -217,10 +174,6 @@ json_pct() {
 json_pct_nr() {
   printf '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":40000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.1.11","rate_limits":{"five_hour":{"used_percentage":%s},"seven_day":{"used_percentage":%s}}}' "$1" "$2"
 }
-# gh 캐시가 있는 저장소를 cwd 로 주는 변형. rate limit 유무만 json_with·json_without 과 다르다.
-json_with_gh() { json_with | sed "s#\"current_dir\":\"/tmp\"#\"current_dir\":\"$GH_REPO\"#"; }
-json_gh()      { json_without | sed "s#\"current_dir\":\"/tmp\"#\"current_dir\":\"$GH_REPO\"#"; }
-
 # 브랜치 fixture repo 를 cwd 로 주는 변형 (브랜치 위치·세션 ID 검증용). session_id 를 포함한다.
 json_branch() {
   printf '{"session_id":"%s","workspace":{"current_dir":"%s"},"model":{"display_name":"Claude Opus 4.8"},"context_window":{"current_usage":{"input_tokens":40000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"context_window_size":200000},"version":"2.1.11","effort":{"level":"high"},"rate_limits":{"five_hour":{"used_percentage":24,"resets_at":%s},"seven_day":{"used_percentage":41,"resets_at":%s}}}' "$KNOWN_SESSION" "$GITREPO" "$FIVE_RESET" "$WEEK_RESET"
@@ -261,18 +214,16 @@ seed_rate_cache() { mkdir -p "$RATE_DIR"; printf 'boundary=%s\nfivePct=%s\nfiveR
 with_session() { printf '%s' "$2" | sed "s/^{/{\"session_id\":\"$1\",/"; }
 with_rl() { with_session "$RL_SESSION" "$1"; }
 
-# 색 코드 제거한 출력. XDG_CONFIG_HOME·XDG_CACHE_HOME 을 TMPROOT 로, AWS_LOGIN_CACHE_DIR
-# 을 위 fixture 로 고정해 gh 계정·매핑·AWS 세션 표시를 모두 결정론화한다.
-_render() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_STATE_HOME="$STATE_HOME" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_LOGIN_CACHE_DIR="$AWS_LOGIN_CACHE_FIXTURE" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
+# 색 코드 제거한 출력. XDG_CONFIG_HOME·XDG_CACHE_HOME 을 TMPROOT 로 고정한다.
+_render() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_STATE_HOME="$STATE_HOME" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
 # 색 코드 포함 원본 출력
-_render_raw() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_STATE_HOME="$STATE_HOME" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" AWS_LOGIN_CACHE_DIR="$AWS_LOGIN_CACHE_FIXTURE" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null; }
+_render_raw() { printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_STATE_HOME="$STATE_HOME" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" CLAUDE_STATUSLINE_WIDTH="$2" sh "$SL" 2>/dev/null; }
 # 폭 주입을 비우고 tty 장치 디렉터리를 존재하지 않는 곳으로 고정해 판정 불가 경로를 만든다.
 _render_auto() {
   (
     unset CLAUDE_STATUSLINE_WIDTH
     printf '%s' "$1" | CLAUDE_PLUGIN_ROOT="$TMPROOT" \
       XDG_STATE_HOME="$STATE_HOME" XDG_CONFIG_HOME="$TMPROOT" XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" \
-      AWS_LOGIN_CACHE_DIR="$AWS_LOGIN_CACHE_FIXTURE" \
       CLAUDE_STATUSLINE_TTY_DIR="$TMPROOT/missing-dev" COLUMNS=40 sh "$SL" 2>/dev/null \
       | sed "s/${ESC}\[[0-9;]*m//g"
   )
@@ -367,10 +318,10 @@ assert_equals()       { if [ "$3" = "$2" ]; then ok "$1"; else bad "$1 (expected
 OUT80=$(run "$(json_with)" 80)
 OUT81=$(run "$(json_with)" 81)
 assert_equals     "T46 폭 80 저장소 밖은 게이지 1행(1행 생략)" "1" "$(nlines "$OUT80")"
-assert_equals     "T46 폭 80 저장소 안은 압축 2행" "2" "$(nlines "$(run "$(json_with_gh)" 80)")"
+assert_equals     "T46 폭 80 저장소 안은 압축 2행" "2" "$(nlines "$(run "$(json_branch)" 80)")"
 # 이 fixture 는 경로 /tmp·브랜치 없음이라 이어 붙인 첫 줄이 81열(사용 폭 77칸) 안에 든다.
 assert_equals     "T46 폭 81은 전체 4행(첫 줄에 이어 붙임)" "4" "$(nlines "$OUT81")"
-assert_match      "T46 폭 81 첫 줄은 버전·시각·경로·aws 순서로 한 칸씩(수신기 미설치라 계정 칸 없음)" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] /tmp aws:✓$' "$(first_line "$OUT81")"
+assert_match      "T46 폭 81 첫 줄은 버전·시각·경로 순서로 한 칸씩(수신기 미설치라 계정 칸 없음)" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] /tmp$' "$(first_line "$OUT81")"
 assert_not_contains "T46 미설치 기계는 settings 의 .claude.json 이메일을 쓰지 않음" "decoy@example.com" "$OUT81"
 assert_not_contains "T46 압축 레이아웃은 비용 없음" "cost" "$OUT80"
 assert_not_contains "T46 전체 레이아웃은 비용 없음" "cost" "$OUT81"
@@ -400,9 +351,9 @@ fi
 AUTO=$(run_auto "$(json_with)")
 assert_equals "T48 폭 판정 불가 시 전체 4행" "4" "$(nlines "$AUTO")"
 assert_contains "T48 오래된 COLUMNS=40을 무시하고 전체 막대 표시" "█" "$AUTO"
-assert_match "T48 폭 판정 불가는 첫 줄을 버전·시각·경로·aws 순서로 한 칸씩 이어 붙임" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] /tmp aws:✓$' "$(first_line "$AUTO")"
+assert_match "T48 폭 판정 불가는 첫 줄을 버전·시각·경로 순서로 한 칸씩 이어 붙임" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] /tmp$' "$(first_line "$AUTO")"
 
-# --- T61: 이어 붙인 첫 줄이 칸 수 − 4 안에 들지 않으면 경로 앞에서 끊어 둘째 줄로 내리고, 그 줄도 넘으면 경로·브랜치와 gh·aws 를 따로 둔다 ---
+# --- T61: 이어 붙인 첫 줄이 칸 수 − 4 안에 들지 않으면 경로 앞에서 끊어 둘째 줄로 내린다 ---
 #    긴 경로·긴 브랜치 저장소를 HOME=TMPROOT 로 렌더해 단계 경계를 만든다. 경계 폭은 폭을 모를 때 이어 붙인
 #    줄의 표시 폭(vwidth_of)에서 구하고, Claude Code 가 상태줄 양쪽에 남기는 4칸을 더한다.
 if [ "$HAVE_GIT" = "1" ]; then
@@ -418,25 +369,18 @@ if [ "$HAVE_GIT" = "1" ]; then
   if ( cd "$STAGE_REPO" \
        && git init -q \
        && git symbolic-ref HEAD refs/heads/feature/PROJ-123-post-editor \
-       && git remote add origin git@github.com:o/r.git \
        && git -c commit.gpgsign=false -c user.email=t@example.com -c user.name=t \
               commit -q --allow-empty -m init ) >/dev/null 2>&1; then
-    printf 'octocat' > "$(gh_cache_file "$STAGE_REPO")"
     json_stage() { json_branch | sed "s#$GITREPO#$STAGE_REPO#"; }
     stage_out() { HOME="$TMPROOT" run "$(json_stage)" "$1"; }
     T61_HEAD='^v2\.1\.11 [0-9][0-9]:[0-9][0-9] octocat@example\.com ⧉ '"${KNOWN_SESSION}"'$'
-    T61_TAIL='very-long-project-directory-name .*feature/PROJ-123-post-editor gh@personal aws:✓$'
+    T61_TAIL='very-long-project-directory-name .*feature/PROJ-123-post-editor$'
 
     # 폭을 모르면 한 줄로 잇는다. 그 줄의 폭이 곧 1단계가 요구하는 폭이다.
     ONE=$(HOME="$TMPROOT" run_auto "$(json_stage)")
     assert_equals "T61 폭 판정 불가는 넘쳐도 4행으로 이어 붙임" "4" "$(nlines "$ONE")"
-    assert_match  "T61 한 줄은 버전·시각·계정·세션·경로·브랜치·gh·aws 순서로 한 칸씩" "${T61_HEAD%\$} .*${T61_TAIL}" "$(first_line "$ONE")"
+    assert_match  "T61 한 줄은 버전·시각·계정·세션·경로·브랜치 순서로 한 칸씩" "${T61_HEAD%\$} .*${T61_TAIL}" "$(first_line "$ONE")"
     ONE_WIDTH=$(( $(vwidth_of "$(first_line "$ONE")") + 4 ))
-    # 81열은 가장 좁은 전체 레이아웃이다. 거기서 경로 줄(둘째 줄)이 2단계가 요구하는 폭을 알려 준다.
-    NARROW=$(stage_out 81)
-    assert_equals "T61 폭 81 은 6행(경계 폭 계산의 전제)" "6" "$(nlines "$NARROW")"
-    TAIL_WIDTH=$(( $(vwidth_of "$(nth_line 2 "$NARROW")") + 1 + $(vwidth_of "$(nth_line 3 "$NARROW")") + 4 ))
-
     ONE_OUT=$(stage_out "$ONE_WIDTH")
     assert_equals "T61 이어 붙인 줄이 정확히 들면 4행" "4" "$(nlines "$ONE_OUT")"
     assert_equals "T61 4행 첫 줄은 폭을 모를 때와 같다" "$(mask_time "$(first_line "$ONE")")" "$(mask_time "$(first_line "$ONE_OUT")")"
@@ -445,28 +389,18 @@ if [ "$HAVE_GIT" = "1" ]; then
     TAIL_OUT=$(stage_out $((ONE_WIDTH - 1)))
     assert_equals       "T61 한 칸 모자라면 경로 앞에서 끊은 5행" "5" "$(nlines "$TAIL_OUT")"
     assert_match        "T61 5행 첫 줄은 버전·시각·계정·세션" "$T61_HEAD" "$(first_line "$TAIL_OUT")"
-    assert_match        "T61 5행 둘째 줄은 경로·브랜치·gh·aws" "$T61_TAIL" "$(nth_line 2 "$TAIL_OUT")"
+    assert_match        "T61 5행 둘째 줄은 경로·브랜치" "$T61_TAIL" "$(nth_line 2 "$TAIL_OUT")"
     assert_not_contains "T61 5행 둘째 줄에 세션 없음" "⧉" "$(nth_line 2 "$TAIL_OUT")"
     assert_match        "T61 5행 셋째 줄은 ctx 게이지" '^ctx ' "$(nth_line 3 "$TAIL_OUT")"
-    assert_equals       "T61 경로 줄 폭이 정확히 폭이면 5행" "5" "$(nlines "$(stage_out "$TAIL_WIDTH")")"
-
-    SPLIT_OUT=$(stage_out $((TAIL_WIDTH - 1)))
-    assert_equals       "T61 경로 줄도 넘으면 6행" "6" "$(nlines "$SPLIT_OUT")"
-    assert_match        "T61 6행 첫 줄은 버전·시각·계정·세션" "$T61_HEAD" "$(first_line "$SPLIT_OUT")"
-    assert_match        "T61 6행 둘째 줄은 경로·브랜치" 'very-long-project-directory-name .*feature/PROJ-123-post-editor$' "$(nth_line 2 "$SPLIT_OUT")"
-    assert_equals       "T61 6행 셋째 줄은 gh·aws" "gh@personal aws:✓" "$(nth_line 3 "$SPLIT_OUT")"
-    assert_match        "T61 6행 넷째 줄은 ctx 게이지" '^ctx ' "$(nth_line 4 "$SPLIT_OUT")"
+    assert_equals       "T61 가장 좁은 전체 폭 81 도 5행" "5" "$(nlines "$(stage_out 81)")"
 
     for _w in 100 110 120 130 140 160 200 400; do
       _out=$(stage_out "$_w")
-      _want=6
-      if [ "$_w" -ge "$ONE_WIDTH" ]; then _want=4; elif [ "$_w" -ge "$TAIL_WIDTH" ]; then _want=5; fi
+      _want=5
+      if [ "$_w" -ge "$ONE_WIDTH" ]; then _want=4; fi
       assert_equals "T61 ${_w}열의 행 수" "$_want" "$(nlines "$_out")"
       _fit=""
-      if [ "$_want" -eq 4 ]; then _fit=$(first_line "$_out"); elif [ "$_want" -eq 5 ]; then _fit=$(nth_line 2 "$_out"); fi
-      if [ -n "$_fit" ]; then
-        assert_equals "T61 ${_w}열에서 끊은 마지막 머리 줄이 폭 − 4 칸 이내" "yes" "$([ "$(vwidth_of "$_fit")" -le $((_w - 4)) ] && echo yes || echo no)"
-      fi
+      assert_equals "T61 ${_w}열의 첫 줄이 폭 − 4 칸 이내" "yes" "$([ "$(vwidth_of "$(first_line "$_out")")" -le $((_w - 4)) ] && echo yes || echo no)"
       assert_contains "T61 ${_w}열에서도 세션 ID 를 자르지 않음" "$KNOWN_SESSION" "$_out"
     done
   else
@@ -504,16 +438,15 @@ else
   bad "T5 폭 81과 80의 출력이 다름" "identical output"
 fi
 
-# --- T7: 압축 구성 — 저장소 안은 2행(gh 상시 + 게이지), 저장소 밖은 게이지 1행 ---
-OUT=$(run "$(json_with_gh)" 80)
+# --- T7: 압축 구성 — 저장소 안은 2행(브랜치 + 게이지), 저장소 밖은 게이지 1행 ---
+OUT=$(run "$(json_branch)" 80)
 assert_equals "T7 총 2행" "2" "$(nlines "$OUT")"
-assert_contains "T7 행1 gh 상시 표시" "gh@personal" "$(first_line "$OUT")"
+assert_contains "T7 행1 브랜치" "wip" "$(first_line "$OUT")"
 assert_match  "T7 행2 ctx"  'ctx [0-9]'  "$(last_line "$OUT")"
 assert_match  "T7 행2 5h"   '5h [0-9]'   "$(last_line "$OUT")"
 assert_match  "T7 행2 7d"   '7d [0-9]'   "$(last_line "$OUT")"
 assert_not_contains "T7 압축은 이메일·버전·세션·시각을 쓰지 않음" "octocat@example.com" "$OUT"
 assert_not_contains "T7 압축은 버전 없음" "v2.1.11" "$OUT"
-assert_not_contains "T7 압축은 aws:✓ 를 숨김" "aws:" "$OUT"
 OUT=$(run "$(json_with)" 80)
 assert_equals "T7 저장소 밖 정상 상태는 게이지 1행" "1" "$(nlines "$OUT")"
 assert_match  "T7 저장소 밖 1행이 ctx" '^ctx [0-9]' "$OUT"
@@ -552,10 +485,10 @@ OUT=$(run "$(json_no_effort)" 80)
 assert_no_match "T10 effort 부재 시 글리프 없음" "○|◐|●|◉|◈|✦" "$OUT"
 assert_contains "T10 모델명은 유지" "Opus 4.8" "$OUT"
 
-# --- T11: 행1 은 브랜치·gh 지표만 — 시각·버전은 쓰지 않는다 ---
-OUT=$(run "$(json_with_gh)" 80)
+# --- T11: 행1 은 브랜치만 — 시각·버전은 쓰지 않는다 ---
+OUT=$(run "$(json_branch)" 80)
 FIRST=$(first_line "$OUT")
-assert_contains     "T11 행1 에 gh 계정" "gh@personal" "$FIRST"
+assert_contains     "T11 행1 에 브랜치" "wip" "$FIRST"
 assert_not_contains "T11 행1 에 버전 없음" "v2.1.11" "$FIRST"
 assert_no_match     "T11 행1 에 시각 없음" '[0-9][0-9]:[0-9][0-9]' "$FIRST"
 
@@ -589,8 +522,6 @@ else
 fi
 
 # --- T17: 절대 소진율 색 임계 — 노랑 80%, 빨강 90% (페이스 오버레이 없는 fixture 로 격리) ---
-#    다른 색 소스(aws:⏳ 노랑, aws:expired 빨강)는 AWS_LOGIN_CACHE_DIR 을 방금 만든 캐시
-#    fixture 로 고정해 격리했으므로(aws:✓ 만 나옴) YELLOW/RED 존재가 절대색만 가리킨다.
 #    json_pct_nr 로 reset 을 빼 예산 초과 구간의 색이 색 판정에 섞이지 않게 한다.
 YELLOW=$(printf '\033[33m')
 RAW=$(run_raw "$(json_pct_nr 80 10)" 80)
@@ -602,16 +533,14 @@ assert_contains     "T17 90%면 빨간색 경고" "$RED" "$RAW"
 RAW=$(run_raw "$(json_pct_nr 85 10)" 80)
 assert_not_contains "T17 85%면 빨강 없음(빨강 임계 미만)" "$RED" "$RAW"
 
-# --- T18: 브랜치가 있으면 첫 줄(gh 앞)에 온다. 괄호 대신 브랜치 아이콘( ) 접두(사이 공백 없음) ---
+# --- T18: 브랜치가 있으면 첫 줄에 온다. 괄호 대신 브랜치 아이콘( ) 접두(사이 공백 없음) ---
 BRANCH_GLYPH=$(printf '\356\202\240')   #  U+E0A0 (Powerline git branch)
 if [ "$HAVE_GIT" = "1" ]; then
-  printf 'octocat' > "$(gh_cache_file "$GITREPO")"
   OUT=$(run "$(json_branch)" 80)
   FIRST=$(first_line "$OUT")
   SECOND=$(nth_line 2 "$OUT")
   assert_contains     "T18 첫 줄에 브랜치 아이콘+이름(사이 공백 없음)" "${BRANCH_GLYPH}wip" "$FIRST"
   assert_not_contains "T18 둘째 줄에 브랜치명 없음" "wip" "$SECOND"
-  assert_contains     "T18 첫 줄 브랜치 뒤에 gh 계정" "wip gh@personal" "$FIRST"
   assert_equals       "T18 첫 줄 파이프 없음" "0" "$(count_char '|' "$FIRST")"
 else
   printf 'SKIP T18 (git fixture 미생성)\n'
@@ -677,7 +606,6 @@ OUT=$(run "$(json_short_session)" 81)
 assert_contains "T44 짧은 세션 id 는 전체 값 표시" "⧉ abc" "$OUT"
 
 # --- T41: 압축 레이아웃의 모든 행은 감지 폭 이하다(30·40·50·60·80열) ---
-#    gh 상시 표시와 aws 이상·불명을 함께 넣어 1행 지표가 가장 긴 조합도 확인한다.
 check_all_widths() {  # $1 출력 $2 폭
   _bad=0
   printf '%s\n' "$1" | while IFS= read -r _l; do
@@ -686,228 +614,10 @@ check_all_widths() {  # $1 출력 $2 폭
   [ "$_bad" -eq 0 ] && printf 'ok' || printf 'over%s' "$2"
 }
 for _w in 30 40 50 60 80; do
-  for _fx in "$(json_with)" "$(json_without)" "$(json_high)" "$(json_pct 100 100)" "$(json_with_gh)" "$(json_pct 70 10 | sed "s#\"current_dir\":\"/tmp\"#\"current_dir\":\"$GH_REPO\"#")"; do
+  for _fx in "$(json_with)" "$(json_without)" "$(json_high)" "$(json_pct 100 100)" "$(json_branch)" "$(json_pct 70 10 | sed "s#\"current_dir\":\"/tmp\"#\"current_dir\":\"$GITREPO\"#")"; do
     assert_equals "T41 압축 행이 ${_w}칼럼 이내" "ok" "$(check_all_widths "$(run "$_fx" "$_w")" "$_w")"
   done
 done
-printf 'v2\toctocat\tauth_failed\t0\n' > "$GH_CACHE_FILE"
-printf '%s fail\n' "$NOW" > "$TMPROOT/cache/claude-statusline/aws-check"
-aws_cache "$AWS_LOGIN_CACHE_FIXTURE/session.json" "$((NOW - 13 * 3600))"
-for _w in 30 40 50 60 80; do
-  _out=$(run "$(json_with_gh)" "$_w")
-  assert_equals   "T41 gh 인증 실패+aws 만료도 ${_w}칼럼 이내" "ok" "$(check_all_widths "$_out" "$_w")"
-  assert_contains "T41 ${_w}열에서도 지표를 자르지 않음" "gh@personal! aws:expired" "$(first_line "$_out")"
-done
-rm -f "$TMPROOT/cache/claude-statusline/aws-check"
-aws_cache "$AWS_LOGIN_CACHE_FIXTURE/session.json" "$(date +%s)"
-printf 'octocat' > "$GH_CACHE_FILE"
-
-# --- T25: gh 라벨을 설정 파일에서 매핑 (소스에 계정명 하드코딩 없음) ---
-#    매핑된 계정은 라벨로, 미매핑은 계정명 그대로, 빈 값은 gh@---. 색코드 비숫자는 기본색으로 폴백.
-printf 'testwork' > "$GH_CACHE_FILE"
-OUT=$(run "$(json_gh)" 80)
-assert_contains "T25 config 매핑 계정 → 라벨(gh@work)" "gh@work" "$(first_line "$OUT")"
-printf 'nobody-xyz' > "$GH_CACHE_FILE"
-OUT=$(run "$(json_gh)" 80)
-assert_contains "T25 미매핑 계정 → gh@<계정명>" "gh@nobody-xyz" "$(first_line "$OUT")"
-printf '' > "$GH_CACHE_FILE"
-OUT=$(run "$(json_gh)" 80)
-assert_contains "T25 빈 캐시는 판정 이전이라 gh@?" "gh@?" "$(first_line "$OUT")"
-printf 'badcolor' > "$GH_CACHE_FILE"
-OUT=$(run "$(json_gh)" 80)
-assert_contains "T25 비숫자 색코드도 라벨은 렌더(가드)" "gh@weird" "$(first_line "$OUT")"
-printf 'octocat' > "$GH_CACHE_FILE"   # 이후 테스트 위해 원복
-
-# --- T45: 캐시의 탭 네 필드 레코드를 상태별로 렌더 ---
-#    셸 프롬프트가 쓰는 레코드에서 계정명·상태·마감 시각을 각각 읽어 상태 문자(⏳Nm·!·?)와
-#    색을 붙인다. 마감 시각은 고정 숫자로 두면 시간이 지나 항상 마감 후로 판정돼 마커 검증이
-#    조용히 무력해지므로, 렌더 시점 기준 상대값으로 만든다.
-gh_cache() { printf 'v2\t%s\t%s\t%s\n' "$1" "$2" "$3" > "$GH_CACHE_FILE"; }
-GH_NOW=$(date +%s)
-
-gh_cache octocat ok 0
-OUT=$(run "$(json_gh)" 80)
-assert_contains     "T45 ok 은 라벨만"              "gh@personal" "$(first_line "$OUT")"
-assert_not_contains "T45 ok 에 인증 실패 문자 없음" "gh@personal!" "$(first_line "$OUT")"
-assert_not_contains "T45 ok 에 판정 불가 문자 없음" "gh@personal?" "$(first_line "$OUT")"
-assert_not_contains "T45 ok 에 한도 마커 없음"      "⏳" "$(first_line "$OUT")"
-
-gh_cache octocat auth_failed 0
-OUT=$(run "$(json_gh)" 80)
-RAW=$(run_raw "$(json_gh)" 80)
-assert_contains     "T45 auth_failed 는 gh@personal!" "gh@personal!" "$(first_line "$OUT")"
-assert_contains     "T45 auth_failed 는 전체 빨강"    "${RED}gh@personal!" "$RAW"
-
-gh_cache octocat unknown 0
-OUT=$(run "$(json_gh)" 80)
-RAW=$(run_raw "$(json_gh)" 80)
-assert_contains     "T45 unknown 은 gh@personal?"  "gh@personal?" "$(first_line "$OUT")"
-assert_contains     "T45 unknown 은 전체 회색"     "$(printf '\033[38;5;240m')gh@personal?" "$RAW"
-
-gh_cache testwork rate_limited "$((GH_NOW + 540))"
-OUT=$(run "$(json_gh)" 80)
-RAW=$(run_raw "$(json_gh)" 80)
-assert_contains     "T45 rate_limited 는 gh@work⏳9m" "gh@work⏳9m" "$(first_line "$OUT")"
-assert_contains     "T45 라벨은 설정 색, 마커만 노랑" \
-  "$(printf '\033[38;5;27m')gh@work$(printf '\033[0m')$(printf '\033[33m')⏳9m" "$RAW"
-
-gh_cache testwork rate_limited "$((GH_NOW + 30))"
-OUT=$(run "$(json_gh)" 80)
-assert_contains     "T45 1분 미만 남으면 1m 으로 올림" "gh@work⏳1m" "$(first_line "$OUT")"
-
-gh_cache testwork rate_limited "$((GH_NOW - 60))"
-OUT=$(run "$(json_gh)" 80)
-assert_contains     "T45 마감이 지나면 라벨만"     "gh@work" "$(first_line "$OUT")"
-assert_not_contains "T45 마감이 지나면 마커 제거"  "⏳" "$(first_line "$OUT")"
-
-gh_cache testwork rate_limited notanumber
-OUT=$(run "$(json_gh)" 80)
-assert_not_contains "T45 마감 시각이 숫자가 아니면 마커 없음" "⏳" "$(first_line "$OUT")"
-
-gh_cache - no_active 0
-OUT=$(run "$(json_gh)" 80)
-assert_contains     "T45 no_active 는 gh@---"      "gh@---" "$(first_line "$OUT")"
-
-gh_cache - unknown 0
-OUT=$(run "$(json_gh)" 80)
-assert_contains     "T45 계정명 없는 unknown 은 gh@?" "gh@?" "$(first_line "$OUT")"
-
-gh_cache - ok 0
-OUT=$(run "$(json_gh)" 80)
-assert_contains     "T45 계정명 자리가 - 이면 상태보다 먼저 걸러 gh@?" "gh@?" "$(first_line "$OUT")"
-assert_no_match     "T45 gh@- 로 새지 않음" 'gh@-[[:space:]]' "$(first_line "$OUT")"
-
-printf 'v1\toctocat\tok\t0\n' > "$GH_CACHE_FILE"
-OUT=$(run "$(json_gh)" 80)
-assert_contains     "T45 형식을 모르는 네 필드는 계정명만 살리고 판정 불가" \
-  "gh@personal?" "$(first_line "$OUT")"
-
-printf 'v2\toctocat\n' > "$GH_CACHE_FILE"
-OUT=$(run "$(json_gh)" 80)
-assert_contains     "T45 필드 수가 어긋나면 gh@?" "gh@?" "$(first_line "$OUT")"
-
-printf 'octocat' > "$GH_CACHE_FILE"
-OUT=$(run "$(json_gh)" 80)
-assert_contains     "T45 탭 없는 한 줄은 계정명으로 해석" "gh@personal" "$(first_line "$OUT")"
-
-# --- T55: gh 세그먼트는 현재 저장소 기준이다 ---
-#    저장소의 캐시가 없으면 그리지 않고, 저장소 캐시는 다른 저장소나 저장소 밖에 새지 않는다.
-#    저장소 밖은 non-git 기록이 없으면 그리지 않는다(있을 때는 T57).
-gh_cache testwork ok 0
-OUT=$(run "$(json_without)" 80)
-assert_not_contains "T55 저장소가 아닌 cwd(/tmp)에서는 non-git 기록이 없으면 gh 세그먼트 없음" "gh@" "$OUT"
-GH_OTHER_REPO="$TMPROOT/gh-other-repo"
-mkdir -p "$GH_OTHER_REPO/.git"
-set_origin "$GH_OTHER_REPO" git@github.com:o/r.git
-OUT=$(run "$(json_gh | sed "s#$GH_REPO#$GH_OTHER_REPO#")" 80)
-assert_not_contains "T55 캐시가 없는 저장소에서는 gh 세그먼트 없음" "gh@" "$OUT"
-printf 'octocat' > "$(gh_cache_file "$GH_OTHER_REPO")"
-OUT=$(run "$(json_gh | sed "s#$GH_REPO#$GH_OTHER_REPO#")" 80)
-assert_contains     "T55 저장소마다 자기 캐시를 읽는다(other=personal)" "gh@personal" "$(first_line "$OUT")"
-mkdir -p "$GH_REPO/sub/deep"
-OUT=$(run "$(json_gh | sed "s#$GH_REPO#$GH_REPO/sub/deep#")" 80)
-assert_contains     "T55 저장소 하위 디렉터리에서도 그 저장소의 기록을 읽는다" "gh@work" "$(first_line "$OUT")"
-OUT=$(run "$(json_gh)" 80)
-assert_contains     "T55 원래 저장소는 자기 기록(work)을 유지" "gh@work" "$(first_line "$OUT")"
-printf 'octocat' > "$GH_CACHE_FILE"
-
-# --- T56: origin 이 gh 슬롯을 정한다 — GitHub 는 계정, Forgejo 는 라벨만, 그 밖은 비표시 ---
-#    Forgejo 호스트 목록은 설정 파일 forgejo-hosts 에서 읽는다(예약 도메인과 별칭으로 만든 fixture).
-FORGEJO_HOSTS="$TMPROOT/claude-statusline/forgejo-hosts"
-printf '# forge\nforgejo.example.test\nforge-alias\n' > "$FORGEJO_HOSTS"
-gh_repo_with() { mkdir -p "$1/.git"; if [ -n "$2" ]; then set_origin "$1" "$2"; else : > "$1/.git/config"; fi; }
-gh_render()   { run "$(json_gh | sed "s#$GH_REPO#$1#")" "${2:-80}"; }
-FORGEJO_REPO="$TMPROOT/forge-repo"
-gh_repo_with "$FORGEJO_REPO" ssh://git@forge-alias:2222/o/r.git
-printf 'v2\t-\tno_active\t0\n' > "$(gh_cache_file "$FORGEJO_REPO")"
-OUT=$(gh_render "$FORGEJO_REPO")
-assert_contains     "T56 Forgejo 저장소는 forgejo 라벨" "forgejo" "$(first_line "$OUT")"
-assert_not_contains "T56 Forgejo 저장소에 남은 옛 no_active 기록은 gh@--- 로 새지 않는다" "gh@" "$OUT"
-printf 'v2\toctocat\tok\t0\n' > "$(gh_cache_file "$FORGEJO_REPO")"
-OUT=$(gh_render "$FORGEJO_REPO")
-assert_not_contains "T56 Forgejo 저장소에 남은 옛 계정 기록은 보이지 않는다" "gh@" "$OUT"
-assert_contains     "T56 그 저장소도 forgejo 라벨" "forgejo" "$(first_line "$OUT")"
-RAW=$(run_raw "$(json_gh | sed "s#$GH_REPO#$FORGEJO_REPO#")" 80)
-assert_contains     "T56 forgejo 라벨은 기본 색(214)" "${AMBER}forgejo" "$RAW"
-OUT=$(gh_render "$FORGEJO_REPO" 120)
-assert_contains     "T56 전체 레이아웃의 계정 행에도 forgejo" "forgejo" "$OUT"
-assert_not_contains "T56 전체 레이아웃에 gh@ 없음" "gh@" "$OUT"
-mv "$FORGEJO_HOSTS" "$FORGEJO_HOSTS.off"
-OUT=$(gh_render "$FORGEJO_REPO")
-assert_not_contains "T56 호스트 목록이 없으면 Forgejo 도 다른 호스트로 보고 비표시(forgejo)" "forgejo" "$OUT"
-assert_not_contains "T56 호스트 목록이 없어도 계정은 보이지 않는다" "gh@" "$OUT"
-mv "$FORGEJO_HOSTS.off" "$FORGEJO_HOSTS"
-OTHER_HOST_REPO="$TMPROOT/other-host-repo"
-gh_repo_with "$OTHER_HOST_REPO" https://gitlab.example.com/o/r.git
-printf 'octocat' > "$(gh_cache_file "$OTHER_HOST_REPO")"
-OUT=$(gh_render "$OTHER_HOST_REPO")
-assert_not_contains "T56 다른 호스트 저장소는 캐시가 있어도 gh@ 없음" "gh@" "$OUT"
-assert_not_contains "T56 다른 호스트 저장소는 forgejo 도 없음" "forgejo" "$OUT"
-NO_ORIGIN_REPO="$TMPROOT/no-origin-repo"
-gh_repo_with "$NO_ORIGIN_REPO" ""
-printf 'octocat' > "$(gh_cache_file "$NO_ORIGIN_REPO")"
-OUT=$(gh_render "$NO_ORIGIN_REPO")
-assert_not_contains "T56 origin 없는 저장소는 캐시가 있어도 gh@ 없음" "gh@" "$OUT"
-assert_not_contains "T56 origin 없는 저장소는 forgejo 도 없음" "forgejo" "$OUT"
-GH_ALIAS_REPO="$TMPROOT/gh-alias-repo"
-gh_repo_with "$GH_ALIAS_REPO" git@github.com-work:o/r.git
-printf 'testwork' > "$(gh_cache_file "$GH_ALIAS_REPO")"
-OUT=$(gh_render "$GH_ALIAS_REPO")
-assert_contains     "T56 GitHub ssh 별칭(github.com-*)은 GitHub 로 본다" "gh@work" "$(first_line "$OUT")"
-# linked worktree 의 설정은 본 저장소의 .git 에 있다.
-if [ "$HAVE_GIT" = 1 ]; then
-  GH_WT="$TMPROOT/gh-worktree"
-  ( cd "$GITREPO" && git worktree add -q "$GH_WT" -b gh-wt ) 2>/dev/null || true
-  if [ -f "$GH_WT/.git" ]; then
-    printf 'octocat' > "$(gh_cache_file "$GH_WT")"
-    OUT=$(gh_render "$GH_WT")
-    assert_contains "T56 linked worktree 도 본 저장소의 origin 으로 분류한다" "gh@personal" "$(first_line "$OUT")"
-  fi
-fi
-
-# --- T57: 저장소 밖은 non-git 기록(프롬프트가 gh 기본 계정으로 쓴다)을 같은 형식으로 그린다 ---
-printf 'octocat' > "$GH_CACHE_DIR/non-git"
-OUT=$(run "$(json_without)" 80)
-assert_contains     "T57 저장소 밖(/tmp)은 non-git 기록의 계정" "gh@personal" "$(first_line "$OUT")"
-printf 'v2\toctocat\tauth_failed\t0\n' > "$GH_CACHE_DIR/non-git"
-OUT=$(run "$(json_without)" 80)
-assert_contains     "T57 non-git 기록의 상태도 같은 형식" "gh@personal!" "$(first_line "$OUT")"
-printf 'v2\t-\tno_active\t0\n' > "$GH_CACHE_DIR/non-git"
-OUT=$(run "$(json_without)" 120)
-assert_contains     "T57 전체 레이아웃에서도 저장소 밖 gh 표시" "gh@---" "$OUT"
-printf 'testwork' > "$(gh_cache_file "$GH_REPO")"
-printf 'octocat' > "$GH_CACHE_DIR/non-git"
-OUT=$(run "$(json_gh)" 80)
-assert_contains     "T57 저장소 안에서는 non-git 기록이 아니라 저장소 기록(work)" "gh@work" "$(first_line "$OUT")"
-rm -f "$GH_CACHE_DIR/non-git"
-printf 'octocat' > "$GH_CACHE_FILE"
-
-# --- T60: GIT_DIR·GIT_WORK_TREE 는 저장소를 걷기로 볼 수 없는 자리에 둔다 — 저장소 밖(non-git)으로 읽지 않고 gh 를 비운다 ---
-printf 'octocat' > "$GH_CACHE_DIR/non-git"
-OUT=$(export GIT_DIR="$GH_REPO/.git"; run "$(json_without)" 80)
-assert_not_contains "T60 GIT_DIR 가 있으면 non-git 기록의 계정을 쓰지 않는다" "gh@" "$OUT"
-OUT=$(export GIT_WORK_TREE="$GH_REPO"; run "$(json_without)" 80)
-assert_not_contains "T60 GIT_WORK_TREE 가 있어도 같다" "gh@" "$OUT"
-OUT=$(run '{"model":{"display_name":"Claude Opus 4.8"},"version":"2.11.0"}' 80)
-assert_not_contains "T60 작업 디렉터리를 모르는 입력도 non-git 계정을 쓰지 않는다" "gh@" "$OUT"
-rm -f "$GH_CACHE_DIR/non-git"
-
-# --- T58: idToken 이 없는 aws login 캐시(awscli 2.37)는 ? 로 굳지 않고 백그라운드 확인 결과를 따른다 ---
-#    확인 기록이 신선하면(10분 안) 확인 프로세스를 띄우지 않으므로 실제 aws 를 부르지 않는다.
-AWS_CHECK="$TMPROOT/cache/claude-statusline/aws-check"
-printf '{"accessToken":{"accessKeyId":"x","expiresAt":"2026-10-13T01:16:58Z"},"tokenType":"urn:x","refreshToken":"y"}' \
-  > "$AWS_LOGIN_CACHE_FIXTURE/session.json"
-printf '%s ok\n' "$(date +%s)" > "$AWS_CHECK"
-OUT=$(run "$(json_without)" 80)
-assert_not_contains "T58 새 형식 캐시 + 최근 확인 ok 는 aws:? 가 아니다" "aws:?" "$OUT"
-OUT=$(run "$(json_without)" 120)
-assert_contains     "T58 전체 레이아웃은 aws:✓" "aws:✓" "$OUT"
-printf '%s fail\n' "$(date +%s)" > "$AWS_CHECK"
-OUT=$(run "$(json_without)" 80)
-assert_contains     "T58 새 형식 캐시 + 최근 확인 fail 은 aws:expired" "aws:expired" "$OUT"
-rm -f "$AWS_CHECK"
-aws_cache "$AWS_LOGIN_CACHE_FIXTURE/session.json" "$(date +%s)"
-
 # --- T20: 요소별 색 — 모델명 시안, 파이프·라벨 등 dim 유지 ---
 RAW=$(run_raw "$(json_with)" 80)
 assert_contains "T20 모델명 시안(36)" "$CYAN" "$RAW"
@@ -973,7 +683,7 @@ FAKEGIT
       PATH="$TMPROOT/fakebin:$PATH" CLAUDE_PLUGIN_ROOT="$TMPROOT" \
       XDG_DATA_HOME="$TMPROOT/data" XDG_STATE_HOME="$STATE_HOME" XDG_CONFIG_HOME="$TMPROOT" \
       XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" \
-      AWS_LOGIN_CACHE_DIR="$AWS_LOGIN_CACHE_FIXTURE" CLAUDE_STATUSLINE_WIDTH=80 \
+      CLAUDE_STATUSLINE_WIDTH=80 \
       sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"
   }
 
@@ -1070,10 +780,10 @@ assert_not_contains "T35 세션 A 에 세션 B 의 계정이 섞이지 않음" "
 OUT=$(run "$SESS_B" 120); assert_contains     "T35 세션 B 는 자기 앵커의 계정" "b@example.com" "$(first_line "$OUT")"
 assert_not_contains "T35 세션 B 에 세션 A 의 계정이 섞이지 않음" "a@example.com" "$OUT"
 OUT=$(run "$SESS_C" 120)
-assert_match "T35 앵커가 없는 세션은 흐린 ? 한 글자" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] \? ⧉ acct-c /tmp aws:✓$' "$(first_line "$OUT")"
+assert_match "T35 앵커가 없는 세션은 흐린 ? 한 글자" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] \? ⧉ acct-c /tmp$' "$(first_line "$OUT")"
 assert_not_contains "T35 앵커가 없어도 .claude.json 의 이메일로 채우지 않음" "decoy@example.com" "$OUT"
 OUT=$(run "$(json_without)" 120)
-assert_match "T35 session_id 없는 페이로드도 ? 로 정직하게 모름" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] \? /tmp aws:✓$' "$(first_line "$OUT")"
+assert_match "T35 session_id 없는 페이로드도 ? 로 정직하게 모름" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] \? /tmp$' "$(first_line "$OUT")"
 
 # 세션 안 /login: 로그인 앵커가 그 세션만 바꾼다. 로그아웃은 ? 이다.
 live_proc P_ACCT
@@ -1085,7 +795,7 @@ assert_not_contains "T35 /login 뒤 옛 계정이 남지 않음" "a@example.com"
 OUT=$(run "$SESS_B" 120); assert_contains "T35 한 세션의 /login 은 다른 세션을 바꾸지 않음" "b@example.com" "$(first_line "$OUT")"
 seed_anchor acct-a "" logout 1700000019000
 OUT=$(run "$SESS_A" 120)
-assert_match "T35 로그아웃 뒤는 ?" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] \? ⧉ acct-a /tmp aws:✓$' "$(first_line "$OUT")"
+assert_match "T35 로그아웃 뒤는 ?" '^v2\.1\.11 [0-9][0-9]:[0-9][0-9] \? ⧉ acct-a /tmp$' "$(first_line "$OUT")"
 # 프로세스를 모르면 로그인 앵커도 추정(~)으로만 그린다. 그 앵커가 같은 대화를 돌린 이전 프로세스의 것일 수 있다.
 rm -f "$TMPROOT/sessions/$P_ACCT.json"; rm -rf "$RATE_DIR"
 seed_anchor acct-a c@example.com login 1700000029000
@@ -1215,8 +925,7 @@ rm -rf "$RATE_DIR"
 # --- T65: 읽는 파일 자리에 FIFO 가 있어도 렌더가 멈추지 않는다 ---
 #    상태·캐시·설정 파일 자리에 쓰는 쪽이 없는 FIFO 가 놓이면 막히는 읽기는 렌더를 붙든다. 자리마다 FIFO 를 두고 렌더가
 #    3초 안에 끝나는지, 줄이 나오는지, 쓰는 자리라면 FIFO 가 일반 파일로 바뀌는지 본다. 읽는 곳별 단언과 링크 결정은
-#    Go 시험(internal/*/fifo_test.go)이 맡는다. aws-check 자리는 낡은 로그인 캐시가 확인 프로세스를 띄워 T59 의
-#    호출 0회를 깨므로 여기서 다루지 않는다.
+#    Go 시험(internal/*/fifo_test.go)이 맡는다.
 FIFO_OUT="$TMPROOT/fifo-site.out"
 # fifo_site <시험 이름> <FIFO 경로> <렌더 함수> <페이로드> <폭>: 그 자리에 FIFO 를 두고 렌더해 3초 안에 끝나는지 본다.
 fifo_site() {
@@ -1246,83 +955,11 @@ if [ "$HAVE_GIT" -eq 1 ]; then
   rm -f "$FS_BRANCH_CACHE"
 fi
 
-# 사용자·프롬프트가 두는 파일은 원래 자리를 FIFO 로 바꿔 두었다가 되돌린다.
-FS_GH_PAYLOAD=$(json_gh)
-mv "$GH_CACHE_FILE" "$GH_CACHE_FILE.keep"
-fifo_site "T65 gh 캐시 자리가 FIFO 여도" "$GH_CACHE_FILE" run "$FS_GH_PAYLOAD" 120
-assert_not_contains "T65 gh 캐시 자리가 FIFO 면 gh 칸이 비어 있음" "gh@" "$(fifo_out)"
-rm -f "$GH_CACHE_FILE"; mv "$GH_CACHE_FILE.keep" "$GH_CACHE_FILE"
-
-FS_MAP="$TMPROOT/claude-statusline/gh-accounts"
-mv "$FS_MAP" "$FS_MAP.keep"
-fifo_site "T65 gh-accounts 자리가 FIFO 여도" "$FS_MAP" run "$FS_GH_PAYLOAD" 120
-assert_contains "T65 gh-accounts 자리가 FIFO 면 계정명 그대로" "gh@octocat" "$(fifo_out)"
-rm -f "$FS_MAP"; mv "$FS_MAP.keep" "$FS_MAP"
-
-mkdir -p "$TMPROOT/fj-repo/.git"
-set_origin "$TMPROOT/fj-repo" https://forgejo.example.test/o/r.git
-FS_HOSTS="$TMPROOT/claude-statusline/forgejo-hosts"
-fifo_site "T65 forgejo-hosts 자리가 FIFO 여도" "$FS_HOSTS" run "$(printf '%s' "$FS_PAYLOAD" | sed "s#\"current_dir\":\"/tmp\"#\"current_dir\":\"$TMPROOT/fj-repo\"#")" 120
-assert_not_contains "T65 forgejo-hosts 자리가 FIFO 면 forgejo 칸이 없음" "forgejo" "$(fifo_out)"
-rm -f "$FS_HOSTS"
-
-mv "$GH_REPO/.git/config" "$GH_REPO/.git/config.keep"
-fifo_site "T65 .git/config 자리가 FIFO 여도" "$GH_REPO/.git/config" run "$FS_GH_PAYLOAD" 120
-assert_not_contains "T65 .git/config 자리가 FIFO 면 origin 을 모르니 gh 칸이 비어 있음" "gh@" "$(fifo_out)"
-rm -f "$GH_REPO/.git/config"; mv "$GH_REPO/.git/config.keep" "$GH_REPO/.git/config"
-
-# aws 로그인 캐시: 신선한 확인 기록이 있으면 낡은 캐시 판정이 확인 프로세스를 띄우지 않는다.
-FS_AWS_DIR="$TMPROOT/aws-fifo-cache"
-FS_AWS_CHECK="$TMPROOT/cache/claude-statusline/aws-check"
-printf '%s ok\n' "$(date +%s)" > "$FS_AWS_CHECK"
-FS_AWS_KEEP=$AWS_LOGIN_CACHE_FIXTURE
-AWS_LOGIN_CACHE_FIXTURE=$FS_AWS_DIR
-fifo_site "T65 aws 로그인 캐시 자리가 FIFO 여도" "$FS_AWS_DIR/session.json" run "$FS_PAYLOAD" 120
-AWS_LOGIN_CACHE_FIXTURE=$FS_AWS_KEEP
-assert_contains "T65 aws 로그인 캐시 자리가 FIFO 면 확인 기록을 따름" "aws:✓" "$(fifo_out)"
-rm -f "$FS_AWS_CHECK"
-
 # tty 경로 캐시: 폭을 주입하지 않아 tty 를 찾는 렌더이고, 쓰는 자리라 FIFO 가 있어도 끝나야 한다.
 FS_TTY_CACHE="$TMPROOT/cache/claude-statusline/tty-path.env"
 fifo_site "T65 tty 경로 캐시 자리가 FIFO 여도" "$FS_TTY_CACHE" run_auto "$FS_PAYLOAD" ""
 assert_contains "T65 tty 경로 캐시 자리가 FIFO 여도 줄이 나옴" "v2.1.11" "$(first_line "$(fifo_out)")"
 rm -f "$FS_TTY_CACHE"
-
-# --- T36: aws login 캐시 디렉터리 규칙 — 캐시가 없으면 세그먼트가 통째로 빠지고,
-#     AWS_LOGIN_CACHE_DIR 오버라이드가 실제로 반영된다. 전체 레이아웃(81)은 모든 상태를
-#     보이고, 압축(80)은 aws:✓ 만 숨긴다 ---
-AWS_EMPTY_CACHE="$TMPROOT/aws-login-cache-empty"
-mkdir -p "$AWS_EMPTY_CACHE"
-aws_render() { printf '%s' "$(json_with_gh)" | \
-  CLAUDE_PLUGIN_ROOT="$TMPROOT" XDG_DATA_HOME="$TMPROOT/data" XDG_STATE_HOME="$STATE_HOME" XDG_CONFIG_HOME="$TMPROOT" \
-  XDG_CACHE_HOME="$TMPROOT/cache" CLAUDE_CONFIG_DIR="$TMPROOT" \
-  CLAUDE_STATUSLINE_WIDTH="${2:-81}" \
-  AWS_LOGIN_CACHE_DIR="$1" sh "$SL" 2>/dev/null | sed "s/${ESC}\[[0-9;]*m//g"; }
-assert_not_contains "T36 캐시 디렉터리가 비어 있으면 aws 세그먼트가 빠진다" "aws:" "$(aws_render "$AWS_EMPTY_CACHE")"
-assert_not_contains "T36 캐시 디렉터리가 비어 있으면 압축에서도 빠진다" "aws:" "$(aws_render "$AWS_EMPTY_CACHE" 80)"
-
-AWS_ONE_CACHE="$TMPROOT/aws-login-cache-one"
-mkdir -p "$AWS_ONE_CACHE"
-aws_cache "$AWS_ONE_CACHE/session.json" "$(date +%s)"
-assert_contains     "T36 AWS_LOGIN_CACHE_DIR 오버라이드가 새 캐시를 읽어 aws:✓" "aws:✓" "$(aws_render "$AWS_ONE_CACHE")"
-assert_not_contains "T36 압축은 정상 aws:✓ 를 숨긴다" "aws:" "$(aws_render "$AWS_ONE_CACHE" 80)"
-
-# iat 는 로그인이 아니라 마지막 갱신 시각이다. 낡은 iat 는 직전 확인 결과(aws-check)를 따르고,
-# 확인이 신선하면 실제 aws 를 부르지 않는다.
-AWS_CHECK="$TMPROOT/cache/claude-statusline/aws-check"
-aws_cache "$AWS_ONE_CACHE/session.json" "$(( $(date +%s) - 13 * 3600 ))"
-printf '%s fail\n' "$(date +%s)" > "$AWS_CHECK"
-assert_contains "T36 iat 가 낡고 직전 확인이 fail 이면 aws:expired" "aws:expired" "$(aws_render "$AWS_ONE_CACHE")"
-assert_contains "T36 압축 1행에 aws:expired 표시" "gh@personal aws:expired" "$(first_line "$(aws_render "$AWS_ONE_CACHE" 80)")"
-printf '%s ok\n' "$(date +%s)" > "$AWS_CHECK"
-assert_contains "T36 iat 가 낡아도 직전 확인이 ok 면 aws:✓" "aws:✓" "$(aws_render "$AWS_ONE_CACHE")"
-rm -f "$AWS_CHECK"
-aws_cache "$AWS_ONE_CACHE/session.json" "$(date +%s)"
-assert_contains "T36 같은 파일에 재로그인하면 aws:✓ 로 돌아온다" "aws:✓" "$(aws_render "$AWS_ONE_CACHE")"
-printf '{}' > "$AWS_ONE_CACHE/session.json"
-printf '%s ?\n' "$(date +%s)" > "$AWS_CHECK"   # 판독 불가 캐시도 확인을 띄우므로, 결과가 불명인 신선한 기록으로 막는다
-assert_contains "T36 idToken 을 읽지 못하면 aws:?" "aws:?" "$(aws_render "$AWS_ONE_CACHE")"
-assert_contains "T36 압축도 불명(aws:?)을 표시" "gh@personal aws:?" "$(first_line "$(aws_render "$AWS_ONE_CACHE" 80)")"
 
 # --- T42: 두 매니페스트의 버전이 같다 ---
 #    불변은 두 매니페스트의 버전 동일성이다. 리터럴 버전을 못박으면 다음 기능 변경의
@@ -1370,13 +1007,6 @@ OUT=$(run_keep "$(with_rl "$(json_pct 3 41)")" 80)
 assert_match    "T54 새 창이 화면을 차지" '5h 3%' "$OUT"
 assert_contains "T54 새 창이 파일에도 반영" "fivePct=3" "$(cat "$RATE_CACHE")"
 rm -f "$RATE_CACHE"
-
-# --- T59: 스위트가 실제 aws 를 한 번도 부르지 않았다 ---
-#    낡거나 판독할 수 없는 aws 캐시는 확인 프로세스를 띄운다. 그 시나리오는 신선한 aws-check 기록으로 막는다.
-#    확인 프로세스는 렌더와 분리돼 늦게 호출을 남기므로 잠시 기다린 뒤 센다. 실제 로그인 캐시를 읽지 않는 것은
-#    위 export 가 맡고, 이 단언은 확인 프로세스가 뜨지 않았음만 본다.
-sleep 1
-assert_equals "T59 가짜 aws 호출 기록 0줄" "0" "$(wc -l < "$AWS_CALLS" | tr -d ' ')"
 
 printf '\n---\nTOTAL pass=%d fail=%d\n' "$pass" "$fail"
 completed=1

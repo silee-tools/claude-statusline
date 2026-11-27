@@ -27,32 +27,6 @@ func TestClaudeStateDirUsesXDGStateHomeOrHomeDefault(t *testing.T) {
 	}
 }
 
-func TestCompactStatusKeepsGHAlwaysAndAWSOnlyWhenNotHealthy(t *testing.T) {
-	cases := []struct {
-		name, gh, aws string
-		healthy       bool
-		want          []string
-	}{
-		{"정상 gh 상시 표시", "gh@a", "aws:ok", true, []string{"gh@a"}},
-		{"불명도 표시", "gh@a?", "aws:?", false, []string{"gh@a?", "aws:?"}},
-		{"저장소 밖 aws 이상", "", "aws:expired", false, []string{"aws:expired"}},
-		{"저장소 밖 정상", "", "aws:ok", true, nil},
-		{"aws 캐시 없음", "gh@a", "", false, []string{"gh@a"}},
-	}
-	for _, c := range cases {
-		got := compactStatus(c.gh, c.aws, c.healthy)
-		if len(got) != len(c.want) {
-			t.Errorf("%s: %q, want %q", c.name, got, c.want)
-			continue
-		}
-		for i := range got {
-			if got[i] != c.want[i] {
-				t.Errorf("%s: %q, want %q", c.name, got, c.want)
-			}
-		}
-	}
-}
-
 // testGen and testRun are the receiver generation and start the fixtures store their anchors
 // under.
 const (

@@ -16,31 +16,30 @@ At 80 columns or fewer, the compact layout uses up to two rows, each within
 the detected width:
 
 ```text
-feature/PROJ-123-post-editor gh@personal
+feature/PROJ-123-post-editor
 ctx 68% Opus 4.8 ● 5h 47% ↺2h30m 7d 83%▲ ↺3d16h
 ```
 
 At 81 columns or more, the full layout puts the version, the clock, the Claude
-account, the session id, the location, and the gh and aws indicators on one first
+account, the session id, and the location on one first
 row, followed by the three gauge rows:
 
 ```text
-v0.11.0 17:14 dev@example.com ⧉ 11111111-2222-3333-4444-555555555555 ~/↪1/webapp/↪1/src feature/PROJ-123-post-editor gh@personal aws:✓
+v0.11.0 17:14 dev@example.com ⧉ 11111111-2222-3333-4444-555555555555 ~/↪1/webapp/↪1/src feature/PROJ-123-post-editor
 ctx █████████████░░░░░░░ 68% Opus 4.8 ●
  5h █████████░░░░░░░░░░░ 47% ↺2h30m
  7d ████████████████▓░░░ 83% ↺3d16h
 ```
 
 When that row does not fit, the full layout breaks it before the path, down to
-six rows (see [Layouts](#layouts)).
+five rows (see [Layouts](#layouts)).
 
 Rows with no data are omitted in either layout.
 
 ## Screenshots
 
 Terminal captures of `plugins/claude/claude-statusline/scripts/statusline.sh` run with a sample status line payload
-in a throwaway home directory. The account, gh, and aws indicators are absent
-because nothing there supplies them.
+in a throwaway home directory. The account is absent because nothing there supplies it.
 
 150 columns — the full layout with its first row on one line:
 
@@ -84,14 +83,8 @@ narrowing the window keeps the earlier output until the next update;
 The compact layout has up to two rows, and a row with nothing to show is left
 out:
 
-- **Row 1 (branch and indicators)** contains the git branch, the gh slot
-  (`gh@<account>` or `forgejo`, see [GitHub account indicator](#github-account-indicator))
-  whenever it has something to show, and `aws:<state>` only when the login
-  is not healthy (`aws:expired` or `aws:?`). An uncertain or failing gh state
-  (`gh@x?`, `gh@x!`) is shown the same way. Indicators are never cut. The branch
-  takes the columns they leave, with `…` marking a cut, and is dropped when
-  fewer than 8 columns remain. With no branch, no gh slot, and a healthy aws
-  login, the row is omitted.
+- **Row 1 (branch)** contains the git branch, cut with `…` to the detected
+  width. With no branch, the row is omitted.
 - **Row 2 (gauges)** contains context usage, model, reasoning effort, and the
   5-hour and 7-day limits. Rate data that is absent is omitted independently.
   When the row is too wide, it drops the overpace duration `🔥…`, then the `7d`
@@ -102,16 +95,14 @@ ANSI color codes count as zero width, and wide characters such as Hangul and CJK
 are never split.
 
 The full layout adds the clock, the path, the Claude account, the version, and
-the full session id, shows every `aws:` state, and gives `ctx`, `5h`, and `7d`
+the full session id, and gives `ctx`, `5h`, and `7d`
 separate 20-cell gauge rows. Its first row lists the version, the clock, the
-Claude account, the session id, the path, the branch, gh, and aws in that order,
-one space apart, and an item with nothing to show is skipped. When the row is
-wider than the usable width (see [Width selection](#width-selection)), it breaks
-before the path: the version through the session id stay on the first row and
-the path, branch, gh, and aws take a second. When that second row is still too
-wide, the path with the branch and the gh and aws indicators take a row each,
-which makes six rows in all. A row of that last stage can still be wider than the
-window, and Claude Code then cuts it with `…`.
+Claude account, the session id, the path, and the branch in that order, one space
+apart, and an item with nothing to show is skipped. When the row is wider than
+the usable width (see [Width selection](#width-selection)), it breaks before the
+path: the version through the session id stay on the first row and the path and
+branch take a second, which makes five rows in all. A second row can still be
+wider than the window, and Claude Code then cuts it with `…`.
 
 The path collapses `$HOME` to `~`, preserves repository and current-directory
 names, and marks skipped segments as `↪N`. The branch and session glyphs need a
@@ -196,7 +187,7 @@ CLAUDE_CONFIG_DIR="$HOME/.claude-work" claude
 ```
 
 상태줄의 계정 칸은 설정 디렉터리가 아니라 세션별로 정해집니다([Claude account indicator](#claude-account-indicator)).
-한도 캐시도 세션별 파일이고, GitHub·AWS·Git·터미널 폭 캐시와 렌더 바이너리·포인터는 공용입니다.
+한도 캐시도 세션별 파일이고, Git·터미널 폭 캐시와 렌더 바이너리·포인터는 공용입니다.
 다른 계정 설치와 진행 중인 빌드를 보호하기 위해 바이너리는 자동 삭제하지 않습니다.
 따라서 사용하지 않는 판본의 바이너리가 남을 수 있습니다. 0.21.0 이하의 기존 빌드
 스크립트는 공용 바이너리를 삭제할 수 있으므로 여러 계정에서 사용할 때는 각 계정의
@@ -257,62 +248,8 @@ untouched.
 | `git` | required | the branch indicator |
 | `ps` | optional | automatic terminal-width detection (falls back to the full layout) |
 | a supervisor for `claude-statusline-otlp` | optional | keeping the receiver running; without it the account slot stays empty (see [Claude account indicator](#claude-account-indicator)) |
-| `aws` (AWS CLI 2.32+) | optional | `aws login`'s session cache, read for the `aws:` session indicator: a cache whose `idToken` was refreshed within 15 minutes is `✓`; any other cache, including one without an `idToken` (newer AWS CLI), is settled by a background `aws sts get-caller-identity`, at most every 10 minutes (`✓` on success, `expired` on failure) |
 
 ## Configuration
-
-### GitHub account indicator
-
-The gh slot follows the `origin` remote of the repository the session is in, the
-remote the shell prompt that writes the cache resolves the account from:
-
-| Where the session is | Shows |
-|---|---|
-| origin host is `github.com` or an ssh alias `github.com-*` | `gh@<account>` and its state |
-| origin host is listed in `forgejo-hosts` | `forgejo` only; no account |
-| any other origin, or no origin | nothing |
-| outside a git repository | `gh@<account>` of the default (active) account |
-
-The host is the one in `scheme://[user@]host[:port]/path` or `[user@]host:path`,
-compared case-insensitively. The Forgejo hosts are read from
-`${XDG_CONFIG_HOME:-$HOME/.config}/claude-statusline/forgejo-hosts`, one host per
-line, `#` starting a comment; without that file no host is Forgejo. The origin is read
-from the repository's `.git/config` (following a worktree's or submodule's `.git`
-file), without starting `git`, so `insteadOf` rewrites and included files are not
-applied. While `GIT_DIR` or `GIT_WORK_TREE` is set the repository cannot be located,
-so nothing is shown.
-
-A GitHub login is mapped to a label and color. The mapping is not hardcoded — it is
-read from `${XDG_CONFIG_HOME:-$HOME/.config}/claude-statusline/gh-accounts`, one entry
-per line:
-
-```
-# <github-login>=<label>,<256-color-code>
-octocat=personal,214
-some-work-login=work,27
-```
-
-The login and its status are read from
-`${XDG_CACHE_HOME:-$HOME/.cache}/gh-prompt/<repository root>` (written by your
-shell prompt; this plugin does not ship one), where the file name is the physical repository root with each `/`
-replaced by `%`; outside a repository it is `non-git`, which the prompt fills with
-the active account of `gh auth status`. The cache is read only for
-those two cases, so a record left for a Forgejo or other repository is never shown.
-The segment is omitted when the file does not exist, which includes roots whose name
-exceeds 240 bytes (Korean characters count 3 bytes each): the prompt writes no cache
-for them. The file holds one tab-separated record:
-
-```
-v2	<login-or-->	<state>	<deadline-epoch-or-0>
-```
-
-Each state renders differently: `ok` shows `gh@<label>`, `rate_limited`
-appends a yellow `⏳<minutes>m` until the deadline passes, `auth_failed` shows
-a red `gh@<label>!`, `unknown` shows a grey `gh@<label>?`, and `no_active`
-shows `gh@---`. A single line without tabs is read as a bare login, so a
-prompt that records only the login still works. An unmapped login shows
-`gh@<login>`; an empty or malformed file shows `gh@?`; color codes must be
-numeric.
 
 ### Claude account indicator
 
@@ -537,7 +474,7 @@ generation that is not positive. At start and
 then hourly it removes what is past retention. Where stderr goes, and how long it is
 kept, is the supervisor's setting.
 
-**Files.** State files are kept 30 days with at most 2,000 files in each of `otel/sessions`, `pids/` and `fingerprints/`. The receiver prunes all three at start, hourly and after each write, and a reader ignores an anchor older than 30 days even when nothing pruned it (the cache and data rows below say their own). Both programs write a state file by renaming a temporary file over it, so the statusline reads one only as a regular file, opened without blocking and without following a link: a FIFO, a link or a directory in the place of an anchor, the generation file, a pid file, a rate-limit cache or a fingerprint baseline is no state, and cannot hold the render. Every other state, cache or config file the render reads gets the same non-blocking, regular-file-only read, so a FIFO or a device in its place reads as absent (the receiver lock files are opened by the same rule in `internal/anchor`; the tty device is opened for its window size and is not a file read). The statusline's own cache files (`git-branch.env`, `tty-path.env`, `aws-check`) are read without following a link. Files that someone else writes or places (the gh prompt cache, `gh-accounts`, `forgejo-hosts`, git's `HEAD`, `config` and `.git` pointer, the aws login cache) are read through a link, which a dotfile manager may have put there, but the link must end on a regular file; a link to a FIFO reads as absent too. The caches the statusline writes at a path it also reads (`git-branch.env`, `tty-path.env`, `aws-check`) are replaced by renaming a temporary file named for the process over them, which turns a planted FIFO into a regular file and leaves a FIFO at any other name alone.
+**Files.** State files are kept 30 days with at most 2,000 files in each of `otel/sessions`, `pids/` and `fingerprints/`. The receiver prunes all three at start, hourly and after each write, and a reader ignores an anchor older than 30 days even when nothing pruned it (the cache and data rows below say their own). Both programs write a state file by renaming a temporary file over it, so the statusline reads one only as a regular file, opened without blocking and without following a link: a FIFO, a link or a directory in the place of an anchor, the generation file, a pid file, a rate-limit cache or a fingerprint baseline is no state, and cannot hold the render. Every other state, cache or config file the render reads gets the same non-blocking, regular-file-only read, so a FIFO or a device in its place reads as absent (the receiver lock files are opened by the same rule in `internal/anchor`; the tty device is opened for its window size and is not a file read). The statusline's own cache files (`git-branch.env`, `tty-path.env`) are read without following a link. Files that someone else writes or places (git's `HEAD`) are read through a link, which a dotfile manager may have put there, but the link must end on a regular file; a link to a FIFO reads as absent too. The caches the statusline writes at a path it also reads (`git-branch.env`, `tty-path.env`) are replaced by renaming a temporary file named for the process over them, which turns a planted FIFO into a regular file and leaves a FIFO at any other name alone.
 
 | Path | Written by | Holds | Kept |
 |---|---|---|---|

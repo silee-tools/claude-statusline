@@ -20,8 +20,8 @@ func plain(s string) string { return ansi.ReplaceAllString(s, "") }
 func sample() View {
 	return View{
 		Clock: "08:06", Path: "~/proj", Branch: "main",
-		Account: "octocat@example.com", Meta: []string{"gh@personal", "aws:✓"},
-		Model: "Opus 4.8", Effort: "●", CtxPct: 20,
+		Account: "octocat@example.com",
+		Model:   "Opus 4.8", Effort: "●", CtxPct: 20,
 		Five:    Gauge{Present: true, Pct: 24, ResetsAt: 2_000_000_000, HasReset: true, Window: 18000},
 		Week:    Gauge{Present: true, Pct: 41, ResetsAt: 2_000_600_000, HasReset: true, Window: 604800},
 		Version: "2.1.11", Session: session, Width: 120,
@@ -42,7 +42,7 @@ func TestFullLayoutRowOrder(t *testing.T) {
 			t.Errorf("행%d 에 %q 가 없다: %q", i+1, w, rows[i])
 		}
 	}
-	for _, w := range []string{"gh@personal", "v2.1.11"} {
+	for _, w := range []string{"main", "v2.1.11"} {
 		if !strings.Contains(rows[0], w) {
 			t.Errorf("첫 줄에 %q 가 없다: %q", w, rows[0])
 		}
@@ -57,8 +57,8 @@ func longHeader() View {
 	return v
 }
 
-// deepHeader 는 위치 묶음이 81열 이상에서도 둘째 줄을 넘기도록 경로와 브랜치를 더 길게 잡아, 81~220열
-// 안에서 한 줄·둘째 줄로 내림·위치와 지표를 따로 내림의 세 단계가 모두 나오게 하는 입력이다.
+// deepHeader 는 경로와 브랜치를 더 길게 잡아 81~220열 안에서 한 줄과 둘째 줄로 내림의 두 단계가 모두
+// 나오게 하는 입력이다.
 func deepHeader() View {
 	v := longHeader()
 	v.Path = "~/webapp/packages/app/src/components/editor"
@@ -81,12 +81,11 @@ func spaced(items ...string) string {
 	return strings.Join(kept, " ")
 }
 
-// header 는 첫 줄의 세 묶음이다. head 는 버전·시각·계정·세션, place 는 경로와 브랜치, status 는 gh 와 aws
-// 이다. 렌더 결과에서 읽으면 경계 계산이 검증 대상에 기대게 되므로 입력 값에서 직접 만든다.
-type header struct{ head, place, status string }
+// header 는 첫 줄의 두 묶음이다. head 는 버전·시각·계정·세션, place 는 경로와 브랜치다. 렌더 결과에서
+// 읽으면 경계 계산이 검증 대상에 기대게 되므로 입력 값에서 직접 만든다.
+type header struct{ head, place string }
 
-func (h header) tail() string { return spaced(h.place, h.status) }
-func (h header) row() string  { return spaced(h.head, h.place, h.status) }
+func (h header) row() string { return spaced(h.head, h.place) }
 
 func headerOf(v View) header {
 	version, sess := "", ""
@@ -101,17 +100,16 @@ func headerOf(v View) header {
 		place = spaced(place, theme.BranchGlyph+v.Branch)
 	}
 	return header{
-		head:   spaced(version, v.Clock, v.Account, sess),
-		place:  place,
-		status: strings.Join(v.Meta, " "),
+		head:  spaced(version, v.Clock, v.Account, sess),
+		place: place,
 	}
 }
 
 func TestFullJoinsTheFirstRowInOrderWithSingleSpaces(t *testing.T) {
-	// 버전 → 시각 → 계정 → 세션 → 경로 → 브랜치 → gh → aws 를 공백 한 칸으로 이어 붙인다. 폭을 모를 때
+	// 버전 → 시각 → 계정 → 세션 → 경로 → 브랜치를 공백 한 칸으로 이어 붙인다. 폭을 모를 때
 	// (0)도 넉넉한 폭(400)도 같다 — 남는 칸을 어디에도 채우지 않는다.
 	want := "v2.1.11 08:06 octocat@example.com " + theme.SessionGlyph + " " + session +
-		" ~/proj " + theme.BranchGlyph + "main gh@personal aws:✓"
+		" ~/proj " + theme.BranchGlyph + "main"
 	for _, w := range []int{0, 120, 400} {
 		v := sample()
 		v.Width = w
@@ -131,16 +129,14 @@ func TestFullJoinsTheFirstRowInOrderWithSingleSpaces(t *testing.T) {
 }
 
 func TestFullBreaksBeforeThePathAsWidthShrinks(t *testing.T) {
-	// 한 줄이 칸 수 − 4 안에 정확히 들면 4행, 한 칸 모자라면 경로 앞에서 끊어 경로·브랜치·gh·aws 를 통째로
-	// 둘째 줄에 둔 5행이다. 그 둘째 줄도 한 칸 모자라면 경로·브랜치와 gh·aws 를 각자 줄에 둔 6행이다.
-	// 어느 단계에서도 항목의 순서는 같고 게이지 세 줄은 그대로다.
+	// 한 줄이 칸 수 − 4 안에 정확히 들면 4행, 한 칸 모자라면 경로 앞에서 끊어 경로·브랜치를 둘째 줄에 둔
+	// 5행이다. 둘째 줄이 넘쳐도 더 나누지 않으며 게이지 세 줄은 그대로다.
 	now := int64(1_999_000_000)
 	for name, branch := range map[string]string{"브랜치 있음": deepHeader().Branch, "브랜치 없음": ""} {
 		v := deepHeader()
 		v.Branch = branch
 		h := headerOf(v)
 		needOne := width.Visible(h.row()) + inset
-		needTail := width.Visible(h.tail()) + inset
 		rowsAt := func(w int) []string {
 			v.Width = w
 			return strings.Split(plain(Full(v, now)), "\n")
@@ -150,57 +146,43 @@ func TestFullBreaksBeforeThePathAsWidthShrinks(t *testing.T) {
 		if rows := rowsAt(needOne); len(rows) != 4 || rows[0] != h.row() {
 			t.Errorf("%s 폭 %d: 한 줄에 이어 붙인 4행이어야 한다 — %q", name, needOne, rows)
 		}
-		for _, w := range []int{needOne - 1, needTail} {
+		for _, w := range []int{needOne - 1, width.Visible(h.place) + inset - 1} {
 			rows := rowsAt(w)
-			if len(rows) != 5 || rows[0] != h.head || rows[1] != h.tail() || strings.Join(rows[2:], "\n") != gauges {
-				t.Errorf("%s 폭 %d: 버전·시각·계정·세션 / 경로·브랜치·gh·aws / 게이지의 5행이어야 한다 — %q", name, w, rows)
+			if len(rows) != 5 || rows[0] != h.head || rows[1] != h.place || strings.Join(rows[2:], "\n") != gauges {
+				t.Errorf("%s 폭 %d: 버전·시각·계정·세션 / 경로·브랜치 / 게이지의 5행이어야 한다 — %q", name, w, rows)
 			}
-		}
-		rows := rowsAt(needTail - 1)
-		want := strings.Join([]string{h.head, h.place, h.status, gauges}, "\n")
-		if strings.Join(rows, "\n") != want {
-			t.Errorf("%s 폭 %d: 첫 묶음, 경로·브랜치, gh·aws, 게이지의 6행이어야 한다 — %q, want %q", name, needTail-1, rows, want)
 		}
 	}
 }
 
 func TestFullShedsOnlyAsFarAsTheWidthRequires(t *testing.T) {
-	// 81~220열을 돌며 칸 수 − 4 안에 드는 가장 합쳐진 단계가 쓰이는지 본다. 세 단계가 모두 나타나야
+	// 81~220열을 돌며 칸 수 − 4 안에 드는 가장 합쳐진 단계가 쓰이는지 본다. 두 단계가 모두 나타나야
 	// 이 구간이 단계 전환을 실제로 지나간다는 양성 대조가 선다.
 	now := int64(1_999_000_000)
 	v := deepHeader()
 	h := headerOf(v)
 	needOne := width.Visible(h.row()) + inset
-	needTail := width.Visible(h.tail()) + inset
 	stages := map[int]int{}
 	for w := 81; w <= 220; w++ {
 		v.Width = w
 		out := plain(Full(v, now))
 		rows := strings.Split(out, "\n")
 		stages[len(rows)]++
-		wantRows := 6
-		switch {
-		case w >= needOne:
+		wantRows := 5
+		if w >= needOne {
 			wantRows = 4
-		case w >= needTail:
-			wantRows = 5
 		}
 		if len(rows) != wantRows {
 			t.Errorf("폭 %d: %d행, want %d행 — %q", w, len(rows), wantRows, rows)
 			continue
 		}
-		if wantRows < 6 {
-			if got := width.Visible(rows[wantRows-4]); got > w-inset {
-				t.Errorf("폭 %d: 마지막 머리 줄 폭 %d 가 사용 폭 %d 를 넘는다 — %q", w, got, w-inset, rows[wantRows-4])
-			}
-		}
-		for _, piece := range []string{h.head, h.place, h.status} {
+		for _, piece := range []string{h.head, h.place} {
 			if !strings.Contains(out, piece) {
 				t.Errorf("폭 %d: 표시 항목 %q 가 사라졌다", w, piece)
 			}
 		}
 	}
-	for _, n := range []int{4, 5, 6} {
+	for _, n := range []int{4, 5} {
 		if stages[n] == 0 {
 			t.Errorf("81~220열에 %d행 단계가 한 번도 나오지 않았다: %v", n, stages)
 		}
@@ -222,20 +204,16 @@ func TestFullSkipsMissingItemsAndKeepsTheRestInOrder(t *testing.T) {
 		want   string // 폭 0 의 첫 줄
 	}{
 		{"계정 없음", func(v *View) { v.Account = "" },
-			"v2.1.11 08:06 " + sess + " " + place + " gh@personal aws:✓"},
+			"v2.1.11 08:06 " + sess + " " + place},
 		{"버전·세션 없음", func(v *View) { v.Version, v.Session = "", "" },
-			"08:06 octocat@example.com " + place + " gh@personal aws:✓"},
+			"08:06 octocat@example.com " + place},
 		{"세션 없음(버전만 남음)", func(v *View) { v.Session = "" },
-			"v2.1.11 08:06 octocat@example.com " + place + " gh@personal aws:✓"},
+			"v2.1.11 08:06 octocat@example.com " + place},
 		{"브랜치 없음", func(v *View) { v.Branch = "" },
-			"v2.1.11 08:06 octocat@example.com " + sess + " ~/webapp/packages/app/src gh@personal aws:✓"},
+			"v2.1.11 08:06 octocat@example.com " + sess + " ~/webapp/packages/app/src"},
 		{"경로가 보이지 않고 브랜치도 없음", func(v *View) { v.Path, v.Branch = hiddenPath, "" },
-			"v2.1.11 08:06 octocat@example.com " + sess + " gh@personal aws:✓"},
-		{"gh 없음", func(v *View) { v.Meta = []string{"aws:✓"} },
-			"v2.1.11 08:06 octocat@example.com " + sess + " " + place + " aws:✓"},
-		{"gh·aws 없음", func(v *View) { v.Meta = nil },
-			"v2.1.11 08:06 octocat@example.com " + sess + " " + place},
-		{"계정·버전·세션·gh·aws 없음", func(v *View) { v.Account, v.Version, v.Session, v.Meta = "", "", "", nil },
+			"v2.1.11 08:06 octocat@example.com " + sess},
+		{"계정·버전·세션 없음", func(v *View) { v.Account, v.Version, v.Session = "", "", "" },
 			"08:06 " + place},
 	} {
 		v := longHeader()
@@ -381,7 +359,7 @@ func TestHighUsageKeepsTheOvershootBoundaryVisible(t *testing.T) {
 
 func TestFullLayoutKeepsTheWholeSessionID(t *testing.T) {
 	// 전체 ID 를 남기는 이유는 사용자가 그것을 복사해 쓰기 때문이다. 한 줄에 이어 붙이든(폭 0) 경로 앞에서
-	// 끊어 둘째 줄로 내리든(130) 위치와 지표를 따로 내리든(90) 같다.
+	// 끊어 둘째 줄로 내리든(130, 90) 같다.
 	v := deepHeader()
 	for _, w := range []int{0, 130, 90} {
 		v.Width = w
@@ -394,12 +372,11 @@ func TestFullLayoutKeepsTheWholeSessionID(t *testing.T) {
 func TestCompactLayoutIsTwoRows(t *testing.T) {
 	v := sample()
 	v.Width = 70
-	v.Status = []string{"gh@personal"}
 	rows := strings.Split(plain(Compact(v, 1_999_000_000)), "\n")
 	if len(rows) != 2 {
 		t.Fatalf("압축 레이아웃은 2행이다: %d행 — %q", len(rows), rows)
 	}
-	if want := theme.BranchGlyph + "main gh@personal"; rows[0] != want {
+	if want := theme.BranchGlyph + "main"; rows[0] != want {
 		t.Errorf("행1 = %q, want %q", rows[0], want)
 	}
 	for _, w := range []string{"ctx", "Opus 4.8", "5h", "7d"} {
@@ -411,71 +388,29 @@ func TestCompactLayoutIsTwoRows(t *testing.T) {
 		t.Errorf("압축 레이아웃에는 막대를 그리지 않는다: %q", rows[1])
 	}
 	out := plain(Compact(v, 1_999_000_000))
-	for _, gone := range []string{"08:06", "~/proj", "octocat@example.com", "v2.1.11", theme.SessionGlyph, "aws:✓"} {
+	for _, gone := range []string{"08:06", "~/proj", "octocat@example.com", "v2.1.11", theme.SessionGlyph} {
 		if strings.Contains(out, gone) {
 			t.Errorf("압축 레이아웃에 %q 가 남았다: %q", gone, out)
 		}
 	}
 }
 
-func TestCompactShowsUnknownIndicatorsToo(t *testing.T) {
-	// 불명(?)도 이상과 같이 1행에 보인다. 침묵은 정상만 뜻하게 한다.
-	v := sample()
-	v.Width = 70
-	v.Status = []string{"gh@personal?", "aws:?"}
-	if want, row := theme.BranchGlyph+"main gh@personal? aws:?", strings.Split(plain(Compact(v, 1_999_000_000)), "\n")[0]; row != want {
-		t.Errorf("1행 = %q, want %q (브랜치 → gh → aws 순서)", row, want)
-	}
-}
-
 func TestCompactOutsideARepositoryOmitsTheFirstRow(t *testing.T) {
 	v := sample()
-	v.Width, v.Branch, v.Status = 70, "", nil
+	v.Width, v.Branch = 70, ""
 	rows := strings.Split(plain(Compact(v, 1_999_000_000)), "\n")
 	if len(rows) != 1 || !strings.HasPrefix(rows[0], "ctx") {
-		t.Fatalf("저장소 밖 정상 상태는 게이지 행만 낸다: %q", rows)
-	}
-	v.Status = []string{"aws:expired"}
-	rows = strings.Split(plain(Compact(v, 1_999_000_000)), "\n")
-	if len(rows) != 2 || rows[0] != "aws:expired" {
-		t.Fatalf("저장소 밖 aws 이상은 aws 만 1행에 낸다: %q", rows)
+		t.Fatalf("저장소 밖은 게이지 행만 낸다: %q", rows)
 	}
 }
 
-func TestCompactNeverCutsTheIndicators(t *testing.T) {
-	// 예산 = 폭 - 2(글리프) - 1(공백) - 지표 폭. 지표 "gh@personal aws:expired" 는 23열이다.
-	v := sample()
-	v.Branch = "feature/long-branch-name"
-	v.Status = []string{"gh@personal", "aws:expired"}
-
-	v.Width = 34 // 예산 8: 브랜치를 줄임표로 자른다
-	row := strings.Split(plain(Compact(v, 1_999_000_000)), "\n")[0]
-	if want := theme.BranchGlyph + "feature… gh@personal aws:expired"; row != want {
-		t.Errorf("예산 8: %q, want %q", row, want)
-	}
-
-	v.Width = 33 // 예산 7: 브랜치를 통째로 뺀다
-	row = strings.Split(plain(Compact(v, 1_999_000_000)), "\n")[0]
-	if want := "gh@personal aws:expired"; row != want {
-		t.Errorf("예산 7: %q, want %q", row, want)
-	}
-
-	v.Width = 30 // 지표만으로도 폭 안이다
-	row = strings.Split(plain(Compact(v, 1_999_000_000)), "\n")[0]
-	if want := "gh@personal aws:expired"; row != want {
-		t.Errorf("폭 30: %q, want %q", row, want)
-	}
-}
-
-func TestCompactBranchFillsWhatTheIndicatorsLeave(t *testing.T) {
+func TestCompactBranchIsCutToTheWidth(t *testing.T) {
 	v := sample()
 	v.Branch = "feature/PROJ-1469-connect-api-secrets"
-	v.Status = []string{"gh@personal"}
-	v.Width = 40 // 예산 40-2-1-11 = 26. 글리프를 2열로 잡지만 Visible 은 1열이라 행은 39열이다
-	row := Compact(v, 1_999_000_000)
-	first := strings.Split(row, "\n")[0]
-	if got := width.Visible(first); got != 39 {
-		t.Errorf("1행 폭 %d, want 39 — %q", got, plain(first))
+	v.Width = 30 // 글리프를 2열로 잡지만 Visible 은 1열이라 행은 29열이다
+	first := strings.Split(Compact(v, 1_999_000_000), "\n")[0]
+	if got := width.Visible(first); got != 29 {
+		t.Errorf("1행 폭 %d, want 29 — %q", got, plain(first))
 	}
 	if !strings.Contains(first, "…") {
 		t.Errorf("넘치면 줄임표: %q", plain(first))
@@ -487,7 +422,7 @@ func TestCompactTrimsTheGaugeRowInOrder(t *testing.T) {
 	// 그 단계가, 폭이 1 줄면 다음 단계가 나온다.
 	now := int64(1_999_991_000)
 	v := sample()
-	v.Branch, v.Status = "", nil
+	v.Branch = ""
 	v.Five = Gauge{Present: true, Pct: 70, ResetsAt: 2_000_000_000, HasReset: true, Window: 18000}
 	v.Week = Gauge{Present: true, Pct: 10, ResetsAt: now + 200000, HasReset: true, Window: 604800}
 	steps := []string{
@@ -567,16 +502,13 @@ func TestPaceMarkerOmitsOverpaceWhenUsageKeepsPace(t *testing.T) {
 }
 
 func TestCompactRowsFitEveryWidth(t *testing.T) {
-	// 모든 행의 표시 폭이 감지 폭 이하다. 지표(gh·aws)는 자르지 않으므로 가장 긴 조합
-	// "gh@personal! aws:expired"(24열)가 30열 안에 들어가는 것까지 함께 확인한다.
+	// 모든 행의 표시 폭이 감지 폭 이하다.
 	hangul := "feature/한글-브랜치-이름-매우-길어서-절단된다"
 	cases := map[string]func(*View){
-		"정상 gh 상시 표시": func(v *View) { v.Status = []string{"gh@personal"} },
-		"확정 이상":       func(v *View) { v.Status = []string{"gh@personal!", "aws:expired"}; v.Branch = hangul },
-		"불명도 표시":      func(v *View) { v.Status = []string{"gh@personal?", "aws:?"} },
-		"저장소 밖 1행 생략": func(v *View) { v.Branch, v.Status = "", nil },
-		"gh 없음":       func(v *View) { v.Status = nil },
-		"긴 브랜치":       func(v *View) { v.Status = []string{"gh@personal"}; v.Branch = "feature/PROJ-1469-connect-api-secrets" },
+		"짧은 브랜치":      func(v *View) {},
+		"한글 브랜치":      func(v *View) { v.Branch = hangul },
+		"저장소 밖 1행 생략": func(v *View) { v.Branch = "" },
+		"긴 브랜치":       func(v *View) { v.Branch = "feature/PROJ-1469-connect-api-secrets" },
 	}
 	for name, mutate := range cases {
 		for _, w := range []int{30, 40, 50, 60, 80} {

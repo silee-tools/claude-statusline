@@ -4,7 +4,7 @@ Guidance for AI agents and contributors working in this repository.
 
 This repo holds the `claude-statusline` Claude Code plugin, published through a
 marketplace catalog: a width-aware statusline HUD with a compact two-row layout
-and a full layout of up to six rows. End-user documentation lives in
+and a full layout of up to five rows. End-user documentation lives in
 [README.md](README.md); this file covers how to change the code safely.
 
 The plugin owns a directory under `plugins/claude` named after it, holding
@@ -86,7 +86,7 @@ Two properties keep the port worth its while, so hold them when editing:
 
 Every state, cache or config file the render reads goes through `statefile.Read` (the
 statusline's own state and cache: a link is refused) or `statefile.ReadFollow` (a file someone
-else writes or places, such as a user's config a dotfile manager links in: a link is followed).
+else writes or places, such as git's `HEAD`: a link is followed).
 Both open without blocking and read only a regular file, so a FIFO cannot hold the render. Two
 places open files themselves: the receiver lock files in `internal/anchor/lock.go`, with the same
 non-blocking and regular-file checks, and `width.deviceCols`, which opens the tty device for its
@@ -166,7 +166,7 @@ anchors they seed carry that run.
 
 The Go tests carry the boundaries the shell suite only sees through whole-output
 comparison: display width and cutting, terminal-width decisions, path and branch
-shortening, the gh cache decision table, gauge thresholds and reset formatting.
+shortening, gauge thresholds and reset formatting.
 `internal/shorten` pins both the plain shortening and the colored output, because
 a table that reads only the surviving words still passes when the rule that paints
 the repository and current segments blue is broken.
@@ -195,10 +195,3 @@ Keep the two versions identical. Commits follow Conventional Commits
 `scripts/hook-handler.sh` parses the hook payload and `settings.json` with
 `scripts/json.awk`, and `tests/json.test.sh` covers it. It is the only
 implementation of what it does, not a second copy of the Go parser, so it stays.
-
-## Configuration is data, not code
-
-The `gh@<account>` mapping is intentionally **not** in the source. It is read at
-runtime from `${XDG_CONFIG_HOME:-$HOME/.config}/claude-statusline/gh-accounts`.
-Do not hardcode account names, labels, or colors in the scripts — keep the source
-publishable.

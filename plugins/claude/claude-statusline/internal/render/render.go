@@ -19,14 +19,12 @@ const sevenDayWindow int64 = 7 * 24 * 60 * 60
 // View holds everything the layouts draw. Keeping files and the environment out of
 // the renderer is what lets the output format be tested without a filesystem.
 type View struct {
-	Clock   string   // current time, already formatted as "15:04"
-	Path    string   // shortened path, already colored
-	Branch  string   // shortened branch, empty when there is none
-	Account string   // full layout: the Claude login, empty when unknown
-	Meta    []string // full layout: the gh and aws indicators; the caller dropped the empty ones
-	Status  []string // compact layout: gh always, aws only when not healthy
-	Model   string   // tidied model name such as "Opus 4.8"
-	Effort  string   // effort glyph, empty when the model has no effort level
+	Clock   string // current time, already formatted as "15:04"
+	Path    string // shortened path, already colored
+	Branch  string // shortened branch, empty when there is none
+	Account string // full layout: the Claude login, empty when unknown
+	Model   string // tidied model name such as "Opus 4.8"
+	Effort  string // effort glyph, empty when the model has no effort level
 	CtxPct  int
 	Five    Gauge
 	Week    Gauge
@@ -53,9 +51,8 @@ const statusInset = 4
 
 // Full is the layout used above 80 columns and whenever the width could not be
 // determined. Its first row is the version, the clock, the Claude account, the session id,
-// the path, the branch, gh and aws, one space apart. A row wider than Width less statusInset
-// breaks before the path and moves the path, branch, gh and aws to a second row; when that
-// is still too wide the location and the indicators take a row each. A Width of 0 or less
+// the path and the branch, one space apart. A row wider than Width less statusInset
+// breaks before the path and moves the path and branch to a second row. A Width of 0 or less
 // never breaks, and no row is cut.
 func Full(v View, now int64) string {
 	place := v.Path
@@ -65,7 +62,6 @@ func Full(v View, now int64) string {
 	if width.Visible(place) == 0 {
 		place = ""
 	}
-	status := strings.Join(v.Meta, " ")
 
 	ctx := theme.Label(ralign("ctx")) + " " +
 		theme.Bar(v.CtxPct, theme.NoBudget, contextColor(v.CtxPct), "") +
@@ -83,14 +79,10 @@ func Full(v View, now int64) string {
 
 	five, week := fullGauge(ralign("5h"), v.Five, now), fullGauge(ralign("7d"), v.Week, now)
 
-	tail := joinGroups(place, status)
-	if row := joinGroups(head, tail); fits(v, row) {
+	if row := joinGroups(head, place); fits(v, row) {
 		return emit(row, ctx, five, week)
 	}
-	if fits(v, tail) {
-		return emit(head, tail, ctx, five, week)
-	}
-	return emit(head, place, status, ctx, five, week)
+	return emit(head, place, ctx, five, week)
 }
 
 // joinGroups puts groups on one row a space apart, skipping an empty one so no gap is left.
@@ -112,7 +104,7 @@ func fits(v View, row string) bool {
 }
 
 // Compact is the layout for 80 columns or fewer: at most two rows, each within Width.
-// Row one is the branch and the Status indicators, row two the ctx, model and rate
+// Row one is the branch, row two the ctx, model and rate
 // values. A row with nothing to show is left out.
 func Compact(v View, now int64) string {
 	return emit(compactStatusRow(v), compactGaugeRow(v, now))
@@ -122,40 +114,16 @@ func Compact(v View, now int64) string {
 // so the wider reading keeps the row from wrapping.
 const branchGlyphCells = 2
 
-// minBranchCells is the narrowest branch worth drawing next to the indicators.
-const minBranchCells = 8
-
-// compactStatusRow never cuts an indicator. The branch takes what they leave, with an
-// ellipsis, and is dropped when less than minBranchCells remain.
+// compactStatusRow cuts the branch with an ellipsis when it does not fit.
 func compactStatusRow(v View) string {
-	status := strings.Join(v.Status, " ")
 	branch := v.Branch
-	if branch != "" && v.Width > 0 {
-		budget := v.Width - branchGlyphCells
-		if status != "" {
-			budget -= 1 + width.Visible(status)
-		}
-		switch {
-		case status != "" && budget < minBranchCells:
-			branch = ""
-		case budget < 1:
-			budget = 1
-			fallthrough
-		default:
-			branch = width.Fit(branch, budget)
-		}
+	if branch == "" {
+		return ""
 	}
-	row := ""
-	if branch != "" {
-		row = theme.Magenta + theme.BranchGlyph + branch + theme.Reset
+	if v.Width > 0 {
+		branch = width.Fit(branch, max(v.Width-branchGlyphCells, 1))
 	}
-	if status != "" {
-		if row != "" {
-			row += " "
-		}
-		row += status
-	}
-	return row
+	return theme.Magenta + theme.BranchGlyph + branch + theme.Reset
 }
 
 // compactGaugeRow drops the pace flame, the 7d reset, the 5h reset and the model with
