@@ -527,7 +527,7 @@ OUT=$(run "$(json_with)" 80)
 assert_match "T33 모델 이름+버전 표기 유지" 'Opus 4\.8' "$OUT"
 
 # --- T8: 5h 와 7d 는 ctx 와 같은 게이지 행에 병합되어 나온다(파이프 없음) ---
-#    5h·7d 는 마지막 행 하나에만 나타나고(중복 없음), 그 행에 파이프 구분자는 쓰지 않는다.
+#    5h·7d 는 행3 하나에만 나타나고(중복 없음), 그 행에 파이프 구분자는 쓰지 않는다.
 OUT=$(run "$(json_with)" 80)
 L3=$(last_line "$OUT")
 assert_equals   "T8 5h 게이지 1개" "1" "$(printf '%s\n' "$OUT" | grep -c '5h [0-9]')"

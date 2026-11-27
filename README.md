@@ -1,5 +1,8 @@
 # claude-statusline
 
+> This is a standalone edition, separate from the `podo statusline` command in Podo.
+> It is a stable, feature-frozen release: no new features are added.
+
 This repository publishes the `claude-statusline` Claude Code plugin through the
 marketplace `silee-tools`.
 
@@ -32,6 +35,24 @@ When that row does not fit, the full layout breaks it before the path, down to
 six rows (see [Layouts](#layouts)).
 
 Rows with no data are omitted in either layout.
+
+## Screenshots
+
+Terminal captures of `scripts/statusline.sh` run with a sample status line payload
+in a throwaway home directory. The account, gh, and aws indicators are absent
+because nothing there supplies them.
+
+150 columns — the full layout with its first row on one line:
+
+![Full layout at 150 columns: version, clock, session id, path and branch on one row above the ctx, 5h and 7d gauges](assets/screenshots/full-150-columns.png)
+
+96 columns — the full layout breaks the first row before the path:
+
+![Full layout at 96 columns: path and branch moved to a second row above the three gauges](assets/screenshots/full-96-columns.png)
+
+72 columns — the compact layout:
+
+![Compact layout at 72 columns: the branch on one row and every gauge on the next](assets/screenshots/compact-72-columns.png)
 
 ## Width selection
 
